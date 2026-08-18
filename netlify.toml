@@ -1,0 +1,17 @@
+[build]
+  # Runs from the repo root (not apps/web) so npm workspaces can see the whole
+  # monorepo — packages/domain must be built before apps/web, since the web app
+  # imports its compiled dist/ output, not the TypeScript source directly.
+  command = "npm run build -w packages/domain && npm run build -w apps/web"
+  publish = "apps/web/dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Single-page app: every unknown path falls back to index.html so React Router
+# handles client-side routes like /jobs/:jobId directly (otherwise Netlify's static
+# host returns a 404 for anything but the exact built file paths).
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
