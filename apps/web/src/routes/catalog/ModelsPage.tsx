@@ -1,0 +1,109 @@
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { addDoc, collection } from 'firebase/firestore';
+import { BRAND_OPTIONS, VEHICLE_MODELS, seedKeyOf, type VehicleModel } from '@champpower/domain';
+import { db } from '../../lib/firebase/client';
+import { useCollection } from '../../hooks/useCollection';
+
+export function ModelsPage() {
+  const navigate = useNavigate();
+  const models = useCollection<VehicleModel>('models');
+  const [search, setSearch] = useState('');
+  const [brand, setBrand] = useState('');
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return models.rows;
+    return models.rows.filter((m) => `${m.brand} ${m.name}`.toLowerCase().includes(q));
+  }, [models.rows, search]);
+
+  const missingFromCatalog = useMemo(() => {
+    const existingKeys = new Set(models.rows.map((m) => seedKeyOf(m.brand, m.name)));
+    return VEHICLE_MODELS.filter((cm) => !existingKeys.has(seedKeyOf(cm.brand, cm.name)));
+  }, [models.rows]);
+
+  async function importCatalog() {
+    setBusy(true);
+    try {
+      await Promise.all(
+        missingFromCatalog.map((cm) =>
+          addDoc(collection(db, 'models'), { brand: cm.brand, name: cm.name, parts: [], promotions: [] }),
+        ),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addModel() {
+    if (!brand.trim() || !name.trim()) return;
+    setBusy(true);
+    try {
+      const ref = await addDoc(collection(db, 'models'), {
+        brand: brand.trim().toUpperCase(),
+        name: name.trim().toUpperCase(),
+        parts: [],
+        promotions: [],
+      });
+      setName('');
+      navigate(`/models/${ref.id}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="page">
+      <h1>รุ่นรถ</h1>
+      <p className="page-sub">{models.rows.length} รุ่น</p>
+
+      <input
+        className="search-input"
+        placeholder="ค้นหายี่ห้อ / รุ่น..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+
+      <div className="card">
+        <h3>เพิ่มรุ่นใหม่</h3>
+        <div className="row-flex">
+          <input list="brand-options-models" value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="ยี่ห้อ" />
+          <datalist id="brand-options-models">
+            {BRAND_OPTIONS.map((b) => (
+              <option key={b} value={b} />
+            ))}
+          </datalist>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อรุ่น" />
+          <button onClick={addModel} disabled={busy}>
+            เพิ่ม
+          </button>
+        </div>
+        {missingFromCatalog.length > 0 && (
+          <button className="secondary-btn" style={{ marginTop: 10 }} onClick={importCatalog} disabled={busy}>
+            นำเข้ารุ่นจากแคตตาล็อกร้าน ({missingFromCatalog.length})
+          </button>
+        )}
+      </div>
+
+      {models.loading ? (
+        <div className="page-loading">กำลังโหลด...</div>
+      ) : filtered.length === 0 ? (
+        <div className="empty-state">ยังไม่มีรุ่นรถในระบบ</div>
+      ) : (
+        <div className="job-grid">
+          {filtered.map((m) => (
+            <button key={m.id} className="job-card" onClick={() => navigate(`/models/${m.id}`)}>
+              <div className="job-card-model">{m.brand}</div>
+              <div style={{ fontSize: 15 }}>{m.name}</div>
+              <div className="job-card-meta">
+                <span>{(m.parts || []).length} อะไหล่</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
