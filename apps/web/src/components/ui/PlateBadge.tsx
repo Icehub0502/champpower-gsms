@@ -1,7 +1,7 @@
 interface PlateBadgeProps {
   plate: string | undefined;
   province?: string;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'fit';
 }
 
 export function PlateBadge({ plate, province, size = 'md' }: PlateBadgeProps) {
