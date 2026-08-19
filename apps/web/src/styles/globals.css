@@ -562,68 +562,117 @@ button:focus-visible, a:focus-visible {
 }
 
 /* ---- Customer board (public, no-login waiting-room display) ----
-   Built to live on a wall-mounted TV as much as a monitor — sizing is vw-based
-   (proportional to viewport width) rather than fixed px, so the same layout that
-   reads fine on a 1920px monitor scales up correctly on a 3840x2160 4K panel
-   viewed from across a waiting room, instead of shrinking to a tiny corner. */
+   Tiered responsive, not one continuous formula: fixed, comfortable px/rem sizing
+   for phones/tablets/desktop monitors below, and only past ~1600px (wall-mounted
+   TVs, large panels) does it switch to vw-based fluid scaling — a TV should keep
+   growing with the screen, but a phone must not shrink text into vw dust just
+   because vw also scales linearly on a 390px viewport. */
 .board-page {
-  min-height: 100vh; color: #fff; padding: 2.2vw 2.6vw;
+  min-height: 100vh; color: #fff; padding: 20px 24px;
   background:
     radial-gradient(1100px 500px at 15% -10%, rgba(232, 187, 45, .08), transparent 60%),
     radial-gradient(900px 500px at 100% 0%, rgba(48, 71, 94, .35), transparent 55%),
     var(--dark);
-  font-size: 1.15vw; /* base unit the rem-ish values below key off, via em on children */
+  font-size: 16px;
 }
-.board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2vw; }
-.board-title { font-size: 2.6vw; font-weight: 800; letter-spacing: 0.06em; display: flex; align-items: center; gap: .6vw; }
-.board-title::before { content: ''; width: .6vw; height: .6vw; border-radius: 50%; background: var(--hazard); box-shadow: 0 0 0 .35vw rgba(232, 187, 45, .25); }
-.board-clock { font-size: 2.6vw; font-weight: 600; font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
+.board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.board-title { font-size: 26px; font-weight: 800; letter-spacing: 0.06em; display: flex; align-items: center; gap: 8px; }
+.board-title::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: var(--hazard); box-shadow: 0 0 0 5px rgba(232, 187, 45, .25); }
+.board-clock { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
 
-.board-bays { display: grid; grid-template-columns: repeat(auto-fill, minmax(9vw, 1fr)); gap: .9vw; margin-bottom: 2.4vw; }
+.board-bays { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; margin-bottom: 22px; }
 .board-bay {
   background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: .9vw; padding: 1vw .8vw; text-align: center; transition: background-color .2s var(--ease);
+  border-radius: 12px; padding: 12px 10px; text-align: center; transition: background-color .2s var(--ease);
 }
 .board-bay.occupied { background: var(--navy); border-color: rgba(255, 255, 255, 0.18); box-shadow: var(--shadow-md); }
-.board-bay-label { font-size: 1.1vw; opacity: 0.65; font-weight: 600; letter-spacing: .3px; }
-.board-bay-plate { font-weight: 700; margin-top: .4vw; font-family: ui-monospace, monospace; font-size: 1.35vw; }
-.board-bay-empty { font-size: 1.1vw; opacity: 0.35; margin-top: .4vw; }
+.board-bay-label { font-size: 13px; opacity: 0.65; font-weight: 600; letter-spacing: .3px; }
+.board-bay-plate { font-weight: 700; margin-top: 4px; font-family: ui-monospace, monospace; font-size: 16px; }
+.board-bay-empty { font-size: 13px; opacity: 0.35; margin-top: 4px; }
 
-.board-rows { display: flex; flex-direction: column; gap: .9vw; }
+.board-rows { display: flex; flex-direction: column; gap: 10px; }
 .board-row {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 1.1vw;
-  padding: 1.2vw 1.6vw;
+  border-radius: 14px;
+  padding: 16px 20px;
   display: flex;
   align-items: center;
-  gap: 1.8vw;
+  gap: 20px;
   flex-wrap: wrap;
   transition: background-color .2s var(--ease);
 }
 .board-row:hover { background: rgba(255, 255, 255, 0.08); }
 
-.board-row-queue { display: flex; align-items: baseline; gap: .5vw; flex-shrink: 0; min-width: 5.5vw; }
-.board-row-queue-n { font-size: 4.4vw; font-weight: 800; line-height: 1; font-family: ui-monospace, monospace; color: var(--hazard); }
-.board-row-queue-label { font-size: 1.1vw; font-weight: 600; opacity: .7; }
-.board-row-queue-dash { font-size: 3vw; font-weight: 800; opacity: .3; }
+.board-row-queue { display: flex; align-items: baseline; gap: 6px; flex-shrink: 0; min-width: 60px; }
+.board-row-queue-n { font-size: 44px; font-weight: 800; line-height: 1; font-family: ui-monospace, monospace; color: var(--hazard); }
+.board-row-queue-label { font-size: 13px; font-weight: 600; opacity: .7; }
+.board-row-queue-dash { font-size: 32px; font-weight: 800; opacity: .3; }
 
-.board-row-model { font-size: 1.7vw; font-weight: 600; }
-.board-row-bay { background: rgba(255, 255, 255, 0.12); padding: .5vw 1.1vw; border-radius: 999px; font-size: 1.2vw; font-weight: 600; }
-.board-row-est { margin-left: auto; font-size: 1.2vw; opacity: 0.75; }
+.board-row-model { font-size: 19px; font-weight: 600; }
+.board-row-bay { background: rgba(255, 255, 255, 0.12); padding: 6px 14px; border-radius: 999px; font-size: 14px; font-weight: 600; }
+.board-row-est { margin-left: auto; font-size: 14px; opacity: 0.75; }
 
 /* .plate-tag / .status-chip sit inside a board row too — scale them up to match
    instead of the small in-app defaults, since this page is never viewed up close. */
-.board-row .plate-tag { padding: .3vw 1vw; }
-.board-row .plate-tag .pt-no { font-size: 1.8vw; }
-.board-row .plate-tag .pt-prov { font-size: .95vw; }
-.board-row .status-chip { font-size: 1.15vw; padding: .35vw 1vw; }
+.board-row .plate-tag { padding: 4px 12px; }
+.board-row .plate-tag .pt-no { font-size: 20px; }
+.board-row .plate-tag .pt-prov { font-size: 11px; }
+.board-row .status-chip { font-size: 13px; padding: 4px 12px; }
 
-@media (max-width: 700px) {
-  .board-page { font-size: 3vw; }
-  .board-title, .board-clock { font-size: 5.5vw; }
-  .board-row-queue-n { font-size: 11vw; }
-  .board-row-model { font-size: 4vw; }
+/* Tablet: same layout, slightly denser */
+@media (max-width: 1024px) {
+  .board-bays { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); }
+  .board-row-queue-n { font-size: 38px; }
+  .board-row-model { font-size: 17px; }
+}
+
+/* Phone: stack each row instead of wrapping inline, shrink the bay grid to 3 columns */
+@media (max-width: 600px) {
+  .board-page { padding: 14px 16px; }
+  .board-header { margin-bottom: 14px; }
+  .board-title, .board-clock { font-size: 20px; }
+  .board-bays { grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
+  .board-bay { padding: 8px 6px; border-radius: 10px; }
+  .board-bay-label { font-size: 11px; }
+  .board-bay-plate { font-size: 13px; }
+  .board-bay-empty { font-size: 11px; }
+
+  .board-row { flex-direction: column; align-items: flex-start; gap: 8px; padding: 14px 16px; }
+  .board-row-queue { min-width: 0; }
+  .board-row-queue-n { font-size: 38px; }
+  .board-row-model { font-size: 17px; }
+  .board-row-est { margin-left: 0; }
+}
+
+/* Large monitors and wall-mounted TVs (1600px+): switch to vw-based fluid scaling
+   so a 4K panel viewed from across a waiting room keeps growing with the screen
+   instead of capping out at desktop sizes. */
+@media (min-width: 1600px) {
+  .board-page { padding: 2.2vw 2.6vw; font-size: 1.15vw; }
+  .board-header { margin-bottom: 2vw; }
+  .board-title, .board-clock { font-size: 2.6vw; }
+  .board-title::before { width: .6vw; height: .6vw; box-shadow: 0 0 0 .35vw rgba(232, 187, 45, .25); }
+
+  .board-bays { grid-template-columns: repeat(auto-fill, minmax(9vw, 1fr)); gap: .9vw; margin-bottom: 2.4vw; }
+  .board-bay { border-radius: .9vw; padding: 1vw .8vw; }
+  .board-bay-label { font-size: 1.1vw; }
+  .board-bay-plate { font-size: 1.35vw; margin-top: .4vw; }
+  .board-bay-empty { font-size: 1.1vw; margin-top: .4vw; }
+
+  .board-rows { gap: .9vw; }
+  .board-row { border-radius: 1.1vw; padding: 1.2vw 1.6vw; gap: 1.8vw; }
+  .board-row-queue { gap: .5vw; min-width: 5.5vw; }
+  .board-row-queue-n { font-size: 4.4vw; }
+  .board-row-queue-label { font-size: 1.1vw; }
+  .board-row-queue-dash { font-size: 3vw; }
+  .board-row-model { font-size: 1.7vw; }
+  .board-row-bay { padding: .5vw 1.1vw; font-size: 1.2vw; }
+  .board-row-est { font-size: 1.2vw; }
+  .board-row .plate-tag { padding: .3vw 1vw; }
+  .board-row .plate-tag .pt-no { font-size: 1.8vw; }
+  .board-row .plate-tag .pt-prov { font-size: .95vw; }
+  .board-row .status-chip { font-size: 1.15vw; padding: .35vw 1vw; }
 }
 
 /* ---- Print ---- */
