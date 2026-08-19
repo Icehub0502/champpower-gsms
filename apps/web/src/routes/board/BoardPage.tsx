@@ -7,6 +7,7 @@ import { StatusLabel } from '../../components/job/StatusTrack';
 
 interface BoardRow {
   id: string;
+  queueNo: string;
   plate: string;
   province: string;
   brand: string;
@@ -48,7 +49,12 @@ export function BoardPage() {
   const todayRows = rows
     .filter((r) => dayKey(r.createdAt) === todayKey())
     .filter((r) => r.status !== 'delivered')
-    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    .sort((a, b) => {
+      const qa = parseInt(a.queueNo, 10);
+      const qb = parseInt(b.queueNo, 10);
+      if (Number.isFinite(qa) && Number.isFinite(qb) && qa !== qb) return qa - qb;
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    });
 
   const bayOf = (bay: string) => todayRows.find((r) => r.bay === bay);
 
@@ -77,6 +83,16 @@ export function BoardPage() {
         <div className="board-rows">
           {todayRows.map((r) => (
             <div className="board-row" key={r.id}>
+              <div className="board-row-queue">
+                {r.queueNo ? (
+                  <>
+                    <span className="board-row-queue-n">{r.queueNo}</span>
+                    <span className="board-row-queue-label">คิว</span>
+                  </>
+                ) : (
+                  <span className="board-row-queue-dash">—</span>
+                )}
+              </div>
               <PlateBadge plate={r.plate} province={r.province} size="lg" />
               <div className="board-row-model">
                 {r.brand} {r.model} {r.color && `· ${r.color}`}
