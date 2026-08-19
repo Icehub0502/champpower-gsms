@@ -13,6 +13,7 @@ const PATHS: Record<string, string> = {
   wrench:
     'M14.7 6.3a4 4 0 0 1 5.3 4.6l-1.8-1.8-2.1.5-.5 2.1 1.8 1.8a4 4 0 0 1-4.6-5.3L4.8 17.3a1.8 1.8 0 1 0 2.5 2.5l8.4-8.4',
   search: 'm20 20-3.5-3.5|circle:11,11,7',
+  edit: 'M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z|M15 5l4 4',
 };
 
 export function Icon({ name, size = 15 }: { name: keyof typeof PATHS; size?: number }) {

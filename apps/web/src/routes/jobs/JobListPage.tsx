@@ -128,6 +128,23 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     });
   }
 
+  async function editInfo(
+    vehicleId: string,
+    customerId: string,
+    vehiclePatch: Partial<Vehicle>,
+    customerPatch: Partial<Customer>,
+  ) {
+    await Promise.all([
+      updateDoc(doc(db, 'vehicles', vehicleId), vehiclePatch),
+      updateDoc(doc(db, 'customers', customerId), customerPatch),
+    ]);
+    // The board shows plate/brand/model straight from the vehicle doc, so it needs
+    // a fresh sync for every job that vehicle is currently checked in under today.
+    const updatedVehicle = { ...vehicleById.get(vehicleId), id: vehicleId, ...vehiclePatch } as Vehicle;
+    const affectedJobs = activeJobs.filter((j) => j.vehicleId === vehicleId);
+    await Promise.all(affectedJobs.map((j) => syncBoardEntry(j, updatedVehicle)));
+  }
+
   async function deleteJob(jobId: string) {
     if (!window.confirm('ลบรายการนี้ใช่หรือไม่?')) return;
     await deleteDoc(doc(db, 'jobs', jobId));
@@ -250,6 +267,7 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
                 onAssignBay={assignBay}
                 onAssignTechnician={assignTechnician}
                 onDelete={deleteJob}
+                onEditInfo={editInfo}
               />
             ))}
           </div>

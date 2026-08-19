@@ -22,7 +22,7 @@ import { PlateBadge } from '../ui/PlateBadge';
 import { Icon } from '../ui/Icon';
 import { Modal } from '../ui/Modal';
 
-type Picker = 'bay' | 'tech' | 'status' | null;
+type Picker = 'bay' | 'tech' | 'status' | 'edit' | null;
 
 interface JobCardProps {
   job: Job;
@@ -41,6 +41,12 @@ interface JobCardProps {
   onAssignBay: (jobId: string, bay: string) => void;
   onAssignTechnician: (jobId: string, name: string) => void;
   onDelete: (jobId: string) => void;
+  onEditInfo: (
+    vehicleId: string,
+    customerId: string,
+    vehiclePatch: Partial<Vehicle>,
+    customerPatch: Partial<Customer>,
+  ) => void;
 }
 
 /** Appointment chips warn when the date is today or already past. */
@@ -67,11 +73,54 @@ export function JobCard({
   onAssignBay,
   onAssignTechnician,
   onDelete,
+  onEditInfo,
 }: JobCardProps) {
   const [picker, setPicker] = useState<Picker>(null);
   const [techInput, setTechInput] = useState('');
   // null = the status modal is not currently asking for an appointment date.
   const [schedulingDate, setSchedulingDate] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({
+    plate: '',
+    province: '',
+    brand: '',
+    model: '',
+    color: '',
+    customerName: '',
+    customerPhone: '',
+  });
+
+  function openEditForm(e: React.MouseEvent) {
+    stop(e);
+    setEditForm({
+      plate: vehicle?.plate || '',
+      province: vehicle?.province || '',
+      brand: vehicle?.brand || '',
+      model: vehicle?.model || '',
+      color: vehicle?.color || '',
+      customerName: customer?.name || '',
+      customerPhone: customer?.phone || '',
+    });
+    setPicker('edit');
+  }
+
+  function saveEditForm() {
+    onEditInfo(
+      job.vehicleId,
+      job.customerId,
+      {
+        plate: editForm.plate.trim().toUpperCase(),
+        province: editForm.province.trim(),
+        brand: editForm.brand.trim().toUpperCase(),
+        model: editForm.model.trim().toUpperCase(),
+        color: editForm.color.trim(),
+      },
+      {
+        name: editForm.customerName.trim(),
+        phone: editForm.customerPhone.trim(),
+      },
+    );
+    setPicker(null);
+  }
 
   const st = statusOf(job.status);
   const nextSt = nextStatusOf(job);
@@ -163,6 +212,9 @@ export function JobCard({
           </button>
           <button className="btn secondary small" onClick={(e) => openPicker('status', e)}>
             สถานะ
+          </button>
+          <button className="btn secondary small" onClick={openEditForm}>
+            <Icon name="edit" size={13} /> แก้ไขข้อมูล
           </button>
 
           {!atDecision && (prevSt || nextSt) && (
@@ -306,6 +358,65 @@ export function JobCard({
               </button>
             </div>
           )}
+        </Modal>
+      )}
+
+      {picker === 'edit' && (
+        <Modal title="แก้ไขข้อมูล" onClose={() => setPicker(null)}>
+          <div className="edit-form" onClick={stop}>
+            <label className="field">
+              ทะเบียนรถ
+              <input
+                value={editForm.plate}
+                onChange={(e) => setEditForm((f) => ({ ...f, plate: e.target.value }))}
+              />
+            </label>
+            <label className="field">
+              จังหวัด
+              <input
+                value={editForm.province}
+                onChange={(e) => setEditForm((f) => ({ ...f, province: e.target.value }))}
+              />
+            </label>
+            <label className="field">
+              ยี่ห้อ
+              <input
+                value={editForm.brand}
+                onChange={(e) => setEditForm((f) => ({ ...f, brand: e.target.value }))}
+              />
+            </label>
+            <label className="field">
+              รุ่น
+              <input
+                value={editForm.model}
+                onChange={(e) => setEditForm((f) => ({ ...f, model: e.target.value }))}
+              />
+            </label>
+            <label className="field">
+              สี
+              <input
+                value={editForm.color}
+                onChange={(e) => setEditForm((f) => ({ ...f, color: e.target.value }))}
+              />
+            </label>
+            <label className="field">
+              ชื่อลูกค้า
+              <input
+                value={editForm.customerName}
+                onChange={(e) => setEditForm((f) => ({ ...f, customerName: e.target.value }))}
+              />
+            </label>
+            <label className="field">
+              เบอร์โทร
+              <input
+                value={editForm.customerPhone}
+                onChange={(e) => setEditForm((f) => ({ ...f, customerPhone: e.target.value }))}
+              />
+            </label>
+            <button className="btn block" onClick={saveEditForm}>
+              บันทึกการแก้ไข
+            </button>
+          </div>
         </Modal>
       )}
 
