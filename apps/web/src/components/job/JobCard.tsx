@@ -18,6 +18,7 @@ import {
 } from '@champpower/domain';
 import { PlateBadge } from '../ui/PlateBadge';
 import { Icon } from '../ui/Icon';
+import { Modal } from '../ui/Modal';
 
 type Picker = 'bay' | 'tech' | 'status' | null;
 
@@ -66,9 +67,9 @@ export function JobCard({
     e.stopPropagation();
   }
 
-  function togglePicker(which: Picker, e: React.MouseEvent) {
+  function openPicker(which: Picker, e: React.MouseEvent) {
     stop(e);
-    setPicker((p) => (p === which ? null : which));
+    setPicker(which);
   }
 
   return (
@@ -118,13 +119,13 @@ export function JobCard({
           <div className="jc-steps" title={st.label}>
             <StatusSegs job={job} />
           </div>
-          <button className="btn secondary small" onClick={(e) => togglePicker('bay', e)}>
+          <button className="btn secondary small" onClick={(e) => openPicker('bay', e)}>
             {job.bay || 'เลือกช่อง'}
           </button>
-          <button className="btn secondary small" onClick={(e) => togglePicker('tech', e)}>
+          <button className="btn secondary small" onClick={(e) => openPicker('tech', e)}>
             <Icon name="wrench" size={13} /> {job.technician || 'มอบหมายช่าง'}
           </button>
-          <button className="btn secondary small" onClick={(e) => togglePicker('status', e)}>
+          <button className="btn secondary small" onClick={(e) => openPicker('status', e)}>
             สถานะ
           </button>
 
@@ -168,80 +169,83 @@ export function JobCard({
             </button>
           )}
 
-          {picker === 'bay' && (
-            <div className="jc-picker" onClick={stop}>
-              {WORK_BAYS.map((bay) => {
-                const occ = jobInBay(activeJobs, bay, job.id);
-                return (
-                  <button
-                    key={bay}
-                    className={`chip ${job.bay === bay ? 'active' : ''}`}
-                    disabled={!!occ}
-                    title={occ ? 'มีงานอื่นจอดอยู่' : 'ว่าง'}
-                    onClick={() => {
-                      onAssignBay(job.id, job.bay === bay ? '' : bay);
-                      setPicker(null);
-                    }}
-                  >
-                    {bay}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+        </div>
+      )}
 
-          {picker === 'tech' && (
-            <div className="jc-picker" onClick={stop}>
-              {technicians.map((name) => (
-                <button
-                  key={name}
-                  className={`chip ${job.technician === name ? 'active' : ''}`}
-                  onClick={() => {
-                    onAssignTechnician(job.id, name);
-                    setPicker(null);
-                  }}
-                >
-                  {name}
-                </button>
-              ))}
-              <input
-                value={techInput}
-                onChange={(e) => setTechInput(e.target.value)}
-                placeholder="ชื่อช่างใหม่"
-                style={{ flex: '1 1 140px', minWidth: 100 }}
-              />
+      {picker === 'bay' && (
+        <Modal title="เลือกช่องจอด" onClose={() => setPicker(null)}>
+          {WORK_BAYS.map((bay) => {
+            const occ = jobInBay(activeJobs, bay, job.id);
+            return (
               <button
-                className="btn small"
+                key={bay}
+                className={`chip ${job.bay === bay ? 'active' : ''}`}
+                disabled={!!occ}
+                title={occ ? 'มีงานอื่นจอดอยู่' : 'ว่าง'}
                 onClick={() => {
-                  if (techInput.trim()) {
-                    onAssignTechnician(job.id, techInput.trim());
-                    setTechInput('');
-                    setPicker(null);
-                  }
+                  onAssignBay(job.id, job.bay === bay ? '' : bay);
+                  setPicker(null);
                 }}
               >
-                บันทึก
+                {bay}
               </button>
-            </div>
-          )}
+            );
+          })}
+        </Modal>
+      )}
 
-          {picker === 'status' && (
-            <div className="jc-picker" onClick={stop}>
-              {STATUS_FLOW.map((s) => (
-                <button
-                  key={s.key}
-                  className={`chip ${job.status === s.key ? 'active' : ''}`}
-                  onClick={() => {
-                    onSetStatus(job.id, s.key);
-                    setPicker(null);
-                  }}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+      {picker === 'tech' && (
+        <Modal title="มอบหมายช่าง" onClose={() => setPicker(null)}>
+          {technicians.map((name) => (
+            <button
+              key={name}
+              className={`chip ${job.technician === name ? 'active' : ''}`}
+              onClick={() => {
+                onAssignTechnician(job.id, name);
+                setPicker(null);
+              }}
+            >
+              {name}
+            </button>
+          ))}
+          <div className="row-flex" style={{ width: '100%', marginTop: 4 }}>
+            <input
+              value={techInput}
+              onChange={(e) => setTechInput(e.target.value)}
+              placeholder="ชื่อช่างใหม่"
+              style={{ flex: '1 1 140px' }}
+            />
+            <button
+              className="btn small"
+              onClick={() => {
+                if (techInput.trim()) {
+                  onAssignTechnician(job.id, techInput.trim());
+                  setTechInput('');
+                  setPicker(null);
+                }
+              }}
+            >
+              บันทึก
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {picker === 'status' && (
+        <Modal title="เปลี่ยนสถานะ" onClose={() => setPicker(null)}>
+          {STATUS_FLOW.map((s) => (
+            <button
+              key={s.key}
+              className={`chip ${job.status === s.key ? 'active' : ''}`}
+              onClick={() => {
+                onSetStatus(job.id, s.key);
+                setPicker(null);
+              }}
+            >
+              {s.label}
+            </button>
+          ))}
+        </Modal>
       )}
 
       {!selMode && atDecision && (

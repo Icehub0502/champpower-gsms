@@ -601,6 +601,28 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .photo-input-btn { cursor: pointer; }
 .job-photo-preview { width: 100%; max-width: 320px; border-radius: 10px; margin-top: 12px; display: block; border: 1px solid var(--border); }
 
+/* ---- Modal (centered dialog, used by job-card pickers etc.) ---- */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 50; background: rgba(34, 40, 49, .5);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.modal-card {
+  background: var(--card-bg); border-radius: 14px; width: 100%; max-width: 420px;
+  max-height: 82vh; display: flex; flex-direction: column; box-shadow: 0 12px 32px rgba(0,0,0,.28);
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.modal-title { font-size: 16px; font-weight: 700; }
+.modal-close {
+  background: none; border: none; color: var(--text-2); font-size: 22px; line-height: 1;
+  padding: 2px 6px; border-radius: 6px;
+}
+.modal-close:hover { background: var(--paper); color: var(--text); opacity: 1; }
+.modal-body { padding: 16px 18px; overflow-y: auto; display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; }
+.modal-body .chip { font-size: 14px; padding: 9px 15px; }
+
 /* ---- LINE group summary ---- */
 .line-summary-box {
   background: var(--paper); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
