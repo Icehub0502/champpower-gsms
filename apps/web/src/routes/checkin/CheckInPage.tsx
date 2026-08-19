@@ -13,7 +13,7 @@ import {
   type VehicleModel,
 } from '@champpower/domain';
 import { db } from '../../lib/firebase/client';
-import { syncBoardEntry } from '../../lib/firebase/board';
+import { syncPublicRecords } from '../../lib/firebase/board';
 import { useCollection } from '../../hooks/useCollection';
 
 interface CheckInPageProps {
@@ -160,7 +160,9 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
           province: province.trim(),
           color: color.trim(),
         } as Vehicle);
-      await syncBoardEntry({ ...newJobData, id: jobRef.id }, vehicleForBoard);
+      const customerForBoard =
+        matchedCustomer ?? ({ id: customerId, name: customerName.trim(), phone: customerPhone.trim() } as Customer);
+      await syncPublicRecords({ ...newJobData, id: jobRef.id }, vehicleForBoard, customerForBoard);
 
       onCreated(jobRef.id);
     } catch (err) {

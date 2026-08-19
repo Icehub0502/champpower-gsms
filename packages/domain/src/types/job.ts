@@ -25,6 +25,7 @@ export interface PartNeeded {
   price?: string;
   brand?: string;
   note?: string;
+  photo?: string; // data:image/jpeg;base64,... — the replaced part, shown to the customer
 }
 
 export interface JobSignatures {

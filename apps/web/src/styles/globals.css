@@ -190,6 +190,20 @@ button:focus-visible, a:focus-visible {
 }
 .app-bar-nav a:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
 .app-bar-nav a.active { background: var(--red); color: #fff; border-color: var(--red); }
+.app-bar-qr-btn {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: #dfe3e7;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.app-bar-qr-btn:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+.lookup-qr-modal { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; text-align: center; }
+.lookup-qr-modal img { border-radius: 8px; background: #fff; padding: 10px; }
 
 .app-bar-user { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: #dfe3e7; }
 .app-bar .app-bar-user .btn {
@@ -685,6 +699,30 @@ button:focus-visible, a:focus-visible {
   .board-row .status-chip { font-size: 1.15vw; padding: .35vw 1vw; }
 }
 
+/* ---- Lookup page (public, no-login "find my car", reached via QR) ---- */
+.lookup-page { min-height: 100vh; background: var(--dark); padding: 24px 16px 60px; }
+.lookup-header {
+  display: flex; align-items: center; gap: 8px; justify-content: center;
+  color: #fff; font-weight: 800; font-size: 18px; letter-spacing: .04em; margin-bottom: 20px;
+}
+.lookup-header svg { color: var(--hazard); }
+.lookup-card {
+  max-width: 480px; margin: 0 auto 16px; background: var(--card-bg); border-radius: var(--radius);
+  padding: 20px; box-shadow: var(--shadow-md);
+}
+.lookup-card h1 { font-size: 20px; margin: 0 0 4px; }
+.lookup-card h2 { font-size: 18px; margin: 4px 0; }
+.lookup-card h3 { font-size: 15px; margin: 18px 0 10px; }
+.lookup-input { flex: 1 1 auto; font-size: 16px; padding: 12px 14px; }
+.lookup-car-photo { width: 100%; border-radius: 10px; margin: 12px 0; display: block; object-fit: cover; max-height: 280px; }
+.lookup-parts { display: flex; flex-direction: column; gap: 10px; }
+.lookup-part-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px; background: var(--paper);
+  border-radius: 8px; border: 1px solid var(--border);
+}
+.lookup-part-row .part-photo-thumb { width: 52px; height: 52px; }
+.lookup-part-info { min-width: 0; }
+
 /* ---- Print ---- */
 @media print {
   .app-bar, .no-print, .back-link, .btn.block { display: none !important; }
@@ -702,6 +740,12 @@ button:focus-visible, a:focus-visible {
 .print-only-bay { display: none; }
 @media print {
   .print-only-bay { display: block; }
+}
+/* Generic version of the same show-only-when-printing pattern — used by the part
+   photo thumbnail, whose interactive camera-picker cell is .no-print'd instead. */
+.print-only { display: none; }
+@media print {
+  .print-only { display: inline-block; }
 }
 .empty-state {
   padding: 40px 24px; text-align: center; color: var(--text-2);
@@ -760,6 +804,16 @@ button:focus-visible, a:focus-visible {
 .parts-table tbody tr:hover { background: var(--paper); }
 .parts-table .center { text-align: center; }
 .model-part-qty { width: 60px; }
+
+/* ---- Per-part photo (the replaced part, shown to the customer on /lookup) ---- */
+.part-photo-cell { display: inline-flex; cursor: pointer; }
+.part-photo-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); display: block; }
+.part-photo-add {
+  width: 40px; height: 40px; border-radius: 6px; border: 1.5px dashed var(--border);
+  display: flex; align-items: center; justify-content: center; color: var(--text-2);
+  transition: border-color .15s var(--ease), color .15s var(--ease);
+}
+.part-photo-cell:hover .part-photo-add { border-color: var(--navy); color: var(--navy); }
 .quote-totals { background: var(--paper); border-radius: 8px; padding: 12px 14px; margin-top: 12px; }
 
 /* ---- Duration (day/hour/minute) stepper ---- */

@@ -13,6 +13,7 @@ export * from './rules/jobNumber.js';
 export * from './rules/queueNo.js';
 export * from './rules/pricing.js';
 export * from './rules/board.js';
+export * from './rules/lookup.js';
 export * from './rules/search.js';
 export * from './rules/jobListFilters.js';
 export * from './rules/lineSummary.js';

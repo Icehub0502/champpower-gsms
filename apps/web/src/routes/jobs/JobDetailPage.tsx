@@ -33,11 +33,12 @@ import {
   type VehicleModel,
 } from '@champpower/domain';
 import { db } from '../../lib/firebase/client';
-import { syncBoardEntry } from '../../lib/firebase/board';
+import { syncBoardEntry, syncPublicRecords } from '../../lib/firebase/board';
 import { useCollection } from '../../hooks/useCollection';
 import { useDocument } from '../../hooks/useDocument';
 import { StatusLabel, StatusTrack } from '../../components/job/StatusTrack';
 import { PlateBadge } from '../../components/ui/PlateBadge';
+import { Icon } from '../../components/ui/Icon';
 import { SignaturePad } from '../../components/job/SignaturePad';
 import { compressImage } from '../../lib/compressImage';
 
@@ -114,7 +115,7 @@ export function JobDetailPage() {
       const alignBay = status === 'aligning' ? nextAlignBay(activeJobs, job.id) : null;
       const bayExtra = alignBay ? { bay: alignBay } : {};
       await updateDoc(jobRef, { status, statusHistory, ...bayExtra, ...extra });
-      await syncBoardEntry({ ...job, status, statusHistory, ...bayExtra, ...extra }, vehicle);
+      await syncPublicRecords({ ...job, status, statusHistory, ...bayExtra, ...extra }, vehicle, customer);
     } finally {
       setBusy(false);
     }
@@ -161,7 +162,7 @@ export function JobDetailPage() {
         await updateDoc(doc(db, 'jobs', occupant.id), { bay: '' });
       }
       await updateDoc(jobRef, { bay });
-      await syncBoardEntry({ ...job, bay }, vehicle);
+      await syncPublicRecords({ ...job, bay }, vehicle, customer);
     } finally {
       setBusy(false);
     }
@@ -181,6 +182,9 @@ export function JobDetailPage() {
   async function savePartsNeeded(next: PartNeeded[]) {
     if (!job) return;
     await updateDoc(jobRef, { partsNeeded: next });
+    // The parts list (and any per-part photo) is exactly what the customer's public
+    // "find my car" page shows, so every edit here needs to reach /lookup too.
+    await syncPublicRecords({ ...job, partsNeeded: next }, vehicle, customer);
   }
 
   function togglePartFromModel(mp: VehicleModel['parts'][number]) {
@@ -245,6 +249,14 @@ export function JobDetailPage() {
     savePartsNeeded(job.partsNeeded.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }
 
+  // Smaller/lower-quality than the car photo (480px/0.5 vs 640px/0.62) since a job can
+  // carry several of these inline on one document, and Firestore caps a doc at 1MiB.
+  async function onPartPhotoPicked(id: string, file: File | undefined) {
+    if (!file) return;
+    const dataUrl = await compressImage(file, 480, 0.5);
+    updatePartField(id, { photo: dataUrl });
+  }
+
   function removePart(id: string) {
     if (!job) return;
     savePartsNeeded(job.partsNeeded.filter((p) => p.id !== id));
@@ -264,6 +276,7 @@ export function JobDetailPage() {
     try {
       const dataUrl = await compressImage(file);
       await updateDoc(jobRef, { thumb: dataUrl, photoCount: (job.photoCount || 0) + 1 });
+      await syncPublicRecords({ ...job, thumb: dataUrl }, vehicle, customer);
     } finally {
       setUploadingPhoto(false);
     }
@@ -474,6 +487,7 @@ export function JobDetailPage() {
             <table className="parts-table">
               <thead>
                 <tr>
+                  <th>รูป</th>
                   <th>รายการ</th>
                   <th>จำนวน</th>
                   <th>แบรนด์</th>
@@ -488,6 +502,25 @@ export function JobDetailPage() {
                   const price = parseFloat(p.price || '0') || 0;
                   return (
                     <tr key={p.id}>
+                      <td>
+                        <label className="part-photo-cell no-print">
+                          {p.photo ? (
+                            <img className="part-photo-thumb" src={p.photo} alt={p.name} />
+                          ) : (
+                            <span className="part-photo-add" title="ถ่ายรูปอะไหล่">
+                              <Icon name="camera" size={16} />
+                            </span>
+                          )}
+                          <input
+                            type="file"
+                            accept="image/*"
+                            capture="environment"
+                            style={{ display: 'none' }}
+                            onChange={(e) => onPartPhotoPicked(p.id, e.target.files?.[0])}
+                          />
+                        </label>
+                        {p.photo && <img className="part-photo-thumb print-only" src={p.photo} alt={p.name} />}
+                      </td>
                       <td>{p.name}</td>
                       <td>
                         <input

@@ -31,6 +31,16 @@ service cloud.firestore {
       allow write: if isSignedIn();
     }
 
+    // ---- lookup/{plateKey} — public, read-only "find my car" page reached via QR ----
+    // Same shape of rule as board: read is public by design (that's the point — a
+    // customer scans a QR code and types their own plate, no login), write is staff-
+    // only, and the only thing allowed to shape the document is lookupPayloadFor() in
+    // @champpower/domain, which deliberately excludes phone/price/notes/signatures.
+    match /lookup/{plateKey} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
     // ---- 1. jobs — the main record ----
     match /jobs/{jobId} {
       allow read: if isSignedIn();

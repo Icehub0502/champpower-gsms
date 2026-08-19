@@ -10,14 +10,17 @@ import { ModelsPage } from './routes/catalog/ModelsPage';
 import { ModelDetailPage } from './routes/catalog/ModelDetailPage';
 import { MasterPartsPage } from './routes/catalog/MasterPartsPage';
 import { BoardPage } from './routes/board/BoardPage';
+import { LookupPage } from './routes/lookup/LookupPage';
 import { AppShell } from './components/AppShell';
 
-// /board is public (the waiting-room display) and must never require login — it's
-// matched before the authed catch-all below, so it never touches useAuth at all.
+// /board (waiting-room display) and /lookup (customer "find my car" page, reached via
+// QR code) are both public and must never require login — matched before the authed
+// catch-all below, so neither ever touches useAuth at all.
 export function App() {
   return (
     <Routes>
       <Route path="/board" element={<BoardPage />} />
+      <Route path="/lookup" element={<LookupPage />} />
       <Route path="/*" element={<AuthedApp />} />
     </Routes>
   );

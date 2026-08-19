@@ -7,6 +7,7 @@ import {
   jobSearchBlob,
   matchesSearch,
   nextAlignBay,
+  normalizePlateKey,
   STATUS_FLOW,
   todayKey,
   type Customer,
@@ -16,7 +17,7 @@ import {
   type Vehicle,
 } from '@champpower/domain';
 import { db } from '../../lib/firebase/client';
-import { syncBoardEntry } from '../../lib/firebase/board';
+import { syncPublicRecords } from '../../lib/firebase/board';
 import { useCollection } from '../../hooks/useCollection';
 import { useDocument } from '../../hooks/useDocument';
 import { JobCard } from '../../components/job/JobCard';
@@ -86,7 +87,11 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     const alignBay = status === 'aligning' ? nextAlignBay(activeJobs, jobId) : null;
     const bayExtra = alignBay ? { bay: alignBay } : {};
     await updateDoc(doc(db, 'jobs', jobId), { status, statusHistory, ...bayExtra });
-    await syncBoardEntry({ ...job, status, statusHistory, ...bayExtra }, vehicleById.get(job.vehicleId));
+    await syncPublicRecords(
+      { ...job, status, statusHistory, ...bayExtra },
+      vehicleById.get(job.vehicleId),
+      customerById.get(job.customerId),
+    );
   }
 
   // "นัดวันมาทำ" always carries the appointment date — setting the status without one
@@ -97,7 +102,11 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     const status: StatusKey = 'scheduled';
     const statusHistory = [...job.statusHistory, { status, changedAt: nowIso() }];
     await updateDoc(doc(db, 'jobs', jobId), { status, statusHistory, appointmentDate });
-    await syncBoardEntry({ ...job, status, statusHistory, appointmentDate }, vehicleById.get(job.vehicleId));
+    await syncPublicRecords(
+      { ...job, status, statusHistory, appointmentDate },
+      vehicleById.get(job.vehicleId),
+      customerById.get(job.customerId),
+    );
   }
 
   async function assignBay(jobId: string, bay: string) {
@@ -108,7 +117,7 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
       await updateDoc(doc(db, 'jobs', occupant.id), { bay: '' });
     }
     await updateDoc(doc(db, 'jobs', jobId), { bay });
-    await syncBoardEntry({ ...job, bay }, vehicleById.get(job.vehicleId));
+    await syncPublicRecords({ ...job, bay }, vehicleById.get(job.vehicleId), customerById.get(job.customerId));
   }
 
   async function assignTechnician(jobId: string, name: string) {
@@ -138,11 +147,20 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
       updateDoc(doc(db, 'vehicles', vehicleId), vehiclePatch),
       updateDoc(doc(db, 'customers', customerId), customerPatch),
     ]);
-    // The board shows plate/brand/model straight from the vehicle doc, so it needs
-    // a fresh sync for every job that vehicle is currently checked in under today.
-    const updatedVehicle = { ...vehicleById.get(vehicleId), id: vehicleId, ...vehiclePatch } as Vehicle;
+    // Board and lookup both read plate/brand/model/customer straight off these docs,
+    // so every job currently checked in under this vehicle needs a fresh sync — and
+    // if the plate itself changed, the old plate's /lookup doc is now stale and must
+    // go, or a customer searching the old plate would find someone else's car.
+    const oldVehicle = vehicleById.get(vehicleId);
+    const updatedVehicle = { ...oldVehicle, id: vehicleId, ...vehiclePatch } as Vehicle;
+    const updatedCustomer = { ...customerById.get(customerId), id: customerId, ...customerPatch } as Customer;
     const affectedJobs = activeJobs.filter((j) => j.vehicleId === vehicleId);
-    await Promise.all(affectedJobs.map((j) => syncBoardEntry(j, updatedVehicle)));
+    const oldPlateKey = normalizePlateKey(oldVehicle?.plate || '');
+    const newPlateKey = normalizePlateKey(updatedVehicle.plate || '');
+    await Promise.all([
+      ...affectedJobs.map((j) => syncPublicRecords(j, updatedVehicle, updatedCustomer)),
+      oldPlateKey && oldPlateKey !== newPlateKey ? deleteDoc(doc(db, 'lookup', oldPlateKey)) : Promise.resolve(),
+    ]);
   }
 
   async function deleteJob(jobId: string) {
