@@ -81,6 +81,17 @@ export function JobDetailPage() {
     );
   }, [models.rows, vehicle]);
 
+  const partsByCategory = useMemo(() => {
+    if (!matchedModel) return [] as { category: string; items: VehicleModel['parts'] }[];
+    const groups = new Map<string, VehicleModel['parts']>();
+    for (const p of matchedModel.parts) {
+      const cat = p.category || 'ทั่วไป';
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat)!.push(p);
+    }
+    return Array.from(groups.entries()).map(([category, items]) => ({ category, items }));
+  }, [matchedModel]);
+
   if (jobs.loading) return <div className="page-loading">กำลังโหลด...</div>;
   if (!job) return <div className="empty-state">ไม่พบงานนี้</div>;
 
@@ -263,16 +274,6 @@ export function JobDetailPage() {
   const grandTotal = jobGrandTotal(job);
   const lineSummaryText = buildLineSummaryText(job, vehicle, customer);
   const usedPartNames = new Set(job.partsNeeded.map((p) => p.name));
-  const partsByCategory = useMemo(() => {
-    if (!matchedModel) return [] as { category: string; items: VehicleModel['parts'] }[];
-    const groups = new Map<string, VehicleModel['parts']>();
-    for (const p of matchedModel.parts) {
-      const cat = p.category || 'ทั่วไป';
-      if (!groups.has(cat)) groups.set(cat, []);
-      groups.get(cat)!.push(p);
-    }
-    return Array.from(groups.entries()).map(([category, items]) => ({ category, items }));
-  }, [matchedModel]);
 
   return (
     <div className="page">
