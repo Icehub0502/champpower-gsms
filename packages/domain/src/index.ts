@@ -14,6 +14,7 @@ export * from './rules/pricing.js';
 export * from './rules/board.js';
 export * from './rules/search.js';
 export * from './rules/jobListFilters.js';
+export * from './rules/lineSummary.js';
 
 export * from './stats/finance.js';
 

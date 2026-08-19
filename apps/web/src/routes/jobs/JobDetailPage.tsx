@@ -2,27 +2,32 @@ import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { doc, setDoc, updateDoc } from 'firebase/firestore';
 import {
+  buildLineSummaryText,
   DECISION_KEYS,
-  EST_UNITS,
-  WARRANTY_OPTIONS,
-  WORK_BAYS,
   estMinutes,
-  estUnitDef,
   etaState,
   fmtDT,
+  fmtMoney,
   isDecisionPoint,
+  jobDiscountAmount,
+  jobGrandTotal,
   jobInBay,
+  jobPartsTotal,
   nextStatusOf,
   prevStatusOf,
   repairCycle,
   statusOf,
   todayKey,
+  WARRANTY_OPTIONS,
   warrantyOptionLabel,
   warrantyStatus,
+  WORK_BAYS,
   type Customer,
   type Job,
+  type PartNeeded,
   type ShopConfig,
   type Vehicle,
+  type VehicleModel,
 } from '@champpower/domain';
 import { db } from '../../lib/firebase/client';
 import { syncBoardEntry } from '../../lib/firebase/board';
@@ -30,9 +35,16 @@ import { useCollection } from '../../hooks/useCollection';
 import { useDocument } from '../../hooks/useDocument';
 import { StatusLabel, StatusTrack } from '../../components/job/StatusTrack';
 import { PlateBadge } from '../../components/ui/PlateBadge';
+import { SignaturePad } from '../../components/job/SignaturePad';
+import { compressImage } from '../../lib/compressImage';
 
 function newId() {
   return crypto.randomUUID();
+}
+
+function splitMins(total: number) {
+  const t = Math.max(0, Math.round(total || 0));
+  return { d: Math.floor(t / 1440), h: Math.floor((t % 1440) / 60), m: t % 60 };
 }
 
 export function JobDetailPage() {
@@ -41,6 +53,7 @@ export function JobDetailPage() {
   const jobs = useCollection<Job>('jobs');
   const vehicles = useCollection<Vehicle>('vehicles');
   const customers = useCollection<Customer>('customers');
+  const models = useCollection<VehicleModel>('models');
   const config = useDocument<ShopConfig>('config', 'main');
   const technicians = config.data?.technicians || [];
 
@@ -49,11 +62,24 @@ export function JobDetailPage() {
   const [showTechInput, setShowTechInput] = useState(false);
   const [warrantyDays, setWarrantyDays] = useState<number>(0);
   const [busy, setBusy] = useState(false);
+  const [customPart, setCustomPart] = useState({ name: '', qty: '1', unit: 'ชิ้น', brand: '', price: '' });
+  const [copyStatus, setCopyStatus] = useState('');
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   const job = jobs.rows.find((j) => j.id === jobId);
   const vehicle = job ? vehicles.rows.find((v) => v.id === job.vehicleId) : undefined;
   const customer = job ? customers.rows.find((c) => c.id === job.customerId) : undefined;
   const activeJobs = useMemo(() => jobs.rows.filter((j) => !j.deletedAt), [jobs.rows]);
+
+  const matchedModel = useMemo(() => {
+    if (!vehicle) return undefined;
+    const brand = (vehicle.brand || '').trim().toUpperCase();
+    const name = (vehicle.model || '').trim().toUpperCase();
+    if (!brand && !name) return undefined;
+    return models.rows.find(
+      (m) => m.brand.trim().toUpperCase() === brand && m.name.trim().toUpperCase() === name,
+    );
+  }, [models.rows, vehicle]);
 
   if (jobs.loading) return <div className="page-loading">กำลังโหลด...</div>;
   if (!job) return <div className="empty-state">ไม่พบงานนี้</div>;
@@ -120,14 +146,109 @@ export function JobDetailPage() {
     }
   }
 
-  async function setEst(value: number, unit: Job['estUnit']) {
+  async function setEstMinutesTotal(totalMins: number) {
     if (!job) return;
-    await updateDoc(jobRef, { estValue: value, estUnit: unit });
-    await syncBoardEntry({ ...job, estValue: value, estUnit: unit }, vehicle);
+    const value = Math.max(0, Math.round(totalMins));
+    await updateDoc(jobRef, { estValue: value, estUnit: 'minute' });
+    await syncBoardEntry({ ...job, estValue: value, estUnit: 'minute' }, vehicle);
   }
 
   async function saveWarranty() {
     await updateDoc(jobRef, { warrantyDays });
+  }
+
+  async function savePartsNeeded(next: PartNeeded[]) {
+    if (!job) return;
+    await updateDoc(jobRef, { partsNeeded: next });
+  }
+
+  function togglePartFromModel(mp: VehicleModel['parts'][number]) {
+    if (!job) return;
+    const existing = job.partsNeeded.find((p) => p.name === mp.partName);
+    if (existing) {
+      savePartsNeeded(job.partsNeeded.filter((p) => p.id !== existing.id));
+      return;
+    }
+    const firstBrand = mp.brands?.[0];
+    savePartsNeeded([
+      ...job.partsNeeded,
+      {
+        id: newId(),
+        name: mp.partName,
+        qty: mp.qty || '1',
+        unit: mp.unit || 'ชิ้น',
+        brand: firstBrand?.name || '',
+        price: firstBrand?.price || '',
+      },
+    ]);
+  }
+
+  function addAllFromModel() {
+    if (!job || !matchedModel) return;
+    const usedNames = new Set(job.partsNeeded.map((p) => p.name));
+    const additions: PartNeeded[] = matchedModel.parts
+      .filter((mp) => !usedNames.has(mp.partName))
+      .map((mp) => ({
+        id: newId(),
+        name: mp.partName,
+        qty: mp.qty || '1',
+        unit: mp.unit || 'ชิ้น',
+        brand: mp.brands?.[0]?.name || '',
+        price: mp.brands?.[0]?.price || '',
+      }));
+    if (additions.length) savePartsNeeded([...job.partsNeeded, ...additions]);
+  }
+
+  function addCustomPart() {
+    if (!job) return;
+    const name = customPart.name.trim();
+    if (!name) return;
+    savePartsNeeded([
+      ...job.partsNeeded,
+      { id: newId(), name, qty: customPart.qty.trim(), unit: customPart.unit.trim(), brand: customPart.brand.trim(), price: customPart.price.trim() },
+    ]);
+    setCustomPart({ name: '', qty: '1', unit: 'ชิ้น', brand: '', price: '' });
+  }
+
+  function updatePartField(id: string, patch: Partial<PartNeeded>) {
+    if (!job) return;
+    savePartsNeeded(job.partsNeeded.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  }
+
+  function removePart(id: string) {
+    if (!job) return;
+    savePartsNeeded(job.partsNeeded.filter((p) => p.id !== id));
+  }
+
+  async function saveDiscount(patch: { discountType?: Job['discountType']; discountValue?: number | string }) {
+    await updateDoc(jobRef, patch);
+  }
+
+  async function saveSignature(role: 'inspector' | 'quoter' | 'customer', dataUrl: string) {
+    await updateDoc(jobRef, { signatures: { ...(job?.signatures || {}), [role]: dataUrl } });
+  }
+
+  async function onPhotoPicked(file: File | undefined) {
+    if (!file || !job) return;
+    setUploadingPhoto(true);
+    try {
+      const dataUrl = await compressImage(file);
+      await updateDoc(jobRef, { thumb: dataUrl, photoCount: (job.photoCount || 0) + 1 });
+    } finally {
+      setUploadingPhoto(false);
+    }
+  }
+
+  async function copyLineSummary() {
+    if (!job) return;
+    const text = buildLineSummaryText(job, vehicle, customer);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyStatus('คัดลอกข้อความแล้ว');
+    } catch {
+      setCopyStatus('คัดลอกไม่สำเร็จ — เลือกข้อความแล้วคัดลอกเอง');
+    }
+    setTimeout(() => setCopyStatus(''), 2500);
   }
 
   const next = nextStatusOf(job);
@@ -136,6 +257,22 @@ export function JobDetailPage() {
   const cycle = repairCycle(job);
   const eta = etaState(estMinutes(job), cycle.start, cycle.end);
   const warranty = warrantyStatus(job);
+  const dhm = splitMins(estMinutes(job));
+  const partsSubtotal = jobPartsTotal(job);
+  const discountAmt = jobDiscountAmount(job);
+  const grandTotal = jobGrandTotal(job);
+  const lineSummaryText = buildLineSummaryText(job, vehicle, customer);
+  const usedPartNames = new Set(job.partsNeeded.map((p) => p.name));
+  const partsByCategory = useMemo(() => {
+    if (!matchedModel) return [] as { category: string; items: VehicleModel['parts'] }[];
+    const groups = new Map<string, VehicleModel['parts']>();
+    for (const p of matchedModel.parts) {
+      const cat = p.category || 'ทั่วไป';
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat)!.push(p);
+    }
+    return Array.from(groups.entries()).map(([category, items]) => ({ category, items }));
+  }, [matchedModel]);
 
   return (
     <div className="page">
@@ -156,7 +293,13 @@ export function JobDetailPage() {
         <h2>{vehicle ? `${vehicle.brand} ${vehicle.model}` : 'ไม่ทราบรุ่นรถ'}</h2>
         <p className="page-sub">
           {job.jobNumber} {customer?.name && `· ${customer.name}`} {customer?.phone && `· ${customer.phone}`}
+          {job.bay && ` · จอดที่ ${job.bay}`}
         </p>
+        {vehicle && (
+          <p className="page-sub" style={{ marginTop: -14 }}>
+            {[vehicle.year, vehicle.color, vehicle.mileage ? `ไมล์ ${vehicle.mileage} กม.` : ''].filter(Boolean).join(' · ')}
+          </p>
+        )}
 
         <StatusTrack status={job.status} />
 
@@ -270,25 +413,198 @@ export function JobDetailPage() {
       </div>
 
       <div className="card">
-        <h3>เวลาที่ใช้ซ่อม (ประมาณการ)</h3>
+        <h3>รูปภาพ</h3>
         <div className="row-flex no-print">
+          <label className="btn secondary small photo-input-btn">
+            ถ่ายรูปรถ
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{ display: 'none' }}
+              onChange={(e) => onPhotoPicked(e.target.files?.[0])}
+            />
+          </label>
+          <label className="btn secondary small photo-input-btn">
+            อัพโหลดรูปภาพ
+            <input
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={(e) => onPhotoPicked(e.target.files?.[0])}
+            />
+          </label>
+          {uploadingPhoto && <span className="page-sub">กำลังบันทึกรูป...</span>}
+        </div>
+        {job.thumb && <img className="job-photo-preview" src={job.thumb} alt="รูปรถ" />}
+      </div>
+
+      <div className="card">
+        <h3>รายการอะไหล่ / เสนอราคา ({job.partsNeeded.length})</h3>
+        <p className="page-sub" style={{ marginTop: -8 }}>
+          เพิ่มรายการหลังช่างตรวจเช็คเสร็จ แล้วกด &quot;พิมพ์ใบเสนอราคา&quot; ด้านล่างเพื่อเสนอลูกค้า
+        </p>
+
+        {job.partsNeeded.length === 0 ? (
+          <div className="empty-state" style={{ padding: 18 }}>
+            ยังไม่มีรายการอะไหล่ — เลือกจากรายการด้านล่าง หรือกด &quot;+ เพิ่มรายการเอง&quot;
+          </div>
+        ) : (
+          <div className="table-wrap">
+            <table className="parts-table">
+              <thead>
+                <tr>
+                  <th>รายการ</th>
+                  <th>จำนวน</th>
+                  <th>แบรนด์</th>
+                  <th>ราคา/หน่วย</th>
+                  <th className="center">รวม</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {job.partsNeeded.map((p) => {
+                  const qty = parseFloat(p.qty || '1') || 1;
+                  const price = parseFloat(p.price || '0') || 0;
+                  return (
+                    <tr key={p.id}>
+                      <td>{p.name}</td>
+                      <td>
+                        <input
+                          className="model-part-qty"
+                          defaultValue={p.qty}
+                          onBlur={(e) => updatePartField(p.id, { qty: e.target.value })}
+                          style={{ width: 60 }}
+                        />
+                        {p.unit ? ` ${p.unit}` : ''}
+                      </td>
+                      <td>
+                        <input
+                          defaultValue={p.brand}
+                          onBlur={(e) => updatePartField(p.id, { brand: e.target.value })}
+                          style={{ width: 90 }}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          defaultValue={p.price}
+                          onBlur={(e) => updatePartField(p.id, { price: e.target.value })}
+                          style={{ width: 90 }}
+                        />
+                      </td>
+                      <td className="center">{price ? fmtMoney(price * qty) : '-'}</td>
+                      <td>
+                        <button className="chip-remove-btn" onClick={() => removePart(p.id)}>
+                          ลบ
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {partsSubtotal > 0 && (
+          <div className="quote-totals">
+            <div className="row-flex" style={{ alignItems: 'center' }}>
+              <span className="field-label">ส่วนลด</span>
+              <select
+                value={job.discountType || 'amount'}
+                onChange={(e) => saveDiscount({ discountType: e.target.value as Job['discountType'] })}
+                style={{ width: 100 }}
+              >
+                <option value="amount">บาท</option>
+                <option value="percent">%</option>
+              </select>
+              <input
+                type="number"
+                defaultValue={job.discountValue}
+                onBlur={(e) => saveDiscount({ discountValue: e.target.value })}
+                style={{ width: 90 }}
+              />
+            </div>
+            <p className="field-label" style={{ marginTop: 8 }}>รวม {fmtMoney(partsSubtotal)} บาท</p>
+            {discountAmt > 0 && <p className="field-label">ส่วนลด {fmtMoney(discountAmt)} บาท</p>}
+            <p className="fin-card-val" style={{ margin: '4px 0 0' }}>ยอดสุทธิ {fmtMoney(grandTotal)} บาท</p>
+          </div>
+        )}
+
+        <div className="row-flex no-print" style={{ marginTop: 12 }}>
+          <input
+            value={customPart.name}
+            onChange={(e) => setCustomPart((c) => ({ ...c, name: e.target.value }))}
+            placeholder="ชื่ออะไหล่"
+            style={{ flex: '1 1 140px' }}
+          />
+          <input
+            value={customPart.qty}
+            onChange={(e) => setCustomPart((c) => ({ ...c, qty: e.target.value }))}
+            placeholder="จำนวน"
+            style={{ width: 70 }}
+          />
+          <input
+            value={customPart.brand}
+            onChange={(e) => setCustomPart((c) => ({ ...c, brand: e.target.value }))}
+            placeholder="แบรนด์"
+            style={{ width: 100 }}
+          />
           <input
             type="number"
-            min={0}
-            defaultValue={Number(job.estValue) || ''}
-            onBlur={(e) => setEst(Number(e.target.value) || 0, job.estUnit || 'hour')}
+            value={customPart.price}
+            onChange={(e) => setCustomPart((c) => ({ ...c, price: e.target.value }))}
+            placeholder="ราคา"
             style={{ width: 90 }}
           />
-          <select
-            defaultValue={job.estUnit || 'hour'}
-            onChange={(e) => setEst(Number(job.estValue) || 0, e.target.value as Job['estUnit'])}
-          >
-            {EST_UNITS.map((u) => (
-              <option key={u.key} value={u.key}>
-                {u.label}
-              </option>
+          <button className="btn secondary small" onClick={addCustomPart}>
+            + เพิ่มรายการเอง
+          </button>
+          {matchedModel && (
+            <button className="btn secondary small" onClick={addAllFromModel}>
+              + เพิ่มทั้งหมดจากรุ่นรถ
+            </button>
+          )}
+          <button className="btn small" onClick={() => window.print()}>
+            พิมพ์ใบเสนอราคา
+          </button>
+        </div>
+
+        {matchedModel && partsByCategory.length > 0 && (
+          <div className="no-print" style={{ marginTop: 14 }}>
+            <p className="field-label">
+              เลือกจากรุ่นรถ — {matchedModel.brand} {matchedModel.name}
+              {matchedModel.yearRange ? ` '${matchedModel.yearRange}` : ''} (แตะเพื่อเพิ่ม/เอาออก)
+            </p>
+            {partsByCategory.map(({ category, items }) => (
+              <div key={category} style={{ marginTop: 8 }}>
+                <p className="field-label" style={{ fontWeight: 700 }}>{category}</p>
+                <div className="complaint-chips">
+                  {items.map((mp) => (
+                    <button
+                      key={mp.id}
+                      className={`chip ${usedPartNames.has(mp.partName) ? 'active' : ''}`}
+                      onClick={() => togglePartFromModel(mp)}
+                    >
+                      {mp.partName}
+                    </button>
+                  ))}
+                </div>
+              </div>
             ))}
-          </select>
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>เวลาที่ใช้ซ่อม (ประมาณการ)</h3>
+        <div className="dhm no-print">
+          <DhmBox label="วัน" value={dhm.d} onChange={(v) => setEstMinutesTotal(v * 1440 + dhm.h * 60 + dhm.m)} />
+          <span className="dhm-sep">:</span>
+          <DhmBox label="ชั่วโมง" value={dhm.h} onChange={(v) => setEstMinutesTotal(dhm.d * 1440 + v * 60 + dhm.m)} />
+          <span className="dhm-sep">:</span>
+          <DhmBox label="นาที" value={dhm.m} onChange={(v) => setEstMinutesTotal(dhm.d * 1440 + dhm.h * 60 + v)} />
         </div>
         {eta && (
           <p className="field-label" style={{ marginTop: 10 }}>
@@ -296,11 +612,6 @@ export function JobDetailPage() {
             {eta.sub ? ` — ${eta.sub}` : ''}
           </p>
         )}
-        {!eta && job.estValue ? (
-          <p className="field-label" style={{ marginTop: 10 }}>
-            ประมาณ {Number(job.estValue)} {estUnitDef(job.estUnit).label}
-          </p>
-        ) : null}
       </div>
 
       {job.status === 'delivered' && (
@@ -326,6 +637,25 @@ export function JobDetailPage() {
         </div>
       )}
 
+      <div className="card no-print">
+        <h3>ลายเซ็น</h3>
+        <div className="sig-grid">
+          <SignaturePad label="เจ้าหน้าที่" value={job.signatures?.inspector} onSave={(v) => saveSignature('inspector', v)} />
+          <SignaturePad label="ลูกค้า" value={job.signatures?.customer} onSave={(v) => saveSignature('customer', v)} />
+        </div>
+      </div>
+
+      <div className="card no-print">
+        <h3>สรุปข้อความลงกลุ่มไลน์</h3>
+        <pre className="line-summary-box">{lineSummaryText}</pre>
+        <div className="row-flex" style={{ marginTop: 10 }}>
+          <button className="btn small" onClick={copyLineSummary}>
+            คัดลอกข้อความ
+          </button>
+          {copyStatus && <span className="page-sub">{copyStatus}</span>}
+        </div>
+      </div>
+
       <div className="card">
         <h3>ประวัติสถานะ</h3>
         <div className="timeline">
@@ -340,6 +670,28 @@ export function JobDetailPage() {
             ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+function DhmBox({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <div className="dhm-box">
+      <button type="button" className="dhm-btn" onClick={() => onChange(value + 1)}>
+        +
+      </button>
+      <input
+        className="dhm-n"
+        type="number"
+        min={0}
+        value={value}
+        onFocus={(e) => e.target.select()}
+        onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0))}
+      />
+      <button type="button" className="dhm-btn" disabled={value === 0} onClick={() => onChange(Math.max(0, value - 1))}>
+        −
+      </button>
+      <div className="dhm-u">{label}</div>
     </div>
   );
 }
