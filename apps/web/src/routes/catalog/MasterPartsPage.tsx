@@ -54,12 +54,12 @@ export function MasterPartsPage() {
               </option>
             ))}
           </select>
-          <button onClick={addPart} disabled={busy}>
+          <button className="btn" onClick={addPart} disabled={busy}>
             เพิ่ม
           </button>
         </div>
         {parts.rows.length === 0 && (
-          <button className="secondary-btn" style={{ marginTop: 10 }} onClick={seedDefaults} disabled={busy}>
+          <button className="btn secondary" style={{ marginTop: 10 }} onClick={seedDefaults} disabled={busy}>
             โหลดรายการอะไหล่เริ่มต้น ({DEFAULT_MASTER_PARTS.length} รายการ)
           </button>
         )}

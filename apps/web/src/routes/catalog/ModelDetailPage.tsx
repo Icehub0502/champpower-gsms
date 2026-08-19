@@ -118,7 +118,7 @@ export function ModelDetailPage() {
                   </option>
                 ))}
               </select>
-              <button className="chip-remove-btn" disabled={busy} onClick={() => removePart(p.id)}>
+              <button className="btn danger small" disabled={busy} onClick={() => removePart(p.id)}>
                 ลบ
               </button>
             </div>
@@ -151,7 +151,7 @@ export function ModelDetailPage() {
                   }
                   style={{ maxWidth: 100 }}
                 />
-                <button onClick={() => addBrand(p.id)} disabled={busy}>
+                <button className="btn small" onClick={() => addBrand(p.id)} disabled={busy}>
                   + แบรนด์
                 </button>
               </div>
@@ -177,7 +177,7 @@ export function ModelDetailPage() {
         </div>
         <div className="row-flex" style={{ marginTop: 10 }}>
           <input value={customName} onChange={(e) => setCustomName(e.target.value)} placeholder="อะไหล่อื่นๆ..." />
-          <button onClick={addCustomPart} disabled={busy}>
+          <button className="btn" onClick={addCustomPart} disabled={busy}>
             เพิ่ม
           </button>
         </div>

@@ -45,7 +45,7 @@ export function AppShell({ user, role, online, children }: AppShellProps) {
           <span>
             {user.email} {role === 'admin' ? '(admin)' : ''}
           </span>
-          <button onClick={() => signOut(auth)}>ออกจากระบบ</button>
+          <button className="btn small" onClick={() => signOut(auth)}>ออกจากระบบ</button>
         </div>
       </header>
       <main className="app-main">{children}</main>

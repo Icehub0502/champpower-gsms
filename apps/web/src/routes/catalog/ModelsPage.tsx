@@ -76,12 +76,12 @@ export function ModelsPage() {
             ))}
           </datalist>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อรุ่น" />
-          <button onClick={addModel} disabled={busy}>
+          <button className="btn" onClick={addModel} disabled={busy}>
             เพิ่ม
           </button>
         </div>
         {missingFromCatalog.length > 0 && (
-          <button className="secondary-btn" style={{ marginTop: 10 }} onClick={importCatalog} disabled={busy}>
+          <button className="btn secondary" style={{ marginTop: 10 }} onClick={importCatalog} disabled={busy}>
             นำเข้ารุ่นจากแคตตาล็อกร้าน ({missingFromCatalog.length})
           </button>
         )}

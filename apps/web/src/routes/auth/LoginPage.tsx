@@ -67,7 +67,7 @@ export function LoginPage() {
             placeholder="รหัสผ่าน"
           />
         </label>
-        <button type="submit" className="submit-btn" disabled={busy}>
+        <button type="submit" className="btn block" disabled={busy}>
           {busy ? 'กำลังตรวจสอบ...' : 'เข้าสู่ระบบ'}
         </button>
         <div className="login-note">

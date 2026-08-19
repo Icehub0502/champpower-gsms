@@ -295,7 +295,7 @@ export function JobDetailPage() {
         <button className="back-link" onClick={() => navigate('/jobs')}>
           ‹ กลับไปรายการงาน
         </button>
-        <button className="secondary-btn" onClick={() => window.print()}>
+        <button className="btn secondary" onClick={() => window.print()}>
           พิมพ์ใบงาน
         </button>
       </div>
@@ -339,7 +339,7 @@ export function JobDetailPage() {
               {DECISION_KEYS.map((key) => (
                 <button
                   key={key}
-                  className={`decision-btn st-${key}`}
+                  className={`btn decide st-${key}`}
                   disabled={busy}
                   onClick={() => (key === 'scheduled' ? setSchedulingDate(todayKey()) : pushStatus(key))}
                 >
@@ -350,7 +350,7 @@ export function JobDetailPage() {
             {schedulingDate !== null && (
               <div className="row-flex" style={{ marginTop: 10 }}>
                 <input type="date" value={schedulingDate} onChange={(e) => setSchedulingDate(e.target.value)} />
-                <button onClick={confirmSchedule} disabled={busy}>
+                <button className="btn" onClick={confirmSchedule} disabled={busy}>
                   ยืนยันวันนัด
                 </button>
               </div>
@@ -359,12 +359,12 @@ export function JobDetailPage() {
         ) : (
           <div className="row-flex">
             {prev && (
-              <button className="secondary-btn" disabled={busy} onClick={() => pushStatus(prev.key)}>
+              <button className="btn back-step" disabled={busy} onClick={() => pushStatus(prev.key)}>
                 ‹ ย้อนกลับ ({prev.label})
               </button>
             )}
             {next && (
-              <button className="next-btn" disabled={busy} onClick={() => pushStatus(next.key)}>
+              <button className="btn hazard" disabled={busy} onClick={() => pushStatus(next.key)}>
                 ถัดไป: {next.label} ›
               </button>
             )}
@@ -396,7 +396,7 @@ export function JobDetailPage() {
         ) : (
           <div className="row-flex no-print">
             <input value={techInput} onChange={(e) => setTechInput(e.target.value)} placeholder="ชื่อช่าง" />
-            <button disabled={busy} onClick={() => assignTechnician(techInput)}>
+            <button className="btn" disabled={busy} onClick={() => assignTechnician(techInput)}>
               บันทึก
             </button>
           </div>
@@ -510,7 +510,7 @@ export function JobDetailPage() {
                       </td>
                       <td className="center">{price ? fmtMoney(price * qty) : '-'}</td>
                       <td>
-                        <button className="chip-remove-btn" onClick={() => removePart(p.id)}>
+                        <button className="btn danger small" onClick={() => removePart(p.id)}>
                           ลบ
                         </button>
                       </td>
@@ -654,7 +654,7 @@ export function JobDetailPage() {
                 </option>
               ))}
             </select>
-            <button onClick={saveWarranty} disabled={busy}>
+            <button className="btn" onClick={saveWarranty} disabled={busy}>
               บันทึก
             </button>
           </div>

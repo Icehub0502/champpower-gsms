@@ -263,7 +263,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
             onChange={(e) => setCustomComplaint(e.target.value)}
             placeholder="อาการอื่นๆ..."
           />
-          <button type="button" onClick={addCustomComplaint}>
+          <button type="button" className="btn" onClick={addCustomComplaint}>
             เพิ่ม
           </button>
         </div>
@@ -271,7 +271,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
 
       {error && <div className="login-error">{error}</div>}
 
-      <button className="submit-btn" disabled={submitting} onClick={handleSubmit}>
+      <button className="btn block" disabled={submitting} onClick={handleSubmit}>
         {submitting ? 'กำลังบันทึก...' : 'บันทึกรับรถ'}
       </button>
     </div>
