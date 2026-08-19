@@ -44,6 +44,7 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
   const [cols, setCols] = useState(2);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [backfilling, setBackfilling] = useState(false);
 
   const jobs = useCollection<Job>('jobs');
   const vehicles = useCollection<Vehicle>('vehicles');
@@ -163,6 +164,23 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     ]);
   }
 
+  // One-time catch-up for jobs that existed before the board/lookup sync path covered
+  // this write — without this, a car checked in before that ship date never gets a
+  // /lookup doc until something happens to touch it again (a status change, a parts
+  // edit...), so it just silently 404s on the customer's "find my car" page forever.
+  async function backfillPublicRecords() {
+    if (!window.confirm(`ซิงก์ข้อมูลสำหรับค้นหา (บอร์ด + ค้นหารถ) ของงานทั้งหมด ${activeJobs.length} รายการ?`)) return;
+    setBackfilling(true);
+    try {
+      await Promise.all(
+        activeJobs.map((j) => syncPublicRecords(j, vehicleById.get(j.vehicleId), customerById.get(j.customerId))),
+      );
+      window.alert('ซิงก์ข้อมูลสำเร็จ');
+    } finally {
+      setBackfilling(false);
+    }
+  }
+
   async function deleteJob(jobId: string) {
     if (!window.confirm('ลบรายการนี้ใช่หรือไม่?')) return;
     await deleteDoc(doc(db, 'jobs', jobId));
@@ -181,7 +199,12 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
 
   return (
     <div className="page">
-      <h1>รายการงาน</h1>
+      <div className="row-flex" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1 style={{ marginBottom: 0 }}>รายการงาน</h1>
+        <button className="btn secondary small" disabled={backfilling} onClick={backfillPublicRecords}>
+          {backfilling ? 'กำลังซิงก์...' : 'ซิงก์ข้อมูลค้นหา/บอร์ด'}
+        </button>
+      </div>
 
       <DayNavigator dayFilter={dayFilter} onChange={setDayFilter} />
 
