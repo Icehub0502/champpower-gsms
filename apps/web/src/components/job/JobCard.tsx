@@ -271,7 +271,6 @@ export function JobCard({
 }
 
 function StatusSegs({ job }: { job: Job }) {
-  const st = statusOf(job.status);
   let path: string[];
   if (job.status === 'scheduled' || job.status === 'rejected') {
     path = ['received', 'inspecting', 'quoted', job.status, 'carout'];
