@@ -8,6 +8,7 @@ import {
   etaState,
   fmtDT,
   fmtMoney,
+  groupByCategory,
   isDecisionPoint,
   jobDiscountAmount,
   jobGrandTotal,
@@ -24,6 +25,7 @@ import {
   WORK_BAYS,
   type Customer,
   type Job,
+  type MasterPart,
   type PartNeeded,
   type ShopConfig,
   type Vehicle,
@@ -54,6 +56,7 @@ export function JobDetailPage() {
   const vehicles = useCollection<Vehicle>('vehicles');
   const customers = useCollection<Customer>('customers');
   const models = useCollection<VehicleModel>('models');
+  const masterParts = useCollection<MasterPart>('masterParts');
   const config = useDocument<ShopConfig>('config', 'main');
   const technicians = config.data?.technicians || [];
 
@@ -62,7 +65,7 @@ export function JobDetailPage() {
   const [showTechInput, setShowTechInput] = useState(false);
   const [warrantyDays, setWarrantyDays] = useState<number>(0);
   const [busy, setBusy] = useState(false);
-  const [customPart, setCustomPart] = useState({ name: '', qty: '1', unit: 'ชิ้น', brand: '', price: '' });
+  const [quickPartName, setQuickPartName] = useState('');
   const [copyStatus, setCopyStatus] = useState('');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
@@ -91,6 +94,8 @@ export function JobDetailPage() {
     }
     return Array.from(groups.entries()).map(([category, items]) => ({ category, items }));
   }, [matchedModel]);
+
+  const masterByCategory = useMemo(() => groupByCategory(masterParts.rows), [masterParts.rows]);
 
   if (jobs.loading) return <div className="page-loading">กำลังโหลด...</div>;
   if (!job) return <div className="empty-state">ไม่พบงานนี้</div>;
@@ -210,15 +215,24 @@ export function JobDetailPage() {
     if (additions.length) savePartsNeeded([...job.partsNeeded, ...additions]);
   }
 
-  function addCustomPart() {
+  function toggleMasterPart(mp: MasterPart) {
     if (!job) return;
-    const name = customPart.name.trim();
+    const existing = job.partsNeeded.find((p) => p.name === mp.name);
+    if (existing) {
+      savePartsNeeded(job.partsNeeded.filter((p) => p.id !== existing.id));
+      return;
+    }
+    savePartsNeeded([...job.partsNeeded, { id: newId(), name: mp.name, qty: '1', unit: 'ชิ้น' }]);
+  }
+
+  function addQuickPart() {
+    if (!job) return;
+    const name = quickPartName.trim();
     if (!name) return;
-    savePartsNeeded([
-      ...job.partsNeeded,
-      { id: newId(), name, qty: customPart.qty.trim(), unit: customPart.unit.trim(), brand: customPart.brand.trim(), price: customPart.price.trim() },
-    ]);
-    setCustomPart({ name: '', qty: '1', unit: 'ชิ้น', brand: '', price: '' });
+    if (!job.partsNeeded.some((p) => p.name === name)) {
+      savePartsNeeded([...job.partsNeeded, { id: newId(), name, qty: '1', unit: 'ชิ้น' }]);
+    }
+    setQuickPartName('');
   }
 
   function updatePartField(id: string, patch: Partial<PartNeeded>) {
@@ -448,7 +462,7 @@ export function JobDetailPage() {
 
         {job.partsNeeded.length === 0 ? (
           <div className="empty-state" style={{ padding: 18 }}>
-            ยังไม่มีรายการอะไหล่ — เลือกจากรายการด้านล่าง หรือกด &quot;+ เพิ่มรายการเอง&quot;
+            ยังไม่มีรายการอะไหล่ — แตะเลือกจากรายการด้านล่าง
           </div>
         ) : (
           <div className="table-wrap">
@@ -534,34 +548,6 @@ export function JobDetailPage() {
         )}
 
         <div className="row-flex no-print" style={{ marginTop: 12 }}>
-          <input
-            value={customPart.name}
-            onChange={(e) => setCustomPart((c) => ({ ...c, name: e.target.value }))}
-            placeholder="ชื่ออะไหล่"
-            style={{ flex: '1 1 140px' }}
-          />
-          <input
-            value={customPart.qty}
-            onChange={(e) => setCustomPart((c) => ({ ...c, qty: e.target.value }))}
-            placeholder="จำนวน"
-            style={{ width: 70 }}
-          />
-          <input
-            value={customPart.brand}
-            onChange={(e) => setCustomPart((c) => ({ ...c, brand: e.target.value }))}
-            placeholder="แบรนด์"
-            style={{ width: 100 }}
-          />
-          <input
-            type="number"
-            value={customPart.price}
-            onChange={(e) => setCustomPart((c) => ({ ...c, price: e.target.value }))}
-            placeholder="ราคา"
-            style={{ width: 90 }}
-          />
-          <button className="btn secondary small" onClick={addCustomPart}>
-            + เพิ่มรายการเอง
-          </button>
           {matchedModel && (
             <button className="btn secondary small" onClick={addAllFromModel}>
               + เพิ่มทั้งหมดจากรุ่นรถ
@@ -570,6 +556,43 @@ export function JobDetailPage() {
           <button className="btn small" onClick={() => window.print()}>
             พิมพ์ใบเสนอราคา
           </button>
+        </div>
+
+        <div className="no-print" style={{ marginTop: 14 }}>
+          <p className="field-label">เลือกจากสินค้า (แตะเพื่อเพิ่ม/เอาออก)</p>
+          {masterByCategory.length === 0 ? (
+            <p className="page-sub">
+              ยังไม่มีรายการในหน้า &quot;สินค้า&quot; — ไปเพิ่มที่นั่นก่อน หรือใช้ช่องเพิ่มด่วนด้านล่าง
+            </p>
+          ) : (
+            masterByCategory.map((g) => (
+              <div key={g.category} style={{ marginTop: 8 }}>
+                <p className="field-label" style={{ fontWeight: 700 }}>{g.category}</p>
+                <div className="complaint-chips">
+                  {g.items.map((mp) => (
+                    <button
+                      key={mp.id}
+                      className={`chip ${usedPartNames.has(mp.name) ? 'active' : ''}`}
+                      onClick={() => toggleMasterPart(mp)}
+                    >
+                      {mp.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
+          <div className="row-flex" style={{ marginTop: 10 }}>
+            <input
+              value={quickPartName}
+              onChange={(e) => setQuickPartName(e.target.value)}
+              placeholder="พิมพ์อะไหล่ที่ไม่มีในรายการ แล้วกด + เพิ่ม"
+              style={{ flex: '1 1 180px' }}
+            />
+            <button className="btn secondary small" onClick={addQuickPart}>
+              + เพิ่มรายการ
+            </button>
+          </div>
         </div>
 
         {matchedModel && partsByCategory.length > 0 && (
