@@ -12,7 +12,7 @@ export interface LookupPart {
   qty?: string;
   unit?: string;
   brand?: string;
-  photo?: string;
+  photos?: string[];
 }
 
 /**
@@ -57,7 +57,7 @@ export function lookupPayloadFor(
       qty: p.qty,
       unit: p.unit,
       brand: p.brand,
-      photo: p.photo,
+      photos: p.photos,
     })),
     updatedAt: now,
   };

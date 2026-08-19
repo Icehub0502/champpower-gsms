@@ -249,12 +249,20 @@ export function JobDetailPage() {
     savePartsNeeded(job.partsNeeded.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }
 
-  // Smaller/lower-quality than the car photo (480px/0.5 vs 640px/0.62) since a job can
+  // Smaller/lower-quality than the car photo (480px/0.5 vs 640px/0.62) since a part can
   // carry several of these inline on one document, and Firestore caps a doc at 1MiB.
-  async function onPartPhotoPicked(id: string, file: File | undefined) {
-    if (!file) return;
-    const dataUrl = await compressImage(file, 480, 0.5);
-    updatePartField(id, { photo: dataUrl });
+  async function onPartPhotosPicked(id: string, files: FileList | null) {
+    if (!files || files.length === 0 || !job) return;
+    const compressed = await Promise.all(Array.from(files).map((f) => compressImage(f, 480, 0.5)));
+    const existing = job.partsNeeded.find((p) => p.id === id);
+    updatePartField(id, { photos: [...(existing?.photos || []), ...compressed] });
+  }
+
+  function removePartPhoto(id: string, index: number) {
+    if (!job) return;
+    const existing = job.partsNeeded.find((p) => p.id === id);
+    if (!existing) return;
+    updatePartField(id, { photos: (existing.photos || []).filter((_, i) => i !== index) });
   }
 
   function removePart(id: string) {
@@ -446,29 +454,29 @@ export function JobDetailPage() {
       </div>
 
       <div className="card">
-        <h3>รูปภาพ</h3>
-        <div className="row-flex no-print">
-          <label className="btn secondary small photo-input-btn">
-            ถ่ายรูปรถ
-            <input
-              type="file"
-              accept="image/*"
-              capture="environment"
-              style={{ display: 'none' }}
-              onChange={(e) => onPhotoPicked(e.target.files?.[0])}
-            />
-          </label>
-          <label className="btn secondary small photo-input-btn">
-            อัพโหลดรูปภาพ
-            <input
-              type="file"
-              accept="image/*"
-              style={{ display: 'none' }}
-              onChange={(e) => onPhotoPicked(e.target.files?.[0])}
-            />
-          </label>
-          {uploadingPhoto && <span className="page-sub">กำลังบันทึกรูป...</span>}
-        </div>
+        <h3>รูปรถ</h3>
+        <label className="photo-dropzone no-print">
+          {job.thumb ? (
+            <>
+              <img className="photo-dropzone-img" src={job.thumb} alt="รูปรถ" />
+              <span className="photo-dropzone-overlay">
+                <Icon name="camera" size={16} /> เปลี่ยนรูป
+              </span>
+            </>
+          ) : (
+            <span className="photo-dropzone-empty">
+              <Icon name="camera" size={28} />
+              แตะเพื่อถ่ายหรือแนบรูปรถ
+            </span>
+          )}
+          <input
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={(e) => onPhotoPicked(e.target.files?.[0])}
+          />
+        </label>
+        {uploadingPhoto && <span className="page-sub">กำลังบันทึกรูป...</span>}
         {job.thumb && <img className="job-photo-preview" src={job.thumb} alt="รูปรถ" />}
       </div>
 
@@ -503,23 +511,34 @@ export function JobDetailPage() {
                   return (
                     <tr key={p.id}>
                       <td>
-                        <label className="part-photo-cell no-print">
-                          {p.photo ? (
-                            <img className="part-photo-thumb" src={p.photo} alt={p.name} />
-                          ) : (
-                            <span className="part-photo-add" title="ถ่ายรูปอะไหล่">
-                              <Icon name="camera" size={16} />
-                            </span>
-                          )}
-                          <input
-                            type="file"
-                            accept="image/*"
-                            capture="environment"
-                            style={{ display: 'none' }}
-                            onChange={(e) => onPartPhotoPicked(p.id, e.target.files?.[0])}
-                          />
-                        </label>
-                        {p.photo && <img className="part-photo-thumb print-only" src={p.photo} alt={p.name} />}
+                        <div className="part-photos no-print">
+                          {(p.photos || []).map((photo, i) => (
+                            <div className="part-photo-item" key={i}>
+                              <img className="part-photo-thumb" src={photo} alt={p.name} />
+                              <button
+                                type="button"
+                                className="part-photo-remove"
+                                aria-label="ลบรูปนี้"
+                                onClick={() => removePartPhoto(p.id, i)}
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                          <label className="part-photo-add-btn" title="เพิ่มรูปอะไหล่">
+                            <Icon name="camera" size={16} />
+                            <input
+                              type="file"
+                              accept="image/*"
+                              multiple
+                              style={{ display: 'none' }}
+                              onChange={(e) => onPartPhotosPicked(p.id, e.target.files)}
+                            />
+                          </label>
+                        </div>
+                        {(p.photos || []).map((photo, i) => (
+                          <img key={i} className="part-photo-print" src={photo} alt={p.name} />
+                        ))}
                       </td>
                       <td>{p.name}</td>
                       <td>

@@ -720,6 +720,7 @@ button:focus-visible, a:focus-visible {
   display: flex; align-items: center; gap: 12px; padding: 10px; background: var(--paper);
   border-radius: 8px; border: 1px solid var(--border);
 }
+.lookup-part-photos { display: flex; flex-wrap: wrap; gap: 4px; flex-shrink: 0; }
 .lookup-part-row .part-photo-thumb { width: 52px; height: 52px; }
 .lookup-part-info { min-width: 0; }
 
@@ -805,15 +806,32 @@ button:focus-visible, a:focus-visible {
 .parts-table .center { text-align: center; }
 .model-part-qty { width: 60px; }
 
-/* ---- Per-part photo (the replaced part, shown to the customer on /lookup) ---- */
-.part-photo-cell { display: inline-flex; cursor: pointer; }
+/* ---- Per-part photos (the replaced part, shown to the customer on /lookup) ----
+   Multiple photos per part: a small gallery strip plus a dashed "add" tile, each
+   thumbnail individually removable. Unlike the single car photo, this has no natural
+   "the current one" to swap, so it's a gallery rather than a single dropzone. */
+.part-photos { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .part-photo-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); display: block; }
-.part-photo-add {
+.part-photo-item { position: relative; }
+.part-photo-remove {
+  position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; padding: 0;
+  border-radius: 50%; border: none; background: var(--red); color: #fff;
+  font-size: 11px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.part-photo-add-btn {
   width: 40px; height: 40px; border-radius: 6px; border: 1.5px dashed var(--border);
-  display: flex; align-items: center; justify-content: center; color: var(--text-2);
+  display: flex; align-items: center; justify-content: center; color: var(--text-2); cursor: pointer;
   transition: border-color .15s var(--ease), color .15s var(--ease);
 }
-.part-photo-cell:hover .part-photo-add { border-color: var(--navy); color: var(--navy); }
+.part-photo-add-btn:hover { border-color: var(--navy); color: var(--navy); }
+/* Print-only duplicate, kept as its own complete rule (own display value at every
+   breakpoint) rather than composed onto .part-photo-thumb — stacking two classes that
+   each set `display` would just race on stylesheet order instead of doing what either
+   class name says. */
+.part-photo-print { display: none; width: 34px; height: 34px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); margin-right: 3px; }
+@media print {
+  .part-photo-print { display: inline-block; }
+}
 .quote-totals { background: var(--paper); border-radius: 8px; padding: 12px 14px; margin-top: 12px; }
 
 /* ---- Duration (day/hour/minute) stepper ---- */
@@ -840,7 +858,37 @@ button:focus-visible, a:focus-visible {
 
 /* ---- Photos ---- */
 .photo-input-btn { cursor: pointer; }
-.job-photo-preview { width: 100%; max-width: 320px; border-radius: 10px; margin-top: 12px; display: block; border: 1px solid var(--border); }
+/* Screen shows the photo inside .photo-dropzone itself — this duplicate only exists
+   for the print stylesheet, which hides .photo-dropzone via .no-print. Named/scoped
+   like .print-only-bay above rather than composed with the generic .print-only class,
+   since stacking that with a same-specificity display rule here would race on source
+   order instead of doing what the class name says. */
+.job-photo-preview { display: none; width: 100%; max-width: 320px; border-radius: 10px; margin-top: 12px; border: 1px solid var(--border); }
+@media print {
+  .job-photo-preview { display: block; }
+}
+
+/* ---- Car photo upload dropzone ---- */
+.photo-dropzone {
+  display: flex; align-items: center; justify-content: center; position: relative;
+  border: 2px dashed var(--border); border-radius: var(--radius); cursor: pointer;
+  overflow: hidden; min-height: 160px; background: var(--paper);
+  transition: border-color .15s var(--ease), background-color .15s var(--ease);
+}
+.photo-dropzone:hover { border-color: var(--navy); background: var(--card-bg); }
+.photo-dropzone-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  color: var(--text-2); font-size: 13px; font-weight: 600; padding: 34px 20px; text-align: center;
+}
+.photo-dropzone-img { width: 100%; max-height: 280px; object-fit: cover; display: block; }
+.photo-dropzone-overlay {
+  position: absolute; bottom: 0; left: 0; right: 0; padding: 9px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  background: rgba(0, 0, 0, .55); color: #fff; font-size: 12.5px; font-weight: 600;
+  opacity: 0; transition: opacity .15s var(--ease);
+}
+.photo-dropzone:hover .photo-dropzone-overlay,
+.photo-dropzone:focus-within .photo-dropzone-overlay { opacity: 1; }
 
 /* ---- Modal (centered dialog, used by job-card pickers etc.) ---- */
 .modal-backdrop {

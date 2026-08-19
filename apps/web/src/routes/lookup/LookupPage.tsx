@@ -79,7 +79,13 @@ export function LookupPage() {
             <div className="lookup-parts">
               {entry.parts.map((p, i) => (
                 <div className="lookup-part-row" key={i}>
-                  {p.photo && <img className="part-photo-thumb" src={p.photo} alt={p.name} />}
+                  {p.photos && p.photos.length > 0 && (
+                    <div className="lookup-part-photos">
+                      {p.photos.map((photo, j) => (
+                        <img key={j} className="part-photo-thumb" src={photo} alt={p.name} />
+                      ))}
+                    </div>
+                  )}
                   <div className="lookup-part-info">
                     <div className="meta strong">{p.name}</div>
                     <div className="meta">
