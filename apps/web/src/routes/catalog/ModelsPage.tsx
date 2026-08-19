@@ -92,14 +92,12 @@ export function ModelsPage() {
       ) : filtered.length === 0 ? (
         <div className="empty-state">ยังไม่มีรุ่นรถในระบบ</div>
       ) : (
-        <div className="job-grid">
+        <div className="model-grid">
           {filtered.map((m) => (
-            <button key={m.id} className="job-card" onClick={() => navigate(`/models/${m.id}`)}>
-              <div className="job-card-model">{m.brand}</div>
-              <div style={{ fontSize: 15 }}>{m.name}</div>
-              <div className="job-card-meta">
-                <span>{(m.parts || []).length} อะไหล่</span>
-              </div>
+            <button key={m.id} className="model-card" onClick={() => navigate(`/models/${m.id}`)}>
+              <div className="model-card-brand">{m.brand}</div>
+              <div className="model-card-name">{m.name}</div>
+              <div className="model-card-meta">{(m.parts || []).length} อะไหล่</div>
             </button>
           ))}
         </div>

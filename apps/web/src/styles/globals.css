@@ -429,6 +429,19 @@ button:focus-visible, a:focus-visible {
   .cols-bar { display: none; }
 }
 
+/* ---- Model catalog grid (list of vehicle models on /models) ---- */
+.model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.model-card {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; text-align: left; display: flex; flex-direction: column; gap: 3px;
+  color: var(--text); font: inherit; font-weight: 400; box-shadow: var(--shadow-sm);
+  transition: box-shadow .18s var(--ease), border-color .15s var(--ease);
+}
+.model-card:hover { opacity: 1; box-shadow: var(--shadow-md); border-color: var(--navy); }
+.model-card-brand { font-size: 11.5px; font-weight: 700; color: var(--text-2); text-transform: uppercase; letter-spacing: .5px; }
+.model-card-name { font-size: 16px; font-weight: 700; }
+.model-card-meta { font-size: 12.5px; color: var(--text-2); margin-top: 2px; }
+
 /* ---- Plate badge ---- */
 .plate-tag {
   display: inline-flex;
@@ -573,6 +586,13 @@ button:focus-visible, a:focus-visible {
 /* ---- Pages ---- */
 .page h1 { margin: 0 0 4px; font-size: 26px; font-weight: 800; letter-spacing: .2px; }
 .page-sub { color: var(--text-2); margin: 0 0 20px; font-size: 14px; }
+.job-card-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+/* Shown only in the print stylesheet's job-detail printout, not on screen —
+   the on-screen bay info already lives in the "บ่อจอด" card below it. */
+.print-only-bay { display: none; }
+@media print {
+  .print-only-bay { display: block; }
+}
 .empty-state {
   padding: 40px 24px; text-align: center; color: var(--text-2);
   background: var(--card-bg); border: 1.5px dashed var(--border); border-radius: var(--radius);
