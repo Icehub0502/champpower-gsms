@@ -33,7 +33,8 @@ export function MasterPartsPage() {
     }
   }
 
-  async function removePart(id: string) {
+  async function removePart(id: string, partName: string) {
+    if (!window.confirm(`ลบอะไหล่ "${partName}" ใช่หรือไม่?`)) return;
     await deleteDoc(doc(db, 'masterParts', id));
   }
 
@@ -74,7 +75,7 @@ export function MasterPartsPage() {
                 {p.name}
                 <button
                   className="chip-remove"
-                  onClick={() => removePart(p.id)}
+                  onClick={() => removePart(p.id, p.name)}
                   aria-label={`ลบ ${p.name}`}
                 >
                   ×

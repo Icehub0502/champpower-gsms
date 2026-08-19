@@ -3,6 +3,7 @@ import {
   ALIGN_BAY,
   DECISION_KEYS,
   WORK_BAYS,
+  dayLabel,
   fmtDT,
   isDecisionPoint,
   jobInBay,
@@ -11,6 +12,7 @@ import {
   prevStatusOf,
   statusOf,
   STATUS_FLOW,
+  todayKey,
   type Customer,
   type Job,
   type StatusKey,
@@ -27,6 +29,7 @@ interface JobCardProps {
   vehicle: Vehicle | undefined;
   customer: Customer | undefined;
   activeJobs: Job[];
+  vehicleById: Map<string, Vehicle>;
   technicians: string[];
   selMode: boolean;
   selected: boolean;
@@ -34,9 +37,17 @@ interface JobCardProps {
   onOpen: (jobId: string) => void;
   onToggleSelect: (jobId: string) => void;
   onSetStatus: (jobId: string, status: StatusKey) => void;
+  onSchedule: (jobId: string, appointmentDate: string) => void;
   onAssignBay: (jobId: string, bay: string) => void;
   onAssignTechnician: (jobId: string, name: string) => void;
   onDelete: (jobId: string) => void;
+}
+
+/** Appointment chips warn when the date is today or already past. */
+function apptClass(date: string): string {
+  const today = todayKey();
+  if (date === today) return 'today';
+  return date < today ? 'overdue' : '';
 }
 
 export function JobCard({
@@ -44,6 +55,7 @@ export function JobCard({
   vehicle,
   customer,
   activeJobs,
+  vehicleById,
   technicians,
   selMode,
   selected,
@@ -51,12 +63,15 @@ export function JobCard({
   onOpen,
   onToggleSelect,
   onSetStatus,
+  onSchedule,
   onAssignBay,
   onAssignTechnician,
   onDelete,
 }: JobCardProps) {
   const [picker, setPicker] = useState<Picker>(null);
   const [techInput, setTechInput] = useState('');
+  // null = the status modal is not currently asking for an appointment date.
+  const [schedulingDate, setSchedulingDate] = useState<string | null>(null);
 
   const st = statusOf(job.status);
   const nextSt = nextStatusOf(job);
@@ -72,12 +87,28 @@ export function JobCard({
     setPicker(which);
   }
 
+  function closeStatusPicker() {
+    setPicker(null);
+    setSchedulingDate(null);
+  }
+
+  function confirmSchedule() {
+    if (!schedulingDate) return;
+    onSchedule(job.id, schedulingDate);
+    closeStatusPicker();
+  }
+
   return (
     <div className={`job-card ${st.cls} ${selMode ? 'select-mode' : ''} ${selected ? 'selected' : ''}`}>
       <div
         className="jc-main"
         onClick={() => (selMode ? onToggleSelect(job.id) : onOpen(job.id))}
       >
+        {selMode && (
+          <span className={`jc-check ${selected ? 'on' : ''}`} aria-hidden="true">
+            {selected && <Icon name="check" size={14} />}
+          </span>
+        )}
         <div className="jc-idblock">
           {job.thumb ? (
             <img className="jc-thumb" src={job.thumb} alt="" />
@@ -91,6 +122,11 @@ export function JobCard({
         <div className="jc-left">
           <div className="jc-tags">
             {job.queueNo && <span className="jc-queue">คิว {job.queueNo}</span>}
+            {job.appointmentDate && (
+              <span className={`jc-appt ${apptClass(job.appointmentDate)}`}>
+                <Icon name="calendar" size={11} /> {dayLabel(job.appointmentDate)}
+              </span>
+            )}
             {job.bay ? (
               <span className={`bay-chip ${job.bay === ALIGN_BAY ? 'align' : ''}`}>
                 {job.bay}
@@ -160,6 +196,7 @@ export function JobCard({
             <button
               className="jc-del"
               title="ลบรายการนี้"
+              aria-label="ลบรายการนี้"
               onClick={(e) => {
                 stop(e);
                 onDelete(job.id);
@@ -176,10 +213,14 @@ export function JobCard({
         <Modal title="เลือกช่องจอด" onClose={() => setPicker(null)}>
           {WORK_BAYS.map((bay) => {
             const occ = jobInBay(activeJobs, bay, job.id);
+            // A `title` tooltip never surfaces on touch devices (shop staff use tablets),
+            // so the occupant is rendered as visible text on the disabled button instead.
+            const occVehicleId = occ ? activeJobs.find((j) => j.id === occ.id)?.vehicleId : undefined;
+            const occPlate = occVehicleId ? vehicleById.get(occVehicleId)?.plate : '';
             return (
               <button
                 key={bay}
-                className={`chip ${job.bay === bay ? 'active' : ''}`}
+                className={`chip bay-opt ${job.bay === bay ? 'active' : ''}`}
                 disabled={!!occ}
                 title={occ ? 'มีงานอื่นจอดอยู่' : 'ว่าง'}
                 onClick={() => {
@@ -188,6 +229,7 @@ export function JobCard({
                 }}
               >
                 {bay}
+                {occ && <span className="bay-opt-occ">{occPlate ? `ไม่ว่าง · ${occPlate}` : 'ไม่ว่าง'}</span>}
               </button>
             );
           })}
@@ -232,19 +274,38 @@ export function JobCard({
       )}
 
       {picker === 'status' && (
-        <Modal title="เปลี่ยนสถานะ" onClose={() => setPicker(null)}>
+        <Modal title="เปลี่ยนสถานะ" onClose={closeStatusPicker}>
           {STATUS_FLOW.map((s) => (
             <button
               key={s.key}
               className={`chip ${job.status === s.key ? 'active' : ''}`}
               onClick={() => {
+                // "นัดวันมาทำ" must never be set without an appointment date — this is the
+                // same two-step confirm the job-detail decision row already uses.
+                if (s.key === 'scheduled') {
+                  setSchedulingDate(job.appointmentDate || todayKey());
+                  return;
+                }
                 onSetStatus(job.id, s.key);
-                setPicker(null);
+                closeStatusPicker();
               }}
             >
               {s.label}
             </button>
           ))}
+          {schedulingDate !== null && (
+            <div className="row-flex" style={{ width: '100%', marginTop: 8 }}>
+              <input
+                type="date"
+                value={schedulingDate}
+                onChange={(e) => setSchedulingDate(e.target.value)}
+                style={{ flex: '1 1 140px' }}
+              />
+              <button className="btn small" onClick={confirmSchedule} disabled={!schedulingDate}>
+                ยืนยันวันนัด
+              </button>
+            </div>
+          )}
         </Modal>
       )}
 
@@ -260,6 +321,11 @@ export function JobCard({
                   className={`btn small decide ${d.cls}`}
                   onClick={(e) => {
                     stop(e);
+                    if (key === 'scheduled') {
+                      setSchedulingDate(job.appointmentDate || todayKey());
+                      setPicker('status');
+                      return;
+                    }
                     onSetStatus(job.id, key);
                   }}
                 >

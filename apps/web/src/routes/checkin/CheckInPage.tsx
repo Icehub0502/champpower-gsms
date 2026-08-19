@@ -27,6 +27,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
   const [plate, setPlate] = useState('');
   const [province, setProvince] = useState('');
   const [mileage, setMileage] = useState('');
+  const [queueNo, setQueueNo] = useState('');
   const [brand, setBrand] = useState('');
   const [model, setModel] = useState('');
   const [catalogQuery, setCatalogQuery] = useState('');
@@ -126,6 +127,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
 
       const newJobData = {
         jobNumber,
+        queueNo: queueNo.trim(),
         vehicleId,
         customerId,
         mileageIn: mileage.trim(),
@@ -185,6 +187,11 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
         <label className="field">
           เลขไมล์
           <input value={mileage} onChange={(e) => setMileage(e.target.value)} inputMode="numeric" />
+        </label>
+
+        <label className="field">
+          คิวที่ (ไม่บังคับ)
+          <input value={queueNo} onChange={(e) => setQueueNo(e.target.value)} inputMode="numeric" />
         </label>
 
         {!matchedVehicle && (

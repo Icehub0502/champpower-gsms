@@ -84,6 +84,17 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     await syncBoardEntry({ ...job, status, statusHistory }, vehicleById.get(job.vehicleId));
   }
 
+  // "นัดวันมาทำ" always carries the appointment date — setting the status without one
+  // loses any record of when the customer is coming back.
+  async function scheduleJob(jobId: string, appointmentDate: string) {
+    const job = jobs.rows.find((j) => j.id === jobId);
+    if (!job || !appointmentDate) return;
+    const status: StatusKey = 'scheduled';
+    const statusHistory = [...job.statusHistory, { status, changedAt: nowIso() }];
+    await updateDoc(doc(db, 'jobs', jobId), { status, statusHistory, appointmentDate });
+    await syncBoardEntry({ ...job, status, statusHistory, appointmentDate }, vehicleById.get(job.vehicleId));
+  }
+
   async function assignBay(jobId: string, bay: string) {
     const job = jobs.rows.find((j) => j.id === jobId);
     if (!job) return;
@@ -142,6 +153,11 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        {search && (
+          <button className="search-clear" title="ล้างคำค้นหา" aria-label="ล้างคำค้นหา" onClick={() => setSearch('')}>
+            <Icon name="x" size={16} />
+          </button>
+        )}
       </div>
 
       <div className="status-pills">
@@ -217,6 +233,7 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
                 vehicle={vehicleById.get(job.vehicleId)}
                 customer={customerById.get(job.customerId)}
                 activeJobs={activeJobs}
+                vehicleById={vehicleById}
                 technicians={technicianNames}
                 selMode={selectMode}
                 selected={selectedIds.includes(job.id)}
@@ -224,6 +241,7 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
                 onOpen={onOpenJob}
                 onToggleSelect={toggleSelected}
                 onSetStatus={setStatus}
+                onSchedule={scheduleJob}
                 onAssignBay={assignBay}
                 onAssignTechnician={assignTechnician}
                 onDelete={deleteJob}

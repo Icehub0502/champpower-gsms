@@ -63,7 +63,8 @@ export function ModelDetailPage() {
     saveParts(parts.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }
 
-  function removePart(id: string) {
+  function removePart(id: string, partName: string) {
+    if (!window.confirm(`ลบอะไหล่ "${partName}" ออกจากรุ่นนี้ใช่หรือไม่?`)) return;
     saveParts(parts.filter((p) => p.id !== id));
   }
 
@@ -77,7 +78,8 @@ export function ModelDetailPage() {
     setBrandInputs((prev) => ({ ...prev, [partId]: { name: '', price: '' } }));
   }
 
-  function removeBrand(partId: string, brandId: string) {
+  function removeBrand(partId: string, brandId: string, brandName: string) {
+    if (!window.confirm(`ลบแบรนด์ "${brandName}" ใช่หรือไม่?`)) return;
     const part = parts.find((p) => p.id === partId);
     if (!part) return;
     updatePart(partId, { brands: (part.brands || []).filter((b) => b.id !== brandId) });
@@ -118,7 +120,7 @@ export function ModelDetailPage() {
                   </option>
                 ))}
               </select>
-              <button className="btn danger small" disabled={busy} onClick={() => removePart(p.id)}>
+              <button className="btn danger small" disabled={busy} onClick={() => removePart(p.id, p.partName)}>
                 ลบ
               </button>
             </div>
@@ -127,7 +129,7 @@ export function ModelDetailPage() {
               {(p.brands || []).map((b) => (
                 <span className="chip active" key={b.id}>
                   {b.name} {b.price ? `฿${b.price}` : ''}
-                  <button className="chip-remove" onClick={() => removeBrand(p.id, b.id)} aria-label={`ลบ ${b.name}`}>
+                  <button className="chip-remove" onClick={() => removeBrand(p.id, b.id, b.name)} aria-label={`ลบ ${b.name}`}>
                     ×
                   </button>
                 </span>

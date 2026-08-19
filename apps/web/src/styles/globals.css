@@ -281,6 +281,14 @@ button:focus-visible, a:focus-visible {
   font-size: 16px;
 }
 
+.search-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%;
+  background: none; color: var(--text-2); cursor: pointer;
+}
+.search-clear:hover { background: var(--paper); color: var(--text); }
+
 .status-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
 .status-pill {
   border: 1px solid var(--border);
@@ -379,6 +387,19 @@ button:focus-visible, a:focus-visible {
   border-bottom-right-radius: calc(var(--radius) - 1px);
 }
 .job-card:hover { box-shadow: var(--shadow-md); }
+/* Multi-select sits next to a bulk-delete button, so what is selected has to be
+   unmistakable: navy ring + tinted body + a filled checkbox in the card corner. */
+.job-card.select-mode { cursor: pointer; }
+.job-card.select-mode .jc-main { padding-left: 10px; }
+.job-card.selected { box-shadow: inset 0 0 0 2px var(--navy), var(--shadow-md); }
+.job-card.selected .jc-main { background: #eef2f5; }
+.jc-check {
+  flex-shrink: 0; width: 22px; height: 22px; border-radius: 6px;
+  border: 2px solid var(--border); background: var(--card-bg); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  transition: background-color .15s var(--ease), border-color .15s var(--ease);
+}
+.jc-check.on { background: var(--navy); border-color: var(--navy); }
 .job-card.st-delivered .jc-main, .job-card.st-carout .jc-main { opacity: .62; }
 
 .jc-main { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 13px 14px; cursor: pointer; }
@@ -489,6 +510,11 @@ button:focus-visible, a:focus-visible {
 }
 .chip:hover { opacity: 1; border-color: var(--navy); }
 .chip.active { background: var(--navy); color: #fff; border-color: var(--navy); }
+
+/* Occupied bays state it in visible text — a title tooltip never shows on touch. */
+.bay-opt { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; line-height: 1.25; }
+.bay-opt-occ { font-size: 10.5px; font-weight: 600; color: var(--red); white-space: nowrap; }
+.chip.bay-opt:disabled { opacity: 1; background: var(--paper); color: var(--text-2); border-color: var(--border); }
 
 .row-flex { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
 .row-flex input { flex: 1; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font: inherit; }
