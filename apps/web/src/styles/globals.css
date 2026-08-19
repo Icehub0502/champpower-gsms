@@ -614,13 +614,10 @@ button:focus-visible, a:focus-visible {
 }
 .board-row-fading { animation: boardRowFade .9s ease forwards; pointer-events: none; }
 
-/* Queue label sits to the LEFT of the number ("คิว 16", not "16 คิว") and large
-   enough to read at a glance; the status badge is pinned to the far right via
-   margin-left:auto and sized off the same font-size as the queue number itself
-   (per breakpoint below) so the two bookends of the row read as equally important. */
+/* Queue number is the left bookend, no "คิว" label; the status badge is the right
+   bookend, pinned via margin-left:auto at its normal (small, in-app-matching) size. */
 .board-row-queue { display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-width: 60px; }
 .board-row-queue-n { font-size: 44px; font-weight: 800; line-height: 1; font-family: ui-monospace, monospace; color: var(--hazard); }
-.board-row-queue-label { font-size: 24px; font-weight: 700; opacity: .85; }
 .board-row-queue-dash { font-size: 32px; font-weight: 800; opacity: .3; }
 
 .board-row-model { font-size: 19px; font-weight: 600; }
@@ -628,21 +625,17 @@ button:focus-visible, a:focus-visible {
 .board-row-est { font-size: 14px; opacity: 0.75; }
 
 /* .plate-tag / .status-chip sit inside a board row too — scale them up to match
-   instead of the small in-app defaults, since this page is never viewed up close.
-   status-chip's padding is em-based so it stays proportional as its font-size
-   (matched to board-row-queue-n) changes per breakpoint below, with no repeats. */
+   instead of the small in-app defaults, since this page is never viewed up close. */
 .board-row .plate-tag { padding: 4px 12px; }
 .board-row .plate-tag .pt-no { font-size: 20px; }
 .board-row .plate-tag .pt-prov { font-size: 11px; }
-.board-row .status-chip { font-size: 44px; font-weight: 700; padding: .3em .65em; margin-left: auto; }
+.board-row .status-chip { font-size: 13px; padding: 4px 12px; margin-left: auto; }
 
 /* Tablet: same layout, slightly denser */
 @media (max-width: 1024px) {
   .board-bays { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); }
   .board-row-queue-n { font-size: 38px; }
-  .board-row-queue-label { font-size: 21px; }
   .board-row-model { font-size: 17px; }
-  .board-row .status-chip { font-size: 38px; }
 }
 
 /* Phone: stack each row instead of wrapping inline, shrink the bay grid to 3 columns */
@@ -659,9 +652,8 @@ button:focus-visible, a:focus-visible {
   .board-row { flex-direction: column; align-items: flex-start; gap: 8px; padding: 14px 16px; }
   .board-row-queue { min-width: 0; }
   .board-row-queue-n { font-size: 38px; }
-  .board-row-queue-label { font-size: 21px; }
   .board-row-model { font-size: 17px; }
-  .board-row .status-chip { font-size: 30px; align-self: flex-end; margin-left: 0; }
+  .board-row .status-chip { align-self: flex-end; margin-left: 0; }
 }
 
 /* Large monitors and wall-mounted TVs (1600px+): switch to vw-based fluid scaling
@@ -683,7 +675,6 @@ button:focus-visible, a:focus-visible {
   .board-row { border-radius: 1.1vw; padding: 1.2vw 1.6vw; gap: 1.8vw; }
   .board-row-queue { gap: .5vw; min-width: 5.5vw; }
   .board-row-queue-n { font-size: 4.4vw; }
-  .board-row-queue-label { font-size: 2.4vw; }
   .board-row-queue-dash { font-size: 3vw; }
   .board-row-model { font-size: 1.7vw; }
   .board-row-bay { padding: .5vw 1.1vw; font-size: 1.2vw; }
@@ -691,7 +682,7 @@ button:focus-visible, a:focus-visible {
   .board-row .plate-tag { padding: .3vw 1vw; }
   .board-row .plate-tag .pt-no { font-size: 1.8vw; }
   .board-row .plate-tag .pt-prov { font-size: .95vw; }
-  .board-row .status-chip { font-size: 4.4vw; }
+  .board-row .status-chip { font-size: 1.15vw; padding: .35vw 1vw; }
 }
 
 /* ---- Print ---- */

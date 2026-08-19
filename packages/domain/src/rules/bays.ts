@@ -15,3 +15,15 @@ export function jobInBay(
 ): Pick<Job, 'id' | 'bay' | 'status'> | null {
   return activeJobs.find((j) => j.bay === bay && j.id !== excludeJobId && j.status !== 'delivered') ?? null;
 }
+
+/**
+ * A job entering "aligning" status claims the alignment rack automatically if it's
+ * free. If another job already holds it, this returns null so the caller leaves the
+ * job's current bay untouched — it waits its turn rather than bumping the occupant.
+ */
+export function nextAlignBay(
+  activeJobs: Pick<Job, 'id' | 'bay' | 'status'>[],
+  jobId: string,
+): string | null {
+  return jobInBay(activeJobs, ALIGN_BAY, jobId) ? null : ALIGN_BAY;
+}

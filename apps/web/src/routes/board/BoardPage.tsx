@@ -73,6 +73,22 @@ export function BoardPage() {
     });
   }, [rows]);
 
+  // Kiosk display, nobody's holding a mouse — auto-scroll down a screenful every 3s
+  // so a long queue is readable without anyone touching the screen, looping back to
+  // the top once it reaches the bottom. Smooth-scrolls so it's a glide, not a jump.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const el = document.scrollingElement || document.documentElement;
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+      if (atBottom) {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } else {
+        window.scrollBy({ top: el.clientHeight * 0.85, behavior: 'smooth' });
+      }
+    }, 3000);
+    return () => clearInterval(id);
+  }, []);
+
   const todayRows = rows
     .filter((r) => dayKey(r.createdAt) === todayKey())
     .filter((r) => r.status !== 'delivered' || fadingIds.has(r.id))
@@ -112,10 +128,7 @@ export function BoardPage() {
             <div className={`board-row ${fadingIds.has(r.id) ? 'board-row-fading' : ''}`} key={r.id}>
               <div className="board-row-queue">
                 {r.queueNo ? (
-                  <>
-                    <span className="board-row-queue-label">คิว</span>
-                    <span className="board-row-queue-n">{r.queueNo}</span>
-                  </>
+                  <span className="board-row-queue-n">{r.queueNo}</span>
                 ) : (
                   <span className="board-row-queue-dash">—</span>
                 )}

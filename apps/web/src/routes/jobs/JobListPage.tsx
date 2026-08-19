@@ -6,6 +6,7 @@ import {
   filterByStatus,
   jobSearchBlob,
   matchesSearch,
+  nextAlignBay,
   STATUS_FLOW,
   todayKey,
   type Customer,
@@ -80,8 +81,12 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     const job = jobs.rows.find((j) => j.id === jobId);
     if (!job) return;
     const statusHistory = [...job.statusHistory, { status, changedAt: nowIso() }];
-    await updateDoc(doc(db, 'jobs', jobId), { status, statusHistory });
-    await syncBoardEntry({ ...job, status, statusHistory }, vehicleById.get(job.vehicleId));
+    // Entering "รอตั้งศูนย์" auto-claims the alignment rack if it's free; if another
+    // job already holds it, the car just waits in its current bay for its turn.
+    const alignBay = status === 'aligning' ? nextAlignBay(activeJobs, jobId) : null;
+    const bayExtra = alignBay ? { bay: alignBay } : {};
+    await updateDoc(doc(db, 'jobs', jobId), { status, statusHistory, ...bayExtra });
+    await syncBoardEntry({ ...job, status, statusHistory, ...bayExtra }, vehicleById.get(job.vehicleId));
   }
 
   // "นัดวันมาทำ" always carries the appointment date — setting the status without one
