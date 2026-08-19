@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDocs, setDoc, updateDoc } from 'firebase/firestore';
 import {
   dayScopedJobs,
   filterByStatus,
@@ -45,6 +45,7 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [backfilling, setBackfilling] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const jobs = useCollection<Job>('jobs');
   const vehicles = useCollection<Vehicle>('vehicles');
@@ -181,6 +182,35 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     }
   }
 
+  // Every collection the schema doc defines (firebase/firestore.rules lists all 12,
+  // plus /lookup added since). Runs entirely client-side under the signed-in staff
+  // session that's already reading these collections elsewhere in the app — no admin
+  // credentials involved, the file lands directly in the browser's own Downloads.
+  const BACKUP_COLLECTIONS = [
+    'jobs', 'vehicles', 'customers', 'models', 'masterParts', 'partBrandOptions',
+    'complaintTypes', 'editLog', 'jobPhotos', 'config', 'users', 'board', 'lookup', 'technicians',
+  ];
+
+  async function exportDatabase() {
+    setExporting(true);
+    try {
+      const data: Record<string, unknown[]> = {};
+      for (const name of BACKUP_COLLECTIONS) {
+        const snap = await getDocs(collection(db, name));
+        data[name] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      }
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `champpower-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function deleteJob(jobId: string) {
     if (!window.confirm('ลบรายการนี้ใช่หรือไม่?')) return;
     await deleteDoc(doc(db, 'jobs', jobId));
@@ -201,9 +231,14 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     <div className="page">
       <div className="row-flex" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <h1 style={{ marginBottom: 0 }}>รายการงาน</h1>
-        <button className="btn secondary small" disabled={backfilling} onClick={backfillPublicRecords}>
-          {backfilling ? 'กำลังซิงก์...' : 'ซิงก์ข้อมูลค้นหา/บอร์ด'}
-        </button>
+        <div className="row-flex" style={{ gap: 8 }}>
+          <button className="btn secondary small" disabled={exporting} onClick={exportDatabase}>
+            {exporting ? 'กำลังดาวน์โหลด...' : 'ดาวน์โหลดข้อมูลทั้งหมด (JSON)'}
+          </button>
+          <button className="btn secondary small" disabled={backfilling} onClick={backfillPublicRecords}>
+            {backfilling ? 'กำลังซิงก์...' : 'ซิงก์ข้อมูลค้นหา/บอร์ด'}
+          </button>
+        </div>
       </div>
 
       <DayNavigator dayFilter={dayFilter} onChange={setDayFilter} />
