@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { WORK_BAYS, dayKey, todayKey } from '@champpower/domain';
 import { db } from '../../lib/firebase/client';
@@ -36,8 +36,12 @@ function useClock() {
  * Today-only, same rule as the job list — an unbounded board is unreadable by the
  * afternoon.
  */
+const FADE_OUT_MS = 900;
+
 export function BoardPage() {
   const [rows, setRows] = useState<BoardRow[]>([]);
+  const [fadingIds, setFadingIds] = useState<Set<string>>(new Set());
+  const goneIdsRef = useRef<Set<string>>(new Set());
   const now = useClock();
 
   useEffect(() => {
@@ -46,9 +50,32 @@ export function BoardPage() {
     });
   }, []);
 
+  // A job hitting "delivered" would otherwise vanish from the list the instant the
+  // next snapshot lands. Instead, mark it as fading and keep rendering it (still
+  // filtered out of the normal query below) for one animation's worth of time, then
+  // drop it for good so it doesn't reappear if the row is re-rendered afterward.
+  useEffect(() => {
+    const deliveredToday = rows.filter(
+      (r) => r.status === 'delivered' && dayKey(r.createdAt) === todayKey(),
+    );
+    deliveredToday.forEach((r) => {
+      if (goneIdsRef.current.has(r.id)) return;
+      setFadingIds((prev) => (prev.has(r.id) ? prev : new Set(prev).add(r.id)));
+      setTimeout(() => {
+        goneIdsRef.current.add(r.id);
+        setFadingIds((prev) => {
+          if (!prev.has(r.id)) return prev;
+          const next = new Set(prev);
+          next.delete(r.id);
+          return next;
+        });
+      }, FADE_OUT_MS);
+    });
+  }, [rows]);
+
   const todayRows = rows
     .filter((r) => dayKey(r.createdAt) === todayKey())
-    .filter((r) => r.status !== 'delivered')
+    .filter((r) => r.status !== 'delivered' || fadingIds.has(r.id))
     .sort((a, b) => {
       const qa = parseInt(a.queueNo, 10);
       const qb = parseInt(b.queueNo, 10);
@@ -82,12 +109,12 @@ export function BoardPage() {
       ) : (
         <div className="board-rows">
           {todayRows.map((r) => (
-            <div className="board-row" key={r.id}>
+            <div className={`board-row ${fadingIds.has(r.id) ? 'board-row-fading' : ''}`} key={r.id}>
               <div className="board-row-queue">
                 {r.queueNo ? (
                   <>
-                    <span className="board-row-queue-n">{r.queueNo}</span>
                     <span className="board-row-queue-label">คิว</span>
+                    <span className="board-row-queue-n">{r.queueNo}</span>
                   </>
                 ) : (
                   <span className="board-row-queue-dash">—</span>
@@ -98,8 +125,8 @@ export function BoardPage() {
                 {r.brand} {r.model} {r.color && `· ${r.color}`}
               </div>
               <div className="board-row-bay">{r.bay || '-'}</div>
-              <StatusLabel status={r.status as never} />
               {r.est && <div className="board-row-est">{r.est}</div>}
+              <StatusLabel status={r.status as never} />
             </div>
           ))}
         </div>
