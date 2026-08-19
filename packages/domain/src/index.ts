@@ -10,6 +10,7 @@ export * from './rules/warranty.js';
 export * from './rules/eta.js';
 export * from './rules/bays.js';
 export * from './rules/jobNumber.js';
+export * from './rules/queueNo.js';
 export * from './rules/pricing.js';
 export * from './rules/board.js';
 export * from './rules/search.js';

@@ -1,9 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import {
   BRAND_OPTIONS,
   DEFAULT_COMPLAINTS,
   genJobNumber,
+  genQueueNo,
+  todaysJobs,
   type Complaint,
   type Customer,
   type Job,
@@ -28,6 +30,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
   const [province, setProvince] = useState('');
   const [mileage, setMileage] = useState('');
   const [queueNo, setQueueNo] = useState('');
+  const [queueTouched, setQueueTouched] = useState(false);
   const [brand, setBrand] = useState('');
   const [model, setModel] = useState('');
   const [catalogQuery, setCatalogQuery] = useState('');
@@ -48,6 +51,13 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
   const matchedCustomer = matchedVehicle
     ? customers.rows.find((c) => c.id === matchedVehicle.customerId)
     : undefined;
+
+  // Auto-fills the next sequential queue number for today as soon as the job list has
+  // loaded — staff can still overwrite it by hand, which stops this from re-suggesting.
+  useEffect(() => {
+    if (queueTouched || jobs.loading) return;
+    setQueueNo(genQueueNo(todaysJobs(jobs.rows)));
+  }, [jobs.loading, jobs.rows, queueTouched]);
 
   const catalogLabel = (m: VehicleModel) => `${m.brand} ${m.name}`;
   const catalogByLabel = useMemo(() => new Map(models.rows.map((m) => [catalogLabel(m), m])), [models.rows]);
@@ -190,8 +200,15 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
         </label>
 
         <label className="field">
-          คิวที่ (ไม่บังคับ)
-          <input value={queueNo} onChange={(e) => setQueueNo(e.target.value)} inputMode="numeric" />
+          คิวที่ (รันอัตโนมัติ — แก้ไขได้ถ้าต้องการ)
+          <input
+            value={queueNo}
+            onChange={(e) => {
+              setQueueTouched(true);
+              setQueueNo(e.target.value);
+            }}
+            inputMode="numeric"
+          />
         </label>
 
         {!matchedVehicle && (
