@@ -317,7 +317,18 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   border-left: 5px solid var(--st-color, var(--border));
   border-radius: var(--radius);
   background: var(--card-bg);
-  overflow: hidden;
+}
+/* NOTE: deliberately no overflow:hidden here — it clipped the .jc-picker
+   popover, which is anchored below .jc-actions and extends past the card edge.
+   Inner corners are rounded per-section instead (values match the padding-box
+   curve: 5px left border, 1px elsewhere). */
+.job-card > :first-child {
+  border-top-left-radius: calc(var(--radius) - 5px);
+  border-top-right-radius: calc(var(--radius) - 1px);
+}
+.job-card > :last-child {
+  border-bottom-left-radius: calc(var(--radius) - 5px);
+  border-bottom-right-radius: calc(var(--radius) - 1px);
 }
 .job-card:hover { box-shadow: 0 2px 8px rgba(34, 40, 49, .08); }
 .job-card.st-delivered .jc-main, .job-card.st-carout .jc-main { opacity: .62; }
