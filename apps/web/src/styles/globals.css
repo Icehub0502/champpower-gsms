@@ -406,9 +406,9 @@ button:focus-visible, a:focus-visible {
 .jc-idblock { width: 88px; flex-shrink: 0; display: flex; flex-direction: column; gap: 5px; align-items: stretch; }
 .jc-thumb { width: 88px; height: 66px; border-radius: 8px; object-fit: cover; background: var(--paper); border: 1px solid var(--border); display: block; }
 .jc-thumb-empty { display: flex; align-items: center; justify-content: center; color: var(--text-2); opacity: .45; }
-.plate-tag.fit { width: 88px; min-width: 0; padding: 3px 4px 2px; }
-.plate-tag.fit .pt-no { font-size: 13px; letter-spacing: .5px; }
-.plate-tag.fit .pt-prov { font-size: 8px; }
+.plate-tag.plate-fit { width: 88px; min-width: 0; padding: 3px 4px 2px; }
+.plate-tag.plate-fit .pt-no { font-size: 13px; letter-spacing: .5px; }
+.plate-tag.plate-fit .pt-prov { font-size: 8px; }
 
 .jc-left { min-width: 0; flex: 1; }
 .jc-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
