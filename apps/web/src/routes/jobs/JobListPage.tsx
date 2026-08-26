@@ -241,6 +241,29 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
         </div>
       </div>
 
+      <div className="kpi-grid">
+        <div className="kpi-card kpi-dark">
+          <div className="kpi-card-value">{scoped.length} คัน</div>
+          <div className="kpi-card-label">รถในระบบ</div>
+          <div className="kpi-card-sub">ทั้งหมดวันนี้</div>
+        </div>
+        <div className="kpi-card kpi-red">
+          <div className="kpi-card-value">{statusCounts.inspecting ?? 0} คัน</div>
+          <div className="kpi-card-label">รอตรวจเช็ก</div>
+          <div className="kpi-card-sub">ต้องจัดคิว</div>
+        </div>
+        <div className="kpi-card kpi-gold">
+          <div className="kpi-card-value">{statusCounts.quoted ?? 0} คัน</div>
+          <div className="kpi-card-label">รออนุมัติ</div>
+          <div className="kpi-card-sub">ติดต่อลูกค้า</div>
+        </div>
+        <div className="kpi-card kpi-green">
+          <div className="kpi-card-value">{statusCounts.ready ?? 0} คัน</div>
+          <div className="kpi-card-label">พร้อมส่งมอบ</div>
+          <div className="kpi-card-sub">ตรวจความเรียบร้อย</div>
+        </div>
+      </div>
+
       <DayNavigator dayFilter={dayFilter} onChange={setDayFilter} />
 
       <div className="search-wrap">

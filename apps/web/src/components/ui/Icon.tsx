@@ -14,6 +14,15 @@ const PATHS: Record<string, string> = {
     'M14.7 6.3a4 4 0 0 1 5.3 4.6l-1.8-1.8-2.1.5-.5 2.1 1.8 1.8a4 4 0 0 1-4.6-5.3L4.8 17.3a1.8 1.8 0 1 0 2.5 2.5l8.4-8.4',
   search: 'm20 20-3.5-3.5|circle:11,11,7',
   edit: 'M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z|M15 5l4 4',
+  // ---- Redesign v2 sidebar / nav icons ----
+  list: 'M8 6h13|M8 12h13|M8 18h13|M3 6h.01|M3 12h.01|M3 18h.01',
+  car: 'M3 12l1.6-4.8A2 2 0 0 1 6.5 6h11a2 2 0 0 1 1.9 1.2L21 12|M3 12h18v4a1 1 0 0 1-1 1h-1|M3 16v1a1 1 0 0 0 1 1h1|circle:7,17,2|circle:17,17,2',
+  box: 'M3 7l9-4 9 4-9 4-9-4z|M3 7v10l9 4 9-4V7|M12 11v10',
+  money: 'circle:12,12,8|M9 15l6-6|circle:9.5,9.5,.6|circle:14.5,14.5,.6',
+  users: 'circle:9,8,3|M3 20a6 6 0 0 1 12 0|circle:17,9,2.5|M15 14a5 5 0 0 1 6 5',
+  settings: 'circle:12,12,3|M12 2v3|M12 19v3|M4.2 4.2l2.1 2.1|M17.7 17.7l2.1 2.1|M2 12h3|M19 12h3|M4.2 19.8l2.1-2.1|M17.7 6.3l2.1-2.1',
+  monitor: 'M8 20h8|M12 16v4|rect:3,4,18,12,2',
+  sparkles: 'M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z',
 };
 
 export function Icon({ name, size = 15 }: { name: keyof typeof PATHS; size?: number }) {
