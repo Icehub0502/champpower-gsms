@@ -225,7 +225,15 @@ button:focus-visible, a:focus-visible {
 }
 .app-bar .app-bar-user .btn:hover { background: var(--navy); border-color: var(--navy); opacity: 1; }
 
-.app-main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+/* `.shell-main` (the sidebar layout's content column) is a column flex
+   container. `.app-main` is its flex item — giving it `margin: 0 auto`
+   without an explicit `width` triggers a classic flexbox gotcha: an auto
+   cross-axis margin on a flex item opts it OUT of `align-items: stretch`,
+   so it shrink-wraps to its content's width instead of filling the column
+   (was previously fine when `.app-main` sat in plain block flow, pre-sidebar
+   layout). `width: 100%` restores the intended "fill the column, cap at
+   max-width, center only past that cap" behavior. */
+.app-main { width: 100%; padding: 20px; max-width: 1600px; margin: 0 auto; box-sizing: border-box; }
 
 .back-link {
   background: none;
@@ -268,6 +276,24 @@ button:focus-visible, a:focus-visible {
 
 .status-track-branch { display: flex; align-items: center; gap: 6px; margin: 10px 0; font-size: 12px; color: var(--st-color, #888); }
 .branch-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-color, #888); }
+
+/* ---- Job-detail 5-step tracker (condensed from status-track's 8 stages) ---- */
+.status-stepper { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.status-step {
+  flex: 1 1 120px;
+  min-width: 110px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--paper);
+  text-align: center;
+}
+.status-step-label { display: block; font-size: 13px; font-weight: 700; color: var(--text); }
+.status-step-state { display: block; margin-top: 4px; font-size: 11px; color: var(--text-2); }
+.status-step-done { background: var(--card-bg); border-color: var(--st-color); }
+.status-step-done .status-step-state { color: var(--st-color); }
+.status-step-current { outline: 2px solid var(--st-color); outline-offset: -1px; background: var(--card-bg); }
+.status-step-current .status-step-state { color: var(--st-color); font-weight: 700; }
 
 /* ---- Day navigator ---- */
 .day-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
@@ -543,6 +569,15 @@ button:focus-visible, a:focus-visible {
 
 .row-flex { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
 .row-flex input { flex: 1; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+/* Lets two .field labels (each already its own flex column) sit side-by-side inside
+   a .row-flex, e.g. check-in's จังหวัด+เลขไมล์ and สี+ปีรถ pairs. */
+.row-flex .field { flex: 1 1 160px; margin-bottom: 0; }
+
+.ci-photo-heading { margin-top: 4px; }
+/* Check-in's complaint chip cloud reads better as a horizontally-scrollable strip
+   than an unbounded wrapping cloud when there are many default complaints. */
+.complaint-chips-scroll { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+.complaint-chips-scroll .chip { flex: 0 0 auto; }
 
 /* ---- Job detail ---- */
 .field-label { font-size: 13px; color: var(--text-2); margin: 0; }
@@ -747,6 +782,13 @@ button:focus-visible, a:focus-visible {
 .page h1 { margin: 0 0 4px; font-size: 26px; font-weight: 800; letter-spacing: .2px; }
 .page-sub { color: var(--text-2); margin: 0 0 20px; font-size: 14px; }
 .job-card-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+.job-header-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.job-header-meta .chip { cursor: default; }
+
+.job-summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.job-summary-card h3 { margin: 0 0 6px; font-size: 13px; color: var(--text-2); }
+.job-summary-main { margin: 0; font-size: 17px; font-weight: 700; color: var(--text); }
+.job-summary-card .page-sub { margin: 4px 0 0; }
 /* Shown only in the print stylesheet's job-detail printout, not on screen —
    the on-screen bay info already lives in the "บ่อจอด" card below it. */
 .print-only-bay { display: none; }
@@ -786,6 +828,30 @@ button:focus-visible, a:focus-visible {
 }
 
 .fin-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+
+/* ---- Job list dashboard widgets ---- */
+.dash-widgets { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-bottom: 16px; }
+@media (max-width: 700px) { .dash-widgets { grid-template-columns: 1fr; } }
+.dash-attention-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.dash-attention-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 6px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+}
+.dash-attention-row:hover, .dash-attention-row:focus-visible { background: var(--paper); }
+.dash-attention-row .sw { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: var(--st-color, #888); }
+.dash-attention-desc { flex: 1; font-size: 14px; }
+.dash-attention-since { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.dash-revenue .job-summary-main { margin-top: 6px; }
 .fin-card {
   background: var(--card-bg); border: 1px solid var(--border); border-left: 3px solid var(--navy);
   border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow-sm);
@@ -1106,6 +1172,13 @@ button:focus-visible, a:focus-visible {
 .cal-appt.success { border-color: var(--success); background: #E7F7EF; }
 .cal-appt.warning { border-color: var(--warning); background: #FFF3E2; }
 
+/* Day-by-day appointment list (CalendarPage) — real `appointmentDate` data has no
+   time-of-day, so appointments are grouped per day rather than in an hour grid. */
+.cal-week-list { display: flex; flex-direction: column; gap: 14px; }
+.cal-day-block { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px; background: #fff; }
+.cal-day-block.today { border-color: var(--red); background: var(--red-bg); }
+.cal-day-block-head { font-weight: 700; font-size: 13.5px; margin-bottom: 8px; }
+
 /* ---- AI Assistant (mock) ---- */
 .ai-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px; display: flex; flex-direction: column; gap: 16px; }
 .ai-title-row { display: flex; align-items: center; gap: 10px; }
@@ -1117,6 +1190,7 @@ button:focus-visible, a:focus-visible {
 .ai-msg { max-width: 82%; padding: 10px 14px; border-radius: 14px; font-size: 13.5px; line-height: 1.65; white-space: pre-wrap; }
 .ai-msg.user { align-self: flex-end; background: var(--dark); color: #fff; border-bottom-right-radius: 4px; }
 .ai-msg.bot { align-self: flex-start; background: var(--paper); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+.ai-msg-error { color: var(--red, #C0392B); border-color: var(--red, #C0392B); background: var(--red-bg, #FDECEA); }
 .ai-input-row { display: flex; gap: 8px; }
 .ai-input-row input { flex: 1; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font: inherit; font-size: 14px; }
 .ai-disclaimer { font-size: 11.5px; color: var(--text-2); }
@@ -1151,4 +1225,27 @@ button:focus-visible, a:focus-visible {
   .login-page-v2 { flex-direction: column; }
   .login-hero { padding: 40px 28px; }
   .login-hero h1 { font-size: 22px; }
+}
+
+/* ---- Blank printable check-in form (offline fallback) ---- */
+.blank-form-sheet { max-width: 780px; margin: 0 auto; }
+.blank-form-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid var(--dark); padding-bottom: 10px; margin-bottom: 16px; }
+.blank-form-brand { font-weight: 800; font-size: 18px; letter-spacing: .05em; }
+.blank-form-title { font-size: 14px; color: var(--text-2); font-weight: 600; }
+.blank-form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 24px; margin-bottom: 16px; }
+.blank-form-field { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--text-2); font-weight: 600; white-space: nowrap; }
+.blank-form-field-wide { grid-column: 1 / -1; margin-bottom: 16px; }
+.blank-line { flex: 1; border-bottom: 1px solid var(--text); min-width: 60px; height: 1.4em; }
+.blank-form-table td { height: 30px; }
+.blank-form-sign-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; margin-top: 24px; }
+.blank-form-sign-row .blank-line { height: 40px; }
+
+/* ---- Bulk price-book print preview ---- */
+.bulk-print-sheet { max-width: 860px; margin: 0 auto 24px; }
+.bulk-print-head { border-bottom: 2px solid var(--dark); padding-bottom: 8px; margin-bottom: 14px; }
+
+@media print {
+  .blank-form-sheet, .bulk-print-sheet { box-shadow: none; border: none; max-width: none; }
+  .bulk-print-sheet { display: block !important; break-inside: avoid; break-after: page; }
+  .bulk-print-sheet:last-child { break-after: auto; }
 }

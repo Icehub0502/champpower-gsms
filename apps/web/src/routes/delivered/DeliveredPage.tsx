@@ -1,27 +1,25 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { fmtMoney, jobGrandTotal, type Job, type Vehicle } from '@champpower/domain';
-import { where } from 'firebase/firestore';
 import { useCollection } from '../../hooks/useCollection';
 import { PlateBadge } from '../../components/ui/PlateBadge';
 
-const DELIVERED_CONSTRAINT = [where('status', '==', 'delivered')];
-
 /** Real data reuse: this list is exactly the "delivered" jobs the finance page
  * already aggregates — just shown row-by-row instead of summed. No mock data
- * needed here since the underlying job/vehicle collections already exist. */
+ * needed here since the underlying job/vehicle collections already exist.
+ * Status filtering moves client-side since REST has no Firestore-style `where()`. */
 export function DeliveredPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
-  const jobs = useCollection<Job>('jobs', DELIVERED_CONSTRAINT);
-  const vehicles = useCollection<Vehicle>('vehicles');
+  const jobs = useCollection<Job>('/api/jobs?includeDeleted=1');
+  const vehicles = useCollection<Vehicle>('/api/vehicles');
 
   const vehicleById = useMemo(() => new Map(vehicles.rows.map((v) => [v.id, v])), [vehicles.rows]);
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     return jobs.rows
-      .filter((j) => !j.deletedAt)
+      .filter((j) => !j.deletedAt && j.status === 'delivered')
       .filter((j) => {
         if (!q) return true;
         const v = vehicleById.get(j.vehicleId);

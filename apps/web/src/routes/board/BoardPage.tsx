@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
 import { WORK_BAYS, dayKey, todayKey } from '@champpower/domain';
-import { db } from '../../lib/firebase/client';
+import { publicApi } from '../../lib/api/client';
+import { getSocket } from '../../lib/api/socket';
 import { PlateBadge } from '../../components/ui/PlateBadge';
 import { StatusLabel } from '../../components/job/StatusTrack';
 
@@ -45,9 +45,23 @@ export function BoardPage() {
   const now = useClock();
 
   useEffect(() => {
-    return onSnapshot(collection(db, 'board'), (snap) => {
-      setRows(snap.docs.map((d) => ({ ...(d.data() as Omit<BoardRow, 'id'>), id: d.id })));
-    });
+    let cancelled = false;
+    function load() {
+      publicApi.get<BoardRow[]>('/api/public/board').then((data) => {
+        if (!cancelled) setRows(data);
+      });
+    }
+    load();
+
+    // Public socket connection (no JWT) — joins the `public` room server-side and
+    // receives a refetch signal whenever any job/vehicle/customer mutation could
+    // affect this board, same live-update behavior the old onSnapshot gave for free.
+    const socket = getSocket();
+    socket.on('board:changed', load);
+    return () => {
+      cancelled = true;
+      socket.off('board:changed', load);
+    };
   }, []);
 
   // A job hitting "delivered" would otherwise vanish from the list the instant the

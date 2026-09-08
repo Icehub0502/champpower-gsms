@@ -53,6 +53,14 @@ export function SettingsPage() {
         </div>
 
         <div className="hub-card">
+          <h3>เอกสารพิมพ์</h3>
+          <p>ใบเปล่ารับรถสำรอง ใช้เมื่อระบบใช้งานไม่ได้</p>
+          <button type="button" className="btn secondary" onClick={() => navigate('/print/blank-checkin')}>
+            เปิดใบเปล่า
+          </button>
+        </div>
+
+        <div className="hub-card">
           <h3>เวอร์ชันระบบ</h3>
           <p>เวอร์ชันที่เครื่องนี้ใช้อยู่: v4.0 Redesign</p>
           <button type="button" className="btn secondary" disabled>

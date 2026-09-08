@@ -1,17 +1,16 @@
 import type { NextFunction, Request, Response } from 'express';
-import type { DecodedIdToken } from 'firebase-admin/auth';
-import { adminAuth } from '../lib/admin.js';
+import { verifyToken, type JwtPayload } from '../lib/jwt.js';
 
 export interface AuthedRequest extends Request {
-  authUser?: DecodedIdToken;
+  authUser?: JwtPayload;
 }
 
 /**
- * Verifies the Firebase ID token from the Authorization: Bearer <token> header.
- * Role checks build on top of this (see requireAdmin) by reading authUser.role —
- * the custom claim, never a client-supplied field.
+ * Verifies the app-issued JWT from the Authorization: Bearer <token> header.
+ * Role checks build on top of this (see requireAdmin) by reading authUser.role,
+ * which comes from the signed token, never a client-supplied field.
  */
-export async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+export function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   const header = req.headers.authorization || '';
   const match = header.match(/^Bearer (.+)$/);
   if (!match) {
@@ -19,7 +18,7 @@ export async function requireAuth(req: AuthedRequest, res: Response, next: NextF
     return;
   }
   try {
-    req.authUser = await adminAuth.verifyIdToken(match[1]!);
+    req.authUser = verifyToken(match[1]!);
     next();
   } catch {
     res.status(401).json({ error: 'invalid_token' });

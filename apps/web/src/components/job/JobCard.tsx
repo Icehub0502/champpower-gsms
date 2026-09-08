@@ -34,6 +34,7 @@ interface JobCardProps {
   selMode: boolean;
   selected: boolean;
   canDelete: boolean;
+  canManageTechnicians: boolean;
   onOpen: (jobId: string) => void;
   onToggleSelect: (jobId: string) => void;
   onSetStatus: (jobId: string, status: StatusKey) => void;
@@ -66,6 +67,7 @@ export function JobCard({
   selMode,
   selected,
   canDelete,
+  canManageTechnicians,
   onOpen,
   onToggleSelect,
   onSetStatus,
@@ -302,26 +304,28 @@ export function JobCard({
               {name}
             </button>
           ))}
-          <div className="row-flex" style={{ width: '100%', marginTop: 4 }}>
-            <input
-              value={techInput}
-              onChange={(e) => setTechInput(e.target.value)}
-              placeholder="ชื่อช่างใหม่"
-              style={{ flex: '1 1 140px' }}
-            />
-            <button
-              className="btn small"
-              onClick={() => {
-                if (techInput.trim()) {
-                  onAssignTechnician(job.id, techInput.trim());
-                  setTechInput('');
-                  setPicker(null);
-                }
-              }}
-            >
-              บันทึก
-            </button>
-          </div>
+          {canManageTechnicians && (
+            <div className="row-flex" style={{ width: '100%', marginTop: 4 }}>
+              <input
+                value={techInput}
+                onChange={(e) => setTechInput(e.target.value)}
+                placeholder="ชื่อช่างใหม่"
+                style={{ flex: '1 1 140px' }}
+              />
+              <button
+                className="btn small"
+                onClick={() => {
+                  if (techInput.trim()) {
+                    onAssignTechnician(job.id, techInput.trim());
+                    setTechInput('');
+                    setPicker(null);
+                  }
+                }}
+              >
+                บันทึก
+              </button>
+            </div>
+          )}
         </Modal>
       )}
 

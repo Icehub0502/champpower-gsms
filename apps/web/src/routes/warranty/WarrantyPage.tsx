@@ -1,33 +1,57 @@
-// TODO: replace mock data with a real Firestore query once warranty tracking
-// aggregates across jobs — today `warrantyStatus(job)` (see domain package)
-// only computes a single job's own warranty window, there's no cross-job
-// "expiring soon" list yet.
-interface MockWarrantyItem {
-  id: string;
-  jobNumber: string;
-  vehicle: string;
-  plate: string;
-  item: string;
-  daysLeft: number;
+import { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { dayLabel, todayKey, warrantyEndDate, type Customer, type Job, type Vehicle } from '@champpower/domain';
+import { useCollection } from '../../hooks/useCollection';
+import { PlateBadge } from '../../components/ui/PlateBadge';
+
+/** Days between two dayKey strings (end - today), local-time safe like the rest of
+ * the date utils (parses y/m/d instead of diffing raw Date objects across DST). */
+function daysBetween(fromKey: string, toKey: string): number {
+  const [fy, fm, fd] = fromKey.split('-').map(Number) as [number, number, number];
+  const [ty, tm, td] = toKey.split('-').map(Number) as [number, number, number];
+  const from = new Date(fy, fm - 1, fd);
+  const to = new Date(ty, tm - 1, td);
+  return Math.round((to.getTime() - from.getTime()) / 86400000);
 }
 
-const MOCK_WARRANTY: MockWarrantyItem[] = [
-  { id: 'w1', jobNumber: 'SV-02481', vehicle: 'BMW F30', plate: '8กข 4421', item: 'แร็คพวงมาลัย', daysLeft: 3 },
-  { id: 'w2', jobNumber: 'SV-02472', vehicle: 'Toyota Camry', plate: '1กณ 6895', item: 'ปีกนกล่าง', daysLeft: 6 },
-  { id: 'w3', jobNumber: 'SV-02391', vehicle: 'Honda CR-V', plate: 'กน 9211', item: 'ลูกหมากคันชัก', daysLeft: 12 },
-  { id: 'w4', jobNumber: 'SV-02348', vehicle: 'Benz W205', plate: '9กพ 3210', item: 'ช่วงล่างหน้า', daysLeft: 18 },
-];
-
-function pillClass(daysLeft: number) {
+function pillClass(daysLeft: number): string {
+  if (daysLeft < 0) return 'pill-muted';
   if (daysLeft < 7) return 'pill-danger';
   if (daysLeft < 30) return 'pill-warning';
   return 'pill-info';
 }
 
+/** Delivered jobs with an active warranty window, joined with vehicle info and sorted
+ * by soonest-to-expire — real data end-to-end via `warrantyEndDate`/`warrantyStatus`
+ * (packages/domain/src/rules/warranty.ts), the same helpers JobDetailPage's warranty
+ * card already uses. No backend work needed: this is purely a client-side filter over
+ * /api/jobs, there is no separate "expiring warranties" endpoint. */
 export function WarrantyPage() {
-  const within7 = MOCK_WARRANTY.filter((w) => w.daysLeft <= 7).length;
-  const within30 = MOCK_WARRANTY.filter((w) => w.daysLeft <= 30).length;
-  const within60 = MOCK_WARRANTY.length;
+  const navigate = useNavigate();
+  const jobs = useCollection<Job>('/api/jobs?includeDeleted=1');
+  const vehicles = useCollection<Vehicle>('/api/vehicles');
+  const customers = useCollection<Customer>('/api/customers');
+
+  const vehicleById = useMemo(() => new Map(vehicles.rows.map((v) => [v.id, v])), [vehicles.rows]);
+  const customerById = useMemo(() => new Map(customers.rows.map((c) => [c.id, c])), [customers.rows]);
+
+  const rows = useMemo(() => {
+    const today = todayKey();
+    return jobs.rows
+      .filter((j) => !j.deletedAt && j.status === 'delivered' && (j.warrantyDays || 0) > 0)
+      .map((j) => {
+        const end = warrantyEndDate(j);
+        return { job: j, end, daysLeft: end ? daysBetween(today, end) : null };
+      })
+      .filter((r): r is { job: Job; end: string; daysLeft: number } => r.end !== null && r.daysLeft !== null && r.daysLeft >= 0)
+      .sort((a, b) => a.daysLeft - b.daysLeft);
+  }, [jobs.rows]);
+
+  const within7 = rows.filter((r) => r.daysLeft <= 7).length;
+  const within30 = rows.filter((r) => r.daysLeft <= 30).length;
+  const within60 = rows.filter((r) => r.daysLeft <= 60).length;
+
+  const loading = jobs.loading || vehicles.loading || customers.loading;
 
   return (
     <div className="page">
@@ -49,20 +73,40 @@ export function WarrantyPage() {
         </div>
       </div>
 
-      <div className="list-card">
-        {MOCK_WARRANTY.map((w) => (
-          <div className="list-row" key={w.id}>
-            <div className="list-row-main">
-              <div className="list-row-title">{w.jobNumber} · {w.vehicle}</div>
-              <div className="list-row-sub">{w.plate} · {w.item}</div>
-            </div>
-            <span className={`pill ${pillClass(w.daysLeft)}`}>เหลือ {w.daysLeft} วัน</span>
-            <div className="list-row-actions">
-              <button type="button" className="btn secondary small">ติดต่อลูกค้า</button>
-            </div>
-          </div>
-        ))}
-      </div>
+      {loading ? (
+        <div className="page-loading">กำลังโหลด...</div>
+      ) : rows.length === 0 ? (
+        <div className="empty-state">ไม่มีงานที่อยู่ในช่วงประกัน</div>
+      ) : (
+        <div className="list-card">
+          {rows.map(({ job, end, daysLeft }) => {
+            const v = vehicleById.get(job.vehicleId);
+            const c = customerById.get(job.customerId);
+            return (
+              <button
+                type="button"
+                key={job.id}
+                className="list-row"
+                style={{ width: '100%', background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer' }}
+                onClick={() => navigate(`/jobs/${job.id}`)}
+              >
+                <PlateBadge plate={v?.plate} province={v?.province} />
+                <div className="list-row-main">
+                  <div className="list-row-title">
+                    {job.jobNumber} · {v ? `${v.brand} ${v.model}` : 'ไม่ทราบรุ่นรถ'}
+                  </div>
+                  <div className="list-row-sub">
+                    {c?.name || 'ไม่ทราบชื่อลูกค้า'}{c?.phone ? ` · ${c.phone}` : ''} · หมดประกัน {dayLabel(end)}
+                  </div>
+                </div>
+                <span className={`pill ${pillClass(daysLeft)}`}>
+                  {daysLeft === 0 ? 'หมดวันนี้' : `เหลือ ${daysLeft} วัน`}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
-import { useState } from 'react';
-import { doc, getDoc } from 'firebase/firestore';
+import { useEffect, useState } from 'react';
 import { normalizePlateKey, type LookupEntry } from '@champpower/domain';
-import { db } from '../../lib/firebase/client';
+import { publicApi } from '../../lib/api/client';
+import { getSocket } from '../../lib/api/socket';
 import { PlateBadge } from '../../components/ui/PlateBadge';
 import { BoltIcon } from '../../components/ui/BoltIcon';
 
@@ -17,21 +17,47 @@ export function LookupPage() {
   const [plateInput, setPlateInput] = useState('');
   const [state, setState] = useState<SearchState>('idle');
   const [entry, setEntry] = useState<LookupEntry | null>(null);
+  const [plateKey, setPlateKey] = useState('');
 
   async function search() {
     const key = normalizePlateKey(plateInput);
     if (!key) return;
     setState('loading');
     setEntry(null);
-    const snap = await getDoc(doc(db, 'lookup', key));
-    if (snap.exists()) {
-      setEntry(snap.data() as LookupEntry);
+    setPlateKey(key);
+    try {
+      const data = await publicApi.get<LookupEntry>(`/api/public/lookup?plate=${encodeURIComponent(key)}`);
+      setEntry(data);
       setState('found');
-    } else {
+    } catch {
+      // Any failure (404 not found, network error) reads the same to the customer:
+      // nothing to show for this plate right now.
       setEntry(null);
       setState('not-found');
     }
   }
+
+  // Public socket connection (no JWT) — refetch the currently displayed plate if the
+  // backend signals its projection changed (e.g. staff updated the job while the
+  // customer has this page open), matching the board page's live-update behavior.
+  useEffect(() => {
+    if (!plateKey) return;
+    const socket = getSocket();
+    function onChanged(payload: { plateKey?: string }) {
+      if (payload?.plateKey !== plateKey) return;
+      publicApi
+        .get<LookupEntry>(`/api/public/lookup?plate=${encodeURIComponent(plateKey)}`)
+        .then((data) => setEntry(data))
+        .catch(() => {
+          setEntry(null);
+          setState('not-found');
+        });
+    }
+    socket.on('lookup:changed', onChanged);
+    return () => {
+      socket.off('lookup:changed', onChanged);
+    };
+  }, [plateKey]);
 
   return (
     <div className="lookup-page">

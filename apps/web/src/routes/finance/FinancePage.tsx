@@ -1,30 +1,19 @@
 import { useMemo } from 'react';
-import { where } from 'firebase/firestore';
 import { financeLast14Days, financeStats, fmtMoney, type Job, type Vehicle } from '@champpower/domain';
 import { useCollection } from '../../hooks/useCollection';
 
-const DELIVERED_CONSTRAINT = [where('status', '==', 'delivered')];
-
 export function FinancePage() {
-  const jobs = useCollection<Job>('jobs', DELIVERED_CONSTRAINT);
-  const vehicles = useCollection<Vehicle>('vehicles');
+  const jobs = useCollection<Job>('/api/jobs?includeDeleted=1');
+  const vehicles = useCollection<Vehicle>('/api/vehicles');
 
   const vehicleById = useMemo(() => new Map(vehicles.rows.map((v) => [v.id, v])), [vehicles.rows]);
-  const stats = useMemo(() => financeStats(jobs.rows, vehicleById), [jobs.rows, vehicleById]);
+  const deliveredJobs = useMemo(() => jobs.rows.filter((j) => j.status === 'delivered'), [jobs.rows]);
+  const stats = useMemo(() => financeStats(deliveredJobs, vehicleById), [deliveredJobs, vehicleById]);
   const series = useMemo(() => financeLast14Days(stats.byDay), [stats.byDay]);
   const maxRev = Math.max(1, ...series.map((d) => d.revenue));
 
   if (jobs.loading || vehicles.loading) {
     return <div className="page">กำลังโหลด...</div>;
-  }
-
-  if (stats.totalCount === 0) {
-    return (
-      <div className="page">
-        <h1>สถิติรายได้</h1>
-        <div className="empty-state">ยังไม่มีงานที่ส่งมอบแล้วเลย — สถิติจะเริ่มมีข้อมูลเมื่อมีการส่งมอบรถคันแรก</div>
-      </div>
-    );
   }
 
   const techRows = Object.entries(stats.byTech).sort((a, b) => b[1].revenue - a[1].revenue);
@@ -44,73 +33,83 @@ export function FinancePage() {
         <StatCard label="ปีนี้" value={stats.yearRev} count={stats.yearCount} />
       </div>
 
-      <div className="card">
-        <h3>รายได้ 14 วันล่าสุด</h3>
-        <div className="fin-chart">
-          {series.map((d) => (
-            <div className="fin-bar-col" key={d.key} title={`${d.label}: ${fmtMoney(d.revenue)} บาท (${d.count} คัน)`}>
-              <div className="fin-bar-track">
-                <div className="fin-bar" style={{ height: `${Math.round((d.revenue / maxRev) * 100)}%` }} />
-              </div>
-              <span className="fin-bar-label">{d.label}</span>
+      {stats.totalCount === 0 ? (
+        <div className="empty-state">ยังไม่มีงานที่ส่งมอบแล้วเลย — สถิติจะเริ่มมีข้อมูลเมื่อมีการส่งมอบรถคันแรก</div>
+      ) : (
+        <>
+          <div className="card">
+            <h3>รายได้ 14 วันล่าสุด</h3>
+            <div className="fin-chart">
+              {series.map((d) => (
+                <div
+                  className="fin-bar-col"
+                  key={d.key}
+                  title={`${d.label}: ${fmtMoney(d.revenue)} บาท (${d.count} คัน)`}
+                >
+                  <div className="fin-bar-track">
+                    <div className="fin-bar" style={{ height: `${Math.round((d.revenue / maxRev) * 100)}%` }} />
+                  </div>
+                  <span className="fin-bar-label">{d.label}</span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      </div>
+          </div>
 
-      <div className="card">
-        <h3>รายได้แยกตามช่าง</h3>
-        <table className="parts-table">
-          <thead>
-            <tr>
-              <th>ช่าง</th>
-              <th className="center">จำนวนงาน</th>
-              <th className="center">รายได้รวม</th>
-              <th className="center">เฉลี่ย/งาน</th>
-            </tr>
-          </thead>
-          <tbody>
-            {techRows.map(([name, d]) => (
-              <tr key={name}>
-                <td>{name}</td>
-                <td className="center">{d.count}</td>
-                <td className="center">{fmtMoney(d.revenue)}</td>
-                <td className="center">{fmtMoney(d.revenue / d.count)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          <div className="card">
+            <h3>รายได้แยกตามช่าง</h3>
+            <table className="parts-table">
+              <thead>
+                <tr>
+                  <th>ช่าง</th>
+                  <th className="center">จำนวนงาน</th>
+                  <th className="center">รายได้รวม</th>
+                  <th className="center">เฉลี่ย/งาน</th>
+                </tr>
+              </thead>
+              <tbody>
+                {techRows.map(([name, d]) => (
+                  <tr key={name}>
+                    <td>{name}</td>
+                    <td className="center">{d.count}</td>
+                    <td className="center">{fmtMoney(d.revenue)}</td>
+                    <td className="center">{fmtMoney(d.revenue / d.count)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-      <div className="card">
-        <h3>รายได้แยกตามยี่ห้อรถ (10 อันดับแรก)</h3>
-        <table className="parts-table">
-          <thead>
-            <tr>
-              <th>ยี่ห้อ</th>
-              <th className="center">จำนวนงาน</th>
-              <th className="center">รายได้รวม</th>
-            </tr>
-          </thead>
-          <tbody>
-            {brandRows.map(([name, d]) => (
-              <tr key={name}>
-                <td>{name}</td>
-                <td className="center">{d.count}</td>
-                <td className="center">{fmtMoney(d.revenue)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          <div className="card">
+            <h3>รายได้แยกตามยี่ห้อรถ (10 อันดับแรก)</h3>
+            <table className="parts-table">
+              <thead>
+                <tr>
+                  <th>ยี่ห้อ</th>
+                  <th className="center">จำนวนงาน</th>
+                  <th className="center">รายได้รวม</th>
+                </tr>
+              </thead>
+              <tbody>
+                {brandRows.map(([name, d]) => (
+                  <tr key={name}>
+                    <td>{name}</td>
+                    <td className="center">{d.count}</td>
+                    <td className="center">{fmtMoney(d.revenue)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-      <div className="card">
-        <h3>ภาพรวมสะสมทั้งหมด</h3>
-        <p>
-          งานที่ส่งมอบแล้วทั้งหมด <b>{stats.totalCount}</b> คัน &nbsp;·&nbsp; รายได้รวมสะสม{' '}
-          <b>{fmtMoney(stats.allRev)}</b> บาท &nbsp;·&nbsp; เฉลี่ย <b>{fmtMoney(stats.avgJobValue)}</b> บาท/คัน
-        </p>
-      </div>
+          <div className="card">
+            <h3>ภาพรวมสะสมทั้งหมด</h3>
+            <p>
+              งานที่ส่งมอบแล้วทั้งหมด <b>{stats.totalCount}</b> คัน &nbsp;·&nbsp; รายได้รวมสะสม{' '}
+              <b>{fmtMoney(stats.allRev)}</b> บาท &nbsp;·&nbsp; เฉลี่ย <b>{fmtMoney(stats.avgJobValue)}</b> บาท/คัน
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 }

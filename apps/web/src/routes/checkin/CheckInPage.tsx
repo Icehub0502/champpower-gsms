@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { addDoc, collection, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import {
   BRAND_OPTIONS,
   DEFAULT_COMPLAINTS,
-  genJobNumber,
   genQueueNo,
   todaysJobs,
   type Complaint,
@@ -12,19 +10,20 @@ import {
   type Vehicle,
   type VehicleModel,
 } from '@champpower/domain';
-import { db } from '../../lib/firebase/client';
-import { syncPublicRecords } from '../../lib/firebase/board';
+import { api } from '../../lib/api/client';
 import { useCollection } from '../../hooks/useCollection';
+import { compressImage } from '../../lib/compressImage';
+import { Icon } from '../../components/ui/Icon';
 
 interface CheckInPageProps {
   onCreated: (jobId: string) => void;
 }
 
 export function CheckInPage({ onCreated }: CheckInPageProps) {
-  const vehicles = useCollection<Vehicle>('vehicles');
-  const customers = useCollection<Customer>('customers');
-  const jobs = useCollection<Job>('jobs');
-  const models = useCollection<VehicleModel>('models');
+  const vehicles = useCollection<Vehicle>('/api/vehicles');
+  const customers = useCollection<Customer>('/api/customers');
+  const jobs = useCollection<Job>('/api/jobs?includeDeleted=1');
+  const models = useCollection<VehicleModel>('/api/models');
 
   const [plate, setPlate] = useState('');
   const [province, setProvince] = useState('');
@@ -35,11 +34,14 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
   const [model, setModel] = useState('');
   const [catalogQuery, setCatalogQuery] = useState('');
   const [color, setColor] = useState('');
+  const [year, setYear] = useState('');
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [checked, setChecked] = useState<string[]>([]);
   const [customComplaint, setCustomComplaint] = useState('');
   const [customComplaints, setCustomComplaints] = useState<string[]>([]);
+  const [carPhoto, setCarPhoto] = useState('');
+  const [photoBusy, setPhotoBusy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -82,6 +84,16 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
     setCustomComplaint('');
   }
 
+  async function onCarPhotoPicked(file: File | undefined) {
+    if (!file) return;
+    setPhotoBusy(true);
+    try {
+      setCarPhoto(await compressImage(file));
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
   async function handleSubmit() {
     setError('');
     if (!plateUpper) {
@@ -95,76 +107,63 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
 
     setSubmitting(true);
     try {
-      let vehicleId: string;
-      let customerId: string;
+      const complaints: Complaint[] = [
+        ...checked.map((text) => ({ text, custom: false })),
+        ...customComplaints.map((text) => ({ text, custom: true })),
+      ];
 
+      // Job numbering (genJobNumber/genQueueNo) now runs server-side on POST /api/jobs
+      // per the locked API contract — the client only still sends the (auto-suggested,
+      // staff-editable) queueNo as a hint; jobNumber/id/createdAt/statusHistory are all
+      // assigned by the server.
+      let created: Job;
       if (matchedVehicle) {
-        vehicleId = matchedVehicle.id;
-        customerId = matchedVehicle.customerId;
-        await updateDoc(doc(db, 'vehicles', vehicleId), { mileage: mileage.trim() });
+        await api.patch(`/api/vehicles/${matchedVehicle.id}`, { mileage: mileage.trim() });
+        created = await api.post<Job>('/api/jobs', {
+          vehicleId: matchedVehicle.id,
+          customerId: matchedVehicle.customerId,
+          mileageIn: mileage.trim(),
+          queueNo: queueNo.trim(),
+          status: 'received',
+          complaints,
+          partsNeeded: [],
+        });
       } else {
         if (!customerName.trim()) {
           setError('กรุณากรอกชื่อลูกค้า');
           setSubmitting(false);
           return;
         }
-        const customerRef = await addDoc(collection(db, 'customers'), {
-          name: customerName.trim(),
-          phone: customerPhone.trim(),
+        created = await api.post<Job>('/api/jobs', {
+          vehicle: {
+            plate: plateUpper,
+            province: province.trim(),
+            brand: brand.trim().toUpperCase(),
+            model: model.trim().toUpperCase(),
+            color: color.trim(),
+            year: year.trim(),
+            mileage: mileage.trim(),
+          },
+          customer: {
+            name: customerName.trim(),
+            phone: customerPhone.trim(),
+          },
+          mileageIn: mileage.trim(),
+          queueNo: queueNo.trim(),
+          status: 'received',
+          complaints,
+          partsNeeded: [],
         });
-        customerId = customerRef.id;
-        const vehicleRef = await addDoc(collection(db, 'vehicles'), {
-          customerId,
-          plate: plateUpper,
-          province: province.trim(),
-          brand: brand.trim().toUpperCase(),
-          model: model.trim().toUpperCase(),
-          color: color.trim(),
-          mileage: mileage.trim(),
-        });
-        vehicleId = vehicleRef.id;
       }
 
-      const complaints: Complaint[] = [
-        ...checked.map((text) => ({ text, custom: false })),
-        ...customComplaints.map((text) => ({ text, custom: true })),
-      ];
+      // Car photo is captured client-side before the job exists, so it's attached via
+      // the same PATCH /api/jobs/:id thumb/photoCount pair JobDetailPage's own "รูปรถ"
+      // uploader uses — there's no create-time photo field on the API contract.
+      if (carPhoto) {
+        await api.patch<Job>(`/api/jobs/${created.id}`, { thumb: carPhoto, photoCount: 1 });
+      }
 
-      // jobNumber is sequential per day (PGyymmdd-NNN) — genJobNumber itself filters
-      // existingJobs down to today's prefix, so the full jobs list can be passed as-is.
-      const jobNumber = genJobNumber(jobs.rows);
-      const nowIso = new Date().toISOString();
-
-      const newJobData = {
-        jobNumber,
-        queueNo: queueNo.trim(),
-        vehicleId,
-        customerId,
-        mileageIn: mileage.trim(),
-        status: 'received' as const,
-        complaints,
-        partsNeeded: [],
-        createdAt: nowIso,
-        statusHistory: [{ status: 'received' as const, changedAt: nowIso }],
-      };
-      const jobRef = await addDoc(collection(db, 'jobs'), { ...newJobData, serverCreatedAt: serverTimestamp() });
-
-      const vehicleForBoard =
-        matchedVehicle ??
-        ({
-          id: vehicleId,
-          customerId,
-          plate: plateUpper,
-          brand: brand.trim().toUpperCase(),
-          model: model.trim().toUpperCase(),
-          province: province.trim(),
-          color: color.trim(),
-        } as Vehicle);
-      const customerForBoard =
-        matchedCustomer ?? ({ id: customerId, name: customerName.trim(), phone: customerPhone.trim() } as Customer);
-      await syncPublicRecords({ ...newJobData, id: jobRef.id }, vehicleForBoard, customerForBoard);
-
-      onCreated(jobRef.id);
+      onCreated(created.id);
     } catch (err) {
       setError(`บันทึกไม่สำเร็จ: ${(err as Error).message}`);
     } finally {
@@ -177,6 +176,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
       <h1>รับรถ</h1>
 
       <div className="card">
+        <h3>ข้อมูลใบรับรถ</h3>
         <label className="field">
           ทะเบียนรถ
           <input
@@ -196,10 +196,24 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
           <div className="ci-nomatch">รถใหม่ — กรอกข้อมูลด้านล่าง</div>
         ) : null}
 
-        <label className="field">
-          เลขไมล์
-          <input value={mileage} onChange={(e) => setMileage(e.target.value)} inputMode="numeric" />
-        </label>
+        {!matchedVehicle && (
+          <div className="row-flex">
+            <label className="field">
+              จังหวัด
+              <input value={province} onChange={(e) => setProvince(e.target.value)} />
+            </label>
+            <label className="field">
+              เลขไมล์
+              <input value={mileage} onChange={(e) => setMileage(e.target.value)} inputMode="numeric" />
+            </label>
+          </div>
+        )}
+        {matchedVehicle && (
+          <label className="field">
+            เลขไมล์
+            <input value={mileage} onChange={(e) => setMileage(e.target.value)} inputMode="numeric" />
+          </label>
+        )}
 
         <label className="field">
           คิวที่ (รันอัตโนมัติ — แก้ไขได้ถ้าต้องการ)
@@ -214,7 +228,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
         </label>
 
         {!matchedVehicle && (
-          <>
+          <div className="row-flex">
             <label className="field">
               ชื่อลูกค้า
               <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
@@ -223,26 +237,54 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
               เบอร์โทร
               <input value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
             </label>
+          </div>
+        )}
+
+        <h3 className="ci-photo-heading">รูปรถตอนรับ</h3>
+        <label className="photo-dropzone no-print">
+          {carPhoto ? (
+            <>
+              <img className="photo-dropzone-img" src={carPhoto} alt="รูปรถ" />
+              <span className="photo-dropzone-overlay">
+                <Icon name="camera" size={16} /> เปลี่ยนรูป
+              </span>
+            </>
+          ) : (
+            <span className="photo-dropzone-empty">
+              <Icon name="camera" size={28} />
+              แตะเพื่อถ่ายหรือแนบรูปรถ
+            </span>
+          )}
+          <input
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={(e) => onCarPhotoPicked(e.target.files?.[0])}
+          />
+        </label>
+        {photoBusy && <span className="page-sub">กำลังบันทึกรูป...</span>}
+      </div>
+
+      {!matchedVehicle && (
+        <div className="card">
+          <h3>ข้อมูลรถ</h3>
+          {models.rows.length > 0 && (
             <label className="field">
-              จังหวัด
-              <input value={province} onChange={(e) => setProvince(e.target.value)} />
+              เลือกจากแคตตาล็อกรุ่นรถ (ไม่บังคับ)
+              <input
+                list="catalog-model-options"
+                value={catalogQuery}
+                onChange={(e) => onCatalogPick(e.target.value)}
+                placeholder="พิมพ์ค้นหา เช่น TOYOTA VIOS"
+              />
+              <datalist id="catalog-model-options">
+                {models.rows.map((m) => (
+                  <option key={m.id} value={catalogLabel(m)} />
+                ))}
+              </datalist>
             </label>
-            {models.rows.length > 0 && (
-              <label className="field">
-                เลือกจากแคตตาล็อกรุ่นรถ (ไม่บังคับ)
-                <input
-                  list="catalog-model-options"
-                  value={catalogQuery}
-                  onChange={(e) => onCatalogPick(e.target.value)}
-                  placeholder="พิมพ์ค้นหา เช่น TOYOTA VIOS"
-                />
-                <datalist id="catalog-model-options">
-                  {models.rows.map((m) => (
-                    <option key={m.id} value={catalogLabel(m)} />
-                  ))}
-                </datalist>
-              </label>
-            )}
+          )}
+          <div className="row-flex">
             <label className="field">
               ยี่ห้อ
               <input list="brand-options" value={brand} onChange={(e) => setBrand(e.target.value)} />
@@ -256,17 +298,23 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
               รุ่น
               <input value={model} onChange={(e) => setModel(e.target.value)} />
             </label>
+          </div>
+          <div className="row-flex">
             <label className="field">
               สี
               <input value={color} onChange={(e) => setColor(e.target.value)} />
             </label>
-          </>
-        )}
-      </div>
+            <label className="field">
+              ปีรถ
+              <input value={year} onChange={(e) => setYear(e.target.value)} inputMode="numeric" placeholder="เช่น 2020" />
+            </label>
+          </div>
+        </div>
+      )}
 
       <div className="card">
-        <h3>อาการที่แจ้ง</h3>
-        <div className="complaint-chips">
+        <h3>อาการที่ลูกค้าแจ้ง</h3>
+        <div className="complaint-chips complaint-chips-scroll">
           {DEFAULT_COMPLAINTS.map((c) => (
             <button
               key={c}

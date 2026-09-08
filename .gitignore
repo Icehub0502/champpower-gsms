@@ -9,3 +9,10 @@ apps/api/lib/
 firebase-debug.log
 firestore-debug.log
 .DS_Store
+
+# Local Netlify folder
+.netlify
+
+# Portable local dev database/tunnel binaries + data (MariaDB, ngrok) — machine-specific,
+# never meant to be shared via git; each dev sets this up locally per the README.
+.local-mysql/

@@ -1,20 +1,10 @@
 import { useState, type FormEvent } from 'react';
-import { signInWithEmailAndPassword, type AuthError } from 'firebase/auth';
-import { auth } from '../../lib/firebase/client';
+import { useAuth } from '../../hooks/useAuth';
+import { ApiError } from '../../lib/api/client';
 import { BoltIcon } from '../../components/ui/BoltIcon';
 
-// Same mapping as the original app's doLogin() — Firebase error codes translated to
-// Thai messages a counter-staff user can actually act on.
-const ERROR_MESSAGES: Record<string, string> = {
-  'auth/invalid-email': 'รูปแบบอีเมลไม่ถูกต้อง',
-  'auth/user-not-found': 'ไม่พบบัญชีนี้',
-  'auth/wrong-password': 'รหัสผ่านไม่ถูกต้อง',
-  'auth/invalid-credential': 'อีเมลหรือรหัสผ่านไม่ถูกต้อง',
-  'auth/too-many-requests': 'ลองผิดหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่',
-  'auth/network-request-failed': 'เชื่อมต่ออินเทอร์เน็ตไม่ได้',
-};
-
 export function LoginPage() {
+  const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -29,10 +19,13 @@ export function LoginPage() {
     setBusy(true);
     setError('');
     try {
-      await signInWithEmailAndPassword(auth, email.trim(), password);
+      await login(email.trim(), password);
     } catch (err) {
-      const code = (err as AuthError).code;
-      setError(ERROR_MESSAGES[code] ?? `เข้าสู่ระบบไม่สำเร็จ: ${(err as AuthError).message ?? code}`);
+      if (err instanceof ApiError) {
+        setError(err.status === 401 ? 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' : `เข้าสู่ระบบไม่สำเร็จ: ${err.message}`);
+      } else {
+        setError('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ — ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่');
+      }
     } finally {
       setBusy(false);
     }

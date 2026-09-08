@@ -1,18 +1,16 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import type { User } from 'firebase/auth';
-import { signOut } from 'firebase/auth';
 import { NavLink, useNavigate } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { auth } from '../lib/firebase/client';
-import type { Role } from '../hooks/useAuth';
+import type { AuthUser, Role } from '../hooks/useAuth';
 import { BoltIcon } from './ui/BoltIcon';
 import { Icon } from './ui/Icon';
 import { Modal } from './ui/Modal';
 
 interface AppShellProps {
-  user: User;
+  user: AuthUser;
   role: Role | null;
   online: boolean;
+  onLogout: () => void;
   children: ReactNode;
 }
 
@@ -22,6 +20,8 @@ const NAV_ITEMS: { to: string; label: string; icon: Parameters<typeof Icon>[0]['
   { to: '/delivered', label: 'รถทั้งหมด', icon: 'car' },
   { to: '/models', label: 'รุ่นรถ / อะไหล่', icon: 'box' },
   { to: '/master-parts', label: 'สินค้า', icon: 'wrench' },
+  { to: '/price-book', label: 'ตำราคา', icon: 'tag' },
+  { to: '/stuck-jobs', label: 'งานค้าง', icon: 'alert' },
   { to: '/finance', label: 'รายได้', icon: 'money' },
   { to: '/calendar', label: 'นัดหมาย', icon: 'calendar' },
   { to: '/settings/users', label: 'ผู้ใช้งาน', icon: 'users' },
@@ -57,7 +57,7 @@ function LookupQrButton() {
   );
 }
 
-export function AppShell({ user, role, online, children }: AppShellProps) {
+export function AppShell({ user, role, online, onLogout, children }: AppShellProps) {
   const navigate = useNavigate();
   const initial = (user.email || '?').charAt(0).toUpperCase();
 
@@ -119,7 +119,7 @@ export function AppShell({ user, role, online, children }: AppShellProps) {
                 <span className="role">{role === 'admin' ? 'ผู้ดูแลระบบ' : 'พนักงาน'}</span>
               </div>
             </div>
-            <button type="button" className="btn small secondary" onClick={() => signOut(auth)}>
+            <button type="button" className="btn small secondary" onClick={onLogout}>
               ออกจากระบบ
             </button>
           </div>

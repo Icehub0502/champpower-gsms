@@ -1,84 +1,132 @@
-import { Fragment, useState } from 'react';
-import { Icon } from '../../components/ui/Icon';
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { shiftDay, statusOf, todayKey, type Customer, type Job, type Vehicle } from '@champpower/domain';
+import { useCollection } from '../../hooks/useCollection';
 
-// TODO: replace mock data with real Firestore query once backend exists (an
-// "appointments" collection keyed by job/vehicle + scheduled datetime).
-interface MockAppointment {
-  id: string;
-  day: number; // 0 = Monday .. 6 = Sunday, matches DAYS below
-  hour: number; // 9..16
-  title: string;
-  sub: string;
-  tone: 'red' | 'info' | 'success' | 'warning';
+const DAY_NAMES = ['จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.', 'อา.'];
+const MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+function mondayOf(key: string): string {
+  const [y, m, d] = key.split('-').map(Number) as [number, number, number];
+  const dow = new Date(y, m - 1, d).getDay(); // 0 = Sunday
+  const deltaToMonday = dow === 0 ? -6 : 1 - dow;
+  return shiftDay(key, deltaToMonday);
 }
 
-const DAYS = ['จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.', 'อา.'];
-const DATES = [24, 25, 26, 27, 28, 29, 30];
-const HOURS = [9, 10, 11, 12, 13, 14, 15, 16];
-const TODAY_INDEX = 1; // ux note: highlights "25 ส.ค." as today for this mock week
+function shortLabel(key: string): string {
+  const [, m, d] = key.split('-').map(Number) as [number, number, number];
+  return `${d} ${MONTHS[m - 1]}`;
+}
 
-const MOCK_APPOINTMENTS: MockAppointment[] = [
-  { id: 'a1', day: 0, hour: 9, title: 'TOYOTA CAMRY', sub: 'เช็กแร็คพวงมาลัย', tone: 'red' },
-  { id: 'a2', day: 0, hour: 10, title: 'BMW F30', sub: 'เปลี่ยนปีกนกหน้า', tone: 'info' },
-  { id: 'a3', day: 2, hour: 13, title: 'HONDA CR-V', sub: 'ตรวจช่วงล่าง', tone: 'success' },
-  { id: 'a4', day: 3, hour: 15, title: 'BENZ W205', sub: 'พวงมาลัยมีเสียง', tone: 'warning' },
-];
+function dayOfWeek(key: string): number {
+  const [y, m, d] = key.split('-').map(Number) as [number, number, number];
+  return new Date(y, m - 1, d).getDay(); // 0 = Sunday
+}
 
+/** `Job.appointmentDate` (a plain YYYY-MM-DD dayKey, set when a job is moved to
+ * "นัดวันมาทำ" — see JobListPage's scheduleJob/JobCard) is the only real appointment
+ * data in this schema; there is no time-of-day field. The old mock UI showed an
+ * hour-by-hour grid, which isn't derivable from real data — this scopes down to a
+ * day-by-day list instead of inventing appointment times. */
 export function CalendarPage() {
-  const [view, setView] = useState<'day' | 'week' | 'month'>('week');
+  const navigate = useNavigate();
+  const [weekStart, setWeekStart] = useState(() => mondayOf(todayKey()));
+  const jobs = useCollection<Job>('/api/jobs?includeDeleted=1');
+  const vehicles = useCollection<Vehicle>('/api/vehicles');
+  const customers = useCollection<Customer>('/api/customers');
+
+  const vehicleById = useMemo(() => new Map(vehicles.rows.map((v) => [v.id, v])), [vehicles.rows]);
+  const customerById = useMemo(() => new Map(customers.rows.map((c) => [c.id, c])), [customers.rows]);
+
+  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => shiftDay(weekStart, i)), [weekStart]);
+
+  const appointmentsByDay = useMemo(() => {
+    const map = new Map<string, Job[]>();
+    for (const j of jobs.rows) {
+      if (j.deletedAt || !j.appointmentDate) continue;
+      const key = j.appointmentDate;
+      const list = map.get(key) || [];
+      list.push(j);
+      map.set(key, list);
+    }
+    return map;
+  }, [jobs.rows]);
+
+  const loading = jobs.loading || vehicles.loading || customers.loading;
+  const today = todayKey();
+  const rangeLabel = `${shortLabel(weekDays[0]!)} – ${shortLabel(weekDays[6]!)}`;
 
   return (
     <div className="page">
       <h1>ปฏิทินนัดหมาย</h1>
-      <p className="page-sub">ภาพรวมนัดหมายลูกค้าที่จะกลับมาซ่อม/รับรถ (ข้อมูลตัวอย่าง)</p>
+      <p className="page-sub">นัดหมายลูกค้าที่ตั้งไว้ผ่านสถานะ "นัดวันมาทำ" ของแต่ละใบงาน</p>
 
       <div className="cal-toolbar">
         <div className="cal-view-toggle">
-          <button type="button" className={view === 'day' ? 'active' : ''} onClick={() => setView('day')}>
-            วันนี้
+          <button type="button" onClick={() => setWeekStart(mondayOf(today))}>
+            สัปดาห์นี้
           </button>
-          <button type="button" className={view === 'week' ? 'active' : ''} onClick={() => setView('week')}>
-            สัปดาห์
+          <button type="button" onClick={() => setWeekStart((w) => shiftDay(w, -7))}>
+            ก่อนหน้า
           </button>
-          <button type="button" className={view === 'month' ? 'active' : ''} onClick={() => setView('month')}>
-            เดือน
+          <button type="button" onClick={() => setWeekStart((w) => shiftDay(w, 7))}>
+            ถัดไป
           </button>
         </div>
-        <span className="cal-range-label">24–30 สิงหาคม 2026</span>
-        <button type="button" className="btn small" style={{ marginLeft: 'auto' }}>
-          <Icon name="plus" size={14} /> เพิ่มนัดหมาย
-        </button>
+        <span className="cal-range-label">{rangeLabel}</span>
       </div>
 
-      <div className="cal-grid-wrap">
-        <div className="cal-grid">
-          <div className="cal-head-cell" />
-          {DAYS.map((d, i) => (
-            <div key={d} className={`cal-head-cell${i === TODAY_INDEX ? ' today' : ''}`}>
-              {d} {DATES[i]}
-            </div>
-          ))}
-
-          {HOURS.map((h) => (
-            <Fragment key={h}>
-              <div className="cal-time-cell">{String(h).padStart(2, '0')}:00</div>
-              {DAYS.map((_, dayIdx) => {
-                const items = MOCK_APPOINTMENTS.filter((a) => a.day === dayIdx && a.hour === h);
-                return (
-                  <div key={`${h}-${dayIdx}`} className="cal-cell">
-                    {items.map((a) => (
-                      <div key={a.id} className={`cal-appt ${a.tone === 'red' ? '' : a.tone}`}>
-                        <div>{a.title}</div>
-                        <div>{a.sub}</div>
-                      </div>
-                    ))}
+      {loading ? (
+        <div className="page-loading">กำลังโหลด...</div>
+      ) : (
+        <div className="cal-week-list">
+          {weekDays.map((dayKeyStr) => {
+            const items = (appointmentsByDay.get(dayKeyStr) || []).sort((a, b) =>
+              (a.queueNo || '').localeCompare(b.queueNo || ''),
+            );
+            const dow = dayOfWeek(dayKeyStr);
+            const dayName = DAY_NAMES[dow === 0 ? 6 : dow - 1];
+            return (
+              <div key={dayKeyStr} className={`cal-day-block${dayKeyStr === today ? ' today' : ''}`}>
+                <div className="cal-day-block-head">
+                  {dayName} {shortLabel(dayKeyStr)}
+                  {dayKeyStr === today ? ' (วันนี้)' : ''}
+                </div>
+                {items.length === 0 ? (
+                  <div className="page-sub" style={{ marginBottom: 0 }}>
+                    ไม่มีนัดหมาย
                   </div>
-                );
-              })}
-            </Fragment>
-          ))}
+                ) : (
+                  <div className="list-card">
+                    {items.map((j) => {
+                      const v = vehicleById.get(j.vehicleId);
+                      const c = customerById.get(j.customerId);
+                      return (
+                        <button
+                          type="button"
+                          key={j.id}
+                          className="list-row"
+                          style={{ width: '100%', background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer' }}
+                          onClick={() => navigate(`/jobs/${j.id}`)}
+                        >
+                          <span className={`sw ${statusOf(j.status).cls}`} />
+                          <div className="list-row-main">
+                            <div className="list-row-title">
+                              {j.jobNumber} · {v ? `${v.brand} ${v.model}` : 'ไม่ทราบรุ่นรถ'}
+                            </div>
+                            <div className="list-row-sub">{c?.name || 'ไม่ทราบชื่อลูกค้า'}{c?.phone ? ` · ${c.phone}` : ''}</div>
+                          </div>
+                          <span className="pill pill-info">{statusOf(j.status).label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-      </div>
+      )}
     </div>
   );
 }

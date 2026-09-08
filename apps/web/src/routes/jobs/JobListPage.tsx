@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { collection, deleteDoc, doc, getDocs, setDoc, updateDoc } from 'firebase/firestore';
 import {
   dayScopedJobs,
   filterByStatus,
+  financeStats,
+  fmtMoney,
   jobSearchBlob,
   matchesSearch,
   nextAlignBay,
-  normalizePlateKey,
+  statusOf,
   STATUS_FLOW,
   todayKey,
   type Customer,
@@ -16,18 +17,26 @@ import {
   type StatusKey,
   type Vehicle,
 } from '@champpower/domain';
-import { db } from '../../lib/firebase/client';
-import { syncPublicRecords } from '../../lib/firebase/board';
+import { api } from '../../lib/api/client';
 import { useCollection } from '../../hooks/useCollection';
 import { useDocument } from '../../hooks/useDocument';
+import { isAdmin, useAuth } from '../../hooks/useAuth';
 import { JobCard } from '../../components/job/JobCard';
 import { DayNavigator } from '../../components/job/DayNavigator';
 import { Icon } from '../../components/ui/Icon';
+import { lastChangeAt } from './StuckJobsPage';
 
 // The list only ever shows statuses a job can actually be sitting in day-to-day —
 // delivered/rejected-carout jobs move to their own pages (see the original app's
 // v2.9.0 changelog), so they're deliberately left out of this pill row.
 const FILTERABLE_STATUSES = STATUS_FLOW.filter((s) => s.key !== 'delivered' && s.key !== 'carout');
+
+function timeSinceLabel(iso: string): string {
+  const hours = (Date.now() - new Date(iso).getTime()) / 36e5;
+  if (hours < 1) return 'ไม่ถึง 1 ชม.';
+  if (hours < 24) return `${Math.floor(hours)} ชม.`;
+  return `${Math.floor(hours / 24)} วัน`;
+}
 
 function colsMax(): number {
   const w = typeof window !== 'undefined' ? window.innerWidth : 1200;
@@ -38,19 +47,20 @@ function colsMax(): number {
 
 export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void }) {
   const navigate = useNavigate();
+  const auth = useAuth();
+  const canManageTechnicians = isAdmin(auth);
   const [dayFilter, setDayFilter] = useState<string>(todayKey());
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [cols, setCols] = useState(2);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [backfilling, setBackfilling] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  const jobs = useCollection<Job>('jobs');
-  const vehicles = useCollection<Vehicle>('vehicles');
-  const customers = useCollection<Customer>('customers');
-  const config = useDocument<ShopConfig>('config', 'main');
+  const jobs = useCollection<Job>('/api/jobs?includeDeleted=1');
+  const vehicles = useCollection<Vehicle>('/api/vehicles');
+  const customers = useCollection<Customer>('/api/customers');
+  const config = useDocument<ShopConfig>('/api/config');
   const technicianNames = (config.data?.technicians || []).map((t) => t.name);
 
   const vehicleById = useMemo(() => new Map(vehicles.rows.map((v) => [v.id, v])), [vehicles.rows]);
@@ -72,28 +82,36 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     return counts;
   }, [scoped]);
 
+  // "ต้องจัดการต่อ": jobs sitting at "เสนอราคา" (awaiting the customer's decision) are
+  // the ones staff most need to chase up on — sorted oldest-waiting-first, using the
+  // same "time since last status change" the Stuck Jobs page already computes.
+  const attentionRows = useMemo(() => {
+    return activeJobs
+      .filter((j) => j.status === 'quoted')
+      .map((j) => ({ job: j, since: lastChangeAt(j) }))
+      .sort((a, b) => new Date(a.since).getTime() - new Date(b.since).getTime())
+      .slice(0, 5);
+  }, [activeJobs]);
+
+  // Revenue-today reuses the same financeStats() FinancePage already computes from
+  // delivered jobs — sourced from jobs.rows already loaded on this page, no extra fetch.
+  const deliveredJobs = useMemo(() => jobs.rows.filter((j) => j.status === 'delivered'), [jobs.rows]);
+  const revenueToday = useMemo(() => financeStats(deliveredJobs, vehicleById), [deliveredJobs, vehicleById]);
+
   const loading = jobs.loading || vehicles.loading || customers.loading;
   const maxCols = colsMax();
   const gridCols = Math.min(cols, maxCols);
 
-  function nowIso() {
-    return new Date().toISOString();
-  }
-
   async function setStatus(jobId: string, status: StatusKey) {
     const job = jobs.rows.find((j) => j.id === jobId);
     if (!job) return;
-    const statusHistory = [...job.statusHistory, { status, changedAt: nowIso() }];
     // Entering "รอตั้งศูนย์" auto-claims the alignment rack if it's free; if another
     // job already holds it, the car just waits in its current bay for its turn.
     const alignBay = status === 'aligning' ? nextAlignBay(activeJobs, jobId) : null;
     const bayExtra = alignBay ? { bay: alignBay } : {};
-    await updateDoc(doc(db, 'jobs', jobId), { status, statusHistory, ...bayExtra });
-    await syncPublicRecords(
-      { ...job, status, statusHistory, ...bayExtra },
-      vehicleById.get(job.vehicleId),
-      customerById.get(job.customerId),
-    );
+    // statusHistory is appended server-side on PATCH when `status` changes — no need
+    // to compute/send it from here anymore (see the locked API contract).
+    await api.patch<Job>(`/api/jobs/${jobId}`, { status, ...bayExtra });
   }
 
   // "นัดวันมาทำ" always carries the appointment date — setting the status without one
@@ -101,14 +119,7 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
   async function scheduleJob(jobId: string, appointmentDate: string) {
     const job = jobs.rows.find((j) => j.id === jobId);
     if (!job || !appointmentDate) return;
-    const status: StatusKey = 'scheduled';
-    const statusHistory = [...job.statusHistory, { status, changedAt: nowIso() }];
-    await updateDoc(doc(db, 'jobs', jobId), { status, statusHistory, appointmentDate });
-    await syncPublicRecords(
-      { ...job, status, statusHistory, appointmentDate },
-      vehicleById.get(job.vehicleId),
-      customerById.get(job.customerId),
-    );
+    await api.patch<Job>(`/api/jobs/${jobId}`, { status: 'scheduled' as StatusKey, appointmentDate });
   }
 
   async function assignBay(jobId: string, bay: string) {
@@ -116,10 +127,9 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     if (!job) return;
     const occupant = bay ? activeJobs.find((j) => j.bay === bay && j.id !== jobId && j.status !== 'delivered') : null;
     if (occupant) {
-      await updateDoc(doc(db, 'jobs', occupant.id), { bay: '' });
+      await api.patch<Job>(`/api/jobs/${occupant.id}`, { bay: '' });
     }
-    await updateDoc(doc(db, 'jobs', jobId), { bay });
-    await syncPublicRecords({ ...job, bay }, vehicleById.get(job.vehicleId), customerById.get(job.customerId));
+    await api.patch<Job>(`/api/jobs/${jobId}`, { bay });
   }
 
   async function assignTechnician(jobId: string, name: string) {
@@ -127,16 +137,12 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     if (!job) return;
     const trimmed = name.trim();
     if (trimmed && !technicianNames.includes(trimmed)) {
-      await setDoc(
-        doc(db, 'config', 'main'),
-        { technicians: [...(config.data?.technicians || []), { id: crypto.randomUUID(), name: trimmed }] },
-        { merge: true },
-      );
+      await api.patch<ShopConfig>('/api/config', {
+        technicians: [...(config.data?.technicians || []), { id: crypto.randomUUID(), name: trimmed }],
+      });
     }
-    await updateDoc(doc(db, 'jobs', jobId), {
-      technician: trimmed,
-      technicianHistory: [...(job.technicianHistory || []), { name: trimmed, changedAt: nowIso() }],
-    });
+    // technicianHistory is appended server-side on PATCH when `technician` changes.
+    await api.patch<Job>(`/api/jobs/${jobId}`, { technician: trimmed });
   }
 
   async function editInfo(
@@ -145,59 +151,38 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     vehiclePatch: Partial<Vehicle>,
     customerPatch: Partial<Customer>,
   ) {
+    // Board/lookup projections are recomputed server-side off vehicles/customers/jobs
+    // directly now (no separate denormalized doc to resync or clean up a stale plate
+    // key from) — the backend emits board:changed/lookup:changed itself after these
+    // writes land.
     await Promise.all([
-      updateDoc(doc(db, 'vehicles', vehicleId), vehiclePatch),
-      updateDoc(doc(db, 'customers', customerId), customerPatch),
-    ]);
-    // Board and lookup both read plate/brand/model/customer straight off these docs,
-    // so every job currently checked in under this vehicle needs a fresh sync — and
-    // if the plate itself changed, the old plate's /lookup doc is now stale and must
-    // go, or a customer searching the old plate would find someone else's car.
-    const oldVehicle = vehicleById.get(vehicleId);
-    const updatedVehicle = { ...oldVehicle, id: vehicleId, ...vehiclePatch } as Vehicle;
-    const updatedCustomer = { ...customerById.get(customerId), id: customerId, ...customerPatch } as Customer;
-    const affectedJobs = activeJobs.filter((j) => j.vehicleId === vehicleId);
-    const oldPlateKey = normalizePlateKey(oldVehicle?.plate || '');
-    const newPlateKey = normalizePlateKey(updatedVehicle.plate || '');
-    await Promise.all([
-      ...affectedJobs.map((j) => syncPublicRecords(j, updatedVehicle, updatedCustomer)),
-      oldPlateKey && oldPlateKey !== newPlateKey ? deleteDoc(doc(db, 'lookup', oldPlateKey)) : Promise.resolve(),
+      api.patch<Vehicle>(`/api/vehicles/${vehicleId}`, vehiclePatch),
+      api.patch<Customer>(`/api/customers/${customerId}`, customerPatch),
     ]);
   }
 
-  // One-time catch-up for jobs that existed before the board/lookup sync path covered
-  // this write — without this, a car checked in before that ship date never gets a
-  // /lookup doc until something happens to touch it again (a status change, a parts
-  // edit...), so it just silently 404s on the customer's "find my car" page forever.
-  async function backfillPublicRecords() {
-    if (!window.confirm(`ซิงก์ข้อมูลสำหรับค้นหา (บอร์ด + ค้นหารถ) ของงานทั้งหมด ${activeJobs.length} รายการ?`)) return;
-    setBackfilling(true);
-    try {
-      await Promise.all(
-        activeJobs.map((j) => syncPublicRecords(j, vehicleById.get(j.vehicleId), customerById.get(j.customerId))),
-      );
-      window.alert('ซิงก์ข้อมูลสำเร็จ');
-    } finally {
-      setBackfilling(false);
-    }
-  }
-
-  // Every collection the schema doc defines (firebase/firestore.rules lists all 12,
-  // plus /lookup added since). Runs entirely client-side under the signed-in staff
-  // session that's already reading these collections elsewhere in the app — no admin
-  // credentials involved, the file lands directly in the browser's own Downloads.
-  const BACKUP_COLLECTIONS = [
-    'jobs', 'vehicles', 'customers', 'models', 'masterParts', 'partBrandOptions',
-    'complaintTypes', 'editLog', 'jobPhotos', 'config', 'users', 'board', 'lookup', 'technicians',
-  ];
-
+  // Pulls everything reachable through the locked REST contract into one JSON file.
+  // A few Firestore-era collections (partBrandOptions, complaintTypes, editLog,
+  // jobPhotos, the denormalized board/lookup docs) have no REST equivalent anymore —
+  // board/lookup are now computed on read, and the others were dropped from the
+  // backend's schema, so this backup is scoped to what /api actually exposes.
   async function exportDatabase() {
     setExporting(true);
     try {
-      const data: Record<string, unknown[]> = {};
-      for (const name of BACKUP_COLLECTIONS) {
-        const snap = await getDocs(collection(db, name));
-        data[name] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const data: Record<string, unknown> = {
+        jobs: await api.get('/api/jobs?includeDeleted=1'),
+        vehicles: await api.get('/api/vehicles'),
+        customers: await api.get('/api/customers'),
+        models: await api.get('/api/models'),
+        masterParts: await api.get('/api/master-parts'),
+        config: await api.get('/api/config'),
+      };
+      // /api/users is admin-only — skip it quietly for non-admin staff rather than
+      // failing the whole export.
+      try {
+        data.users = await api.get('/api/users');
+      } catch {
+        // not an admin — omit
       }
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -213,7 +198,7 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
 
   async function deleteJob(jobId: string) {
     if (!window.confirm('ลบรายการนี้ใช่หรือไม่?')) return;
-    await deleteDoc(doc(db, 'jobs', jobId));
+    await api.del(`/api/jobs/${jobId}`);
   }
 
   function toggleSelected(jobId: string) {
@@ -223,7 +208,7 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
   async function bulkDelete() {
     if (selectedIds.length === 0) return;
     if (!window.confirm(`ลบ ${selectedIds.length} รายการที่เลือกใช่หรือไม่?`)) return;
-    await Promise.all(selectedIds.map((id) => deleteDoc(doc(db, 'jobs', id))));
+    await Promise.all(selectedIds.map((id) => api.del(`/api/jobs/${id}`)));
     setSelectedIds([]);
   }
 
@@ -234,9 +219,6 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
         <div className="row-flex" style={{ gap: 8 }}>
           <button className="btn secondary small" disabled={exporting} onClick={exportDatabase}>
             {exporting ? 'กำลังดาวน์โหลด...' : 'ดาวน์โหลดข้อมูลทั้งหมด (JSON)'}
-          </button>
-          <button className="btn secondary small" disabled={backfilling} onClick={backfillPublicRecords}>
-            {backfilling ? 'กำลังซิงก์...' : 'ซิงก์ข้อมูลค้นหา/บอร์ด'}
           </button>
         </div>
       </div>
@@ -261,6 +243,37 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
           <div className="kpi-card-value">{statusCounts.ready ?? 0} คัน</div>
           <div className="kpi-card-label">พร้อมส่งมอบ</div>
           <div className="kpi-card-sub">ตรวจความเรียบร้อย</div>
+        </div>
+      </div>
+
+      <div className="dash-widgets">
+        <div className="card dash-attention">
+          <h3>ต้องจัดการต่อ</h3>
+          {attentionRows.length === 0 ? (
+            <p className="page-sub">ไม่มีงานที่รออนุมัติค้างอยู่</p>
+          ) : (
+            <ul className="dash-attention-list">
+              {attentionRows.map(({ job, since }) => (
+                <li key={job.id}>
+                  <button type="button" className="dash-attention-row" onClick={() => onOpenJob(job.id)}>
+                    <span className={`sw ${statusOf(job.status).cls}`} />
+                    <span className="dash-attention-desc">
+                      {job.jobNumber}
+                      {vehicleById.get(job.vehicleId)
+                        ? ` · ${vehicleById.get(job.vehicleId)!.brand} ${vehicleById.get(job.vehicleId)!.model}`
+                        : ''}
+                    </span>
+                    <span className="dash-attention-since">รอมา {timeSinceLabel(since)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="card dash-revenue">
+          <h3>รายได้วันนี้</h3>
+          <div className="job-summary-main">{fmtMoney(revenueToday.todayRev)} บาท</div>
+          <p className="page-sub">{revenueToday.todayCount} คันส่งมอบแล้ววันนี้</p>
         </div>
       </div>
 
@@ -359,6 +372,7 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
                 selMode={selectMode}
                 selected={selectedIds.includes(job.id)}
                 canDelete
+                canManageTechnicians={canManageTechnicians}
                 onOpen={onOpenJob}
                 onToggleSelect={toggleSelected}
                 onSetStatus={setStatus}

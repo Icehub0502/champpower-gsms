@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { doc, setDoc, updateDoc } from 'firebase/firestore';
 import {
   buildLineSummaryText,
   DECISION_KEYS,
@@ -32,11 +31,11 @@ import {
   type Vehicle,
   type VehicleModel,
 } from '@champpower/domain';
-import { db } from '../../lib/firebase/client';
-import { syncBoardEntry, syncPublicRecords } from '../../lib/firebase/board';
+import { api } from '../../lib/api/client';
 import { useCollection } from '../../hooks/useCollection';
 import { useDocument } from '../../hooks/useDocument';
-import { StatusLabel, StatusTrack } from '../../components/job/StatusTrack';
+import { isAdmin, useAuth } from '../../hooks/useAuth';
+import { StatusLabel, StatusStepper } from '../../components/job/StatusTrack';
 import { PlateBadge } from '../../components/ui/PlateBadge';
 import { Icon } from '../../components/ui/Icon';
 import { SignaturePad } from '../../components/job/SignaturePad';
@@ -54,12 +53,14 @@ function splitMins(total: number) {
 export function JobDetailPage() {
   const { jobId } = useParams();
   const navigate = useNavigate();
-  const jobs = useCollection<Job>('jobs');
-  const vehicles = useCollection<Vehicle>('vehicles');
-  const customers = useCollection<Customer>('customers');
-  const models = useCollection<VehicleModel>('models');
-  const masterParts = useCollection<MasterPart>('masterParts');
-  const config = useDocument<ShopConfig>('config', 'main');
+  const auth = useAuth();
+  const canManageTechnicians = isAdmin(auth);
+  const jobs = useCollection<Job>('/api/jobs?includeDeleted=1');
+  const vehicles = useCollection<Vehicle>('/api/vehicles');
+  const customers = useCollection<Customer>('/api/customers');
+  const models = useCollection<VehicleModel>('/api/models');
+  const masterParts = useCollection<MasterPart>('/api/master-parts');
+  const config = useDocument<ShopConfig>('/api/config');
   const technicians = config.data?.technicians || [];
 
   const [schedulingDate, setSchedulingDate] = useState<string | null>(null);
@@ -102,20 +103,16 @@ export function JobDetailPage() {
   if (jobs.loading) return <div className="page-loading">กำลังโหลด...</div>;
   if (!job) return <div className="empty-state">ไม่พบงานนี้</div>;
 
-  const jobRef = doc(db, 'jobs', job.id);
-  const nowIso = () => new Date().toISOString();
-
   async function pushStatus(status: Job['status'], extra: Record<string, unknown> = {}) {
     if (!job) return;
     setBusy(true);
     try {
-      const statusHistory = [...job.statusHistory, { status, changedAt: nowIso() }];
       // Entering "รอตั้งศูนย์" auto-claims the alignment rack if it's free; if another
       // job already holds it, the car just waits in its current bay for its turn.
       const alignBay = status === 'aligning' ? nextAlignBay(activeJobs, job.id) : null;
       const bayExtra = alignBay ? { bay: alignBay } : {};
-      await updateDoc(jobRef, { status, statusHistory, ...bayExtra, ...extra });
-      await syncPublicRecords({ ...job, status, statusHistory, ...bayExtra, ...extra }, vehicle, customer);
+      // statusHistory is appended server-side on PATCH when `status` changes.
+      await api.patch<Job>(`/api/jobs/${job.id}`, { status, ...bayExtra, ...extra });
     } finally {
       setBusy(false);
     }
@@ -133,19 +130,12 @@ export function JobDetailPage() {
     setBusy(true);
     try {
       if (trimmed && !technicians.some((t) => t.name === trimmed)) {
-        await setDoc(
-          doc(db, 'config', 'main'),
-          { technicians: [...technicians, { id: newId(), name: trimmed }] },
-          { merge: true },
-        );
+        await api.patch<ShopConfig>('/api/config', {
+          technicians: [...technicians, { id: newId(), name: trimmed }],
+        });
       }
-      await updateDoc(jobRef, {
-        technician: trimmed,
-        technicianHistory: [
-          ...(job.technicianHistory || []),
-          { name: trimmed, changedAt: nowIso() },
-        ],
-      });
+      // technicianHistory is appended server-side on PATCH when `technician` changes.
+      await api.patch<Job>(`/api/jobs/${job.id}`, { technician: trimmed });
       setShowTechInput(false);
       setTechInput('');
     } finally {
@@ -159,10 +149,9 @@ export function JobDetailPage() {
     try {
       const occupant = bay ? jobInBay(activeJobs, bay, job.id) : null;
       if (occupant) {
-        await updateDoc(doc(db, 'jobs', occupant.id), { bay: '' });
+        await api.patch<Job>(`/api/jobs/${occupant.id}`, { bay: '' });
       }
-      await updateDoc(jobRef, { bay });
-      await syncPublicRecords({ ...job, bay }, vehicle, customer);
+      await api.patch<Job>(`/api/jobs/${job.id}`, { bay });
     } finally {
       setBusy(false);
     }
@@ -171,20 +160,20 @@ export function JobDetailPage() {
   async function setEstMinutesTotal(totalMins: number) {
     if (!job) return;
     const value = Math.max(0, Math.round(totalMins));
-    await updateDoc(jobRef, { estValue: value, estUnit: 'minute' });
-    await syncBoardEntry({ ...job, estValue: value, estUnit: 'minute' }, vehicle);
+    await api.patch<Job>(`/api/jobs/${job.id}`, { estValue: value, estUnit: 'minute' });
   }
 
   async function saveWarranty() {
-    await updateDoc(jobRef, { warrantyDays });
+    if (!job) return;
+    await api.patch<Job>(`/api/jobs/${job.id}`, { warrantyDays });
   }
 
   async function savePartsNeeded(next: PartNeeded[]) {
     if (!job) return;
-    await updateDoc(jobRef, { partsNeeded: next });
     // The parts list (and any per-part photo) is exactly what the customer's public
-    // "find my car" page shows, so every edit here needs to reach /lookup too.
-    await syncPublicRecords({ ...job, partsNeeded: next }, vehicle, customer);
+    // "find my car" page shows — the backend re-syncs /api/public/lookup itself after
+    // this write, no client-side board/lookup call needed anymore.
+    await api.patch<Job>(`/api/jobs/${job.id}`, { partsNeeded: next });
   }
 
   function togglePartFromModel(mp: VehicleModel['parts'][number]) {
@@ -250,7 +239,8 @@ export function JobDetailPage() {
   }
 
   // Smaller/lower-quality than the car photo (480px/0.5 vs 640px/0.62) since a part can
-  // carry several of these inline on one document, and Firestore caps a doc at 1MiB.
+  // carry several of these inline on one job — keeps the JSON payload (and the
+  // LONGTEXT column storing it) reasonable when a job has many parts, each with photos.
   async function onPartPhotosPicked(id: string, files: FileList | null) {
     if (!files || files.length === 0 || !job) return;
     const compressed = await Promise.all(Array.from(files).map((f) => compressImage(f, 480, 0.5)));
@@ -271,11 +261,13 @@ export function JobDetailPage() {
   }
 
   async function saveDiscount(patch: { discountType?: Job['discountType']; discountValue?: number | string }) {
-    await updateDoc(jobRef, patch);
+    if (!job) return;
+    await api.patch<Job>(`/api/jobs/${job.id}`, patch);
   }
 
   async function saveSignature(role: 'inspector' | 'quoter' | 'customer', dataUrl: string) {
-    await updateDoc(jobRef, { signatures: { ...(job?.signatures || {}), [role]: dataUrl } });
+    if (!job) return;
+    await api.patch<Job>(`/api/jobs/${job.id}`, { signatures: { ...(job.signatures || {}), [role]: dataUrl } });
   }
 
   async function onPhotoPicked(file: File | undefined) {
@@ -283,8 +275,7 @@ export function JobDetailPage() {
     setUploadingPhoto(true);
     try {
       const dataUrl = await compressImage(file);
-      await updateDoc(jobRef, { thumb: dataUrl, photoCount: (job.photoCount || 0) + 1 });
-      await syncPublicRecords({ ...job, thumb: dataUrl }, vehicle, customer);
+      await api.patch<Job>(`/api/jobs/${job.id}`, { thumb: dataUrl, photoCount: (job.photoCount || 0) + 1 });
     } finally {
       setUploadingPhoto(false);
     }
@@ -329,7 +320,11 @@ export function JobDetailPage() {
       <div className="card">
         <div className="job-card-top">
           <PlateBadge plate={vehicle?.plate} province={vehicle?.province} size="lg" />
-          <StatusLabel status={job.status} />
+          <div className="job-header-meta">
+            <StatusLabel status={job.status} />
+            {job.bay && <span className="chip">จอดที่ {job.bay}</span>}
+            {job.technician && <span className="chip">ช่าง {job.technician}</span>}
+          </div>
         </div>
         <h2>{vehicle ? `${vehicle.brand} ${vehicle.model}` : 'ไม่ทราบรุ่นรถ'}</h2>
         <p className="page-sub">
@@ -342,7 +337,7 @@ export function JobDetailPage() {
           </p>
         )}
 
-        <StatusTrack status={job.status} />
+        <StatusStepper status={job.status} />
 
         {job.complaints?.length > 0 && (
           <div className="complaint-chips">
@@ -353,6 +348,27 @@ export function JobDetailPage() {
             ))}
           </div>
         )}
+      </div>
+
+      <div className="job-summary-cards">
+        <div className="card job-summary-card">
+          <h3>ลูกค้า</h3>
+          <p className="job-summary-main">{customer?.name || '—'}</p>
+          <p className="page-sub">{customer?.phone || 'ไม่มีเบอร์โทร'}</p>
+        </div>
+        <div className="card job-summary-card">
+          <h3>รถและใบงาน</h3>
+          <p className="job-summary-main">
+            {job.jobNumber}
+            {job.queueNo ? ` · คิว ${job.queueNo}` : ''}
+          </p>
+          <p className="page-sub">รับรถ {fmtDT(job.createdAt)}</p>
+        </div>
+        <div className="card job-summary-card">
+          <h3>ยอดปัจจุบัน</h3>
+          <p className="job-summary-main">{fmtMoney(grandTotal)} บาท</p>
+          <p className="page-sub">{job.partsNeeded.length} รายการในใบเสนอราคา</p>
+        </div>
       </div>
 
       <div className="card no-print">
@@ -415,9 +431,11 @@ export function JobDetailPage() {
                 {t.name}
               </button>
             ))}
-            <button className="chip" onClick={() => setShowTechInput(true)}>
-              + พิมพ์ชื่อใหม่
-            </button>
+            {canManageTechnicians && (
+              <button className="chip" onClick={() => setShowTechInput(true)}>
+                + พิมพ์ชื่อใหม่
+              </button>
+            )}
           </div>
         ) : (
           <div className="row-flex no-print">

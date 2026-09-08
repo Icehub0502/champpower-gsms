@@ -2,6 +2,7 @@ export interface MasterPart {
   id: string;
   name: string;
   category: string;
+  createdAt?: string;
 }
 
 export interface ModelPartBrand {

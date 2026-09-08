@@ -23,6 +23,9 @@ const PATHS: Record<string, string> = {
   settings: 'circle:12,12,3|M12 2v3|M12 19v3|M4.2 4.2l2.1 2.1|M17.7 17.7l2.1 2.1|M2 12h3|M19 12h3|M4.2 19.8l2.1-2.1|M17.7 6.3l2.1-2.1',
   monitor: 'M8 20h8|M12 16v4|rect:3,4,18,12,2',
   sparkles: 'M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z',
+  tag: 'M20.6 13.4 12 22l-9-9V4a2 2 0 0 1 2-2h9z|circle:7,7,1',
+  alert: 'M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h16.9a2 2 0 0 0 1.8-3L13.7 3.9a2 2 0 0 0-3.4 0z|M12 9v4|circle:12,17,.4',
+  printer: 'M6 9V3h12v6|rect:4,9,16,8,1|rect:8,13,8,6,1',
 };
 
 export function Icon({ name, size = 15 }: { name: keyof typeof PATHS; size?: number }) {

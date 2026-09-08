@@ -51,3 +51,52 @@ export function StatusLabel({ status }: { status: StatusKey }) {
   const def = STATUS_FLOW.find((s) => s.key === status) ?? statusOf(status);
   return <span className={`status-chip ${def.cls}`}>{def.label}</span>;
 }
+
+/** Condenses MAIN_PATH's 8 statuses into the 5 stages the job-detail header shows as
+ * cards (รับรถ/ตรวจเช็ก/เสนอราคา/อนุมัติ+ซ่อม/พร้อมส่ง) — grouping is display-only,
+ * it doesn't change what pushStatus/MAIN_PATH themselves do. */
+const STEPPER_GROUPS: { label: string; keys: StatusKey[] }[] = [
+  { label: 'รับรถ', keys: ['received'] },
+  { label: 'ตรวจเช็ก', keys: ['inspecting'] },
+  { label: 'เสนอราคา', keys: ['quoted'] },
+  { label: 'อนุมัติ/ซ่อม', keys: ['approved', 'repairing', 'aligning'] },
+  { label: 'พร้อมส่ง', keys: ['ready', 'delivered'] },
+];
+
+export function StatusStepper({ status }: StatusTrackProps) {
+  const branchLabel = BRANCH_LABELS[status];
+  const currentGroupIndex = STEPPER_GROUPS.findIndex((g) => g.keys.includes(status));
+
+  return (
+    <div className="status-stepper">
+      {STEPPER_GROUPS.map((g, i) => {
+        // A branched job (scheduled/rejected/carout) diverged right after the
+        // "เสนอราคา" decision point, so the first 3 stages are done and it never
+        // reaches the remaining two on this path.
+        const state: 'done' | 'current' | 'pending' = branchLabel
+          ? i < 3
+            ? 'done'
+            : 'pending'
+          : i < currentGroupIndex
+            ? 'done'
+            : i === currentGroupIndex
+              ? 'current'
+              : 'pending';
+        return (
+          <div key={g.label} className={`status-step status-step-${state} st-${g.keys[0]}`}>
+            <span className="status-step-label">{g.label}</span>
+            <span className="status-step-state">
+              {state === 'done' ? 'เสร็จแล้ว' : state === 'current' ? 'สถานะปัจจุบัน' : 'รอดำเนินการ'}
+            </span>
+          </div>
+        );
+      })}
+      {branchLabel && (
+        <div className={`status-track-branch st-${status}`}>
+          <span className="branch-dot" />
+          {branchLabel}
+        </div>
+      )}
+    </div>
+  );
+}

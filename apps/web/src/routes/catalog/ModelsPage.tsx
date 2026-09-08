@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { addDoc, collection } from 'firebase/firestore';
 import { BRAND_OPTIONS, VEHICLE_MODELS, seedKeyOf, type VehicleModel } from '@champpower/domain';
-import { db } from '../../lib/firebase/client';
+import { api } from '../../lib/api/client';
 import { useCollection } from '../../hooks/useCollection';
+import { isAdmin, useAuth } from '../../hooks/useAuth';
 
 export function ModelsPage() {
   const navigate = useNavigate();
-  const models = useCollection<VehicleModel>('models');
+  const auth = useAuth();
+  const canManageCatalog = isAdmin(auth);
+  const models = useCollection<VehicleModel>('/api/models');
   const [search, setSearch] = useState('');
   const [brand, setBrand] = useState('');
   const [name, setName] = useState('');
@@ -28,9 +30,7 @@ export function ModelsPage() {
     setBusy(true);
     try {
       await Promise.all(
-        missingFromCatalog.map((cm) =>
-          addDoc(collection(db, 'models'), { brand: cm.brand, name: cm.name, parts: [], promotions: [] }),
-        ),
+        missingFromCatalog.map((cm) => api.post('/api/models', { brand: cm.brand, name: cm.name, parts: [], promotions: [] })),
       );
     } finally {
       setBusy(false);
@@ -41,14 +41,14 @@ export function ModelsPage() {
     if (!brand.trim() || !name.trim()) return;
     setBusy(true);
     try {
-      const ref = await addDoc(collection(db, 'models'), {
+      const created = await api.post<VehicleModel>('/api/models', {
         brand: brand.trim().toUpperCase(),
         name: name.trim().toUpperCase(),
         parts: [],
         promotions: [],
       });
       setName('');
-      navigate(`/models/${ref.id}`);
+      navigate(`/models/${created.id}`);
     } finally {
       setBusy(false);
     }
@@ -66,26 +66,28 @@ export function ModelsPage() {
         onChange={(e) => setSearch(e.target.value)}
       />
 
-      <div className="card">
-        <h3>เพิ่มรุ่นใหม่</h3>
-        <div className="row-flex">
-          <input list="brand-options-models" value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="ยี่ห้อ" />
-          <datalist id="brand-options-models">
-            {BRAND_OPTIONS.map((b) => (
-              <option key={b} value={b} />
-            ))}
-          </datalist>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อรุ่น" />
-          <button className="btn" onClick={addModel} disabled={busy}>
-            เพิ่ม
-          </button>
+      {canManageCatalog && (
+        <div className="card">
+          <h3>เพิ่มรุ่นใหม่</h3>
+          <div className="row-flex">
+            <input list="brand-options-models" value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="ยี่ห้อ" />
+            <datalist id="brand-options-models">
+              {BRAND_OPTIONS.map((b) => (
+                <option key={b} value={b} />
+              ))}
+            </datalist>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อรุ่น" />
+            <button className="btn" onClick={addModel} disabled={busy}>
+              เพิ่ม
+            </button>
+          </div>
+          {missingFromCatalog.length > 0 && (
+            <button className="btn secondary" style={{ marginTop: 10 }} onClick={importCatalog} disabled={busy}>
+              นำเข้ารุ่นจากแคตตาล็อกร้าน ({missingFromCatalog.length})
+            </button>
+          )}
         </div>
-        {missingFromCatalog.length > 0 && (
-          <button className="btn secondary" style={{ marginTop: 10 }} onClick={importCatalog} disabled={busy}>
-            นำเข้ารุ่นจากแคตตาล็อกร้าน ({missingFromCatalog.length})
-          </button>
-        )}
-      </div>
+      )}
 
       {models.loading ? (
         <div className="page-loading">กำลังโหลด...</div>

@@ -1,69 +1,79 @@
-// TODO: replace mock data with a real Firestore query once "customer declined
-// this line item" is tracked per part (today `PartNeeded` has no reject/reason
-// field — only the whole job can move to the `rejected` status).
-interface MockRejectedItem {
-  id: string;
-  jobNumber: string;
-  vehicle: string;
-  item: string;
-  price: number;
-  reason: string;
-  timestamp: string;
-}
+import { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { fmtMoney, jobGrandTotal, type Customer, type Job, type Vehicle } from '@champpower/domain';
+import { useCollection } from '../../hooks/useCollection';
+import { PlateBadge } from '../../components/ui/PlateBadge';
 
-const MOCK_REJECTED: MockRejectedItem[] = [
-  {
-    id: 'r1',
-    jobNumber: 'SV-02681',
-    vehicle: 'Toyota Camry',
-    item: 'แร็คพวงมาลัย',
-    price: 6500,
-    reason: 'ขอพิจารณาก่อน',
-    timestamp: '25 ส.ค. 10:15',
-  },
-  {
-    id: 'r2',
-    jobNumber: 'SV-02658',
-    vehicle: 'BMW E90',
-    item: 'ปีกนกหน้า',
-    price: 9800,
-    reason: 'ราคาสูงกว่างบ',
-    timestamp: '24 ส.ค. 16:40',
-  },
-  {
-    id: 'r3',
-    jobNumber: 'SV-02631',
-    vehicle: 'Honda Accord',
-    item: 'โช้คอัพหน้า',
-    price: 8400,
-    reason: 'ขอเลื่อนไปเดือนหน้า',
-    timestamp: '23 ส.ค. 09:05',
-  },
-];
-
+/** Jobs at status `rejected` — "customer declined the quote". `Job`/`PartNeeded` have
+ * no reject-reason field anywhere in the schema (see packages/domain/src/types/job.ts),
+ * so unlike the old mock UI there is no "เหตุผล" column here — adding one would mean a
+ * new DB column, which is out of scope for a wiring pass. The last status-change
+ * timestamp (from `statusHistory`) stands in for the mock's "เมื่อ" column instead. */
 export function RejectedPage() {
+  const navigate = useNavigate();
+  const jobs = useCollection<Job>('/api/jobs?includeDeleted=1');
+  const vehicles = useCollection<Vehicle>('/api/vehicles');
+  const customers = useCollection<Customer>('/api/customers');
+
+  const vehicleById = useMemo(() => new Map(vehicles.rows.map((v) => [v.id, v])), [vehicles.rows]);
+  const customerById = useMemo(() => new Map(customers.rows.map((c) => [c.id, c])), [customers.rows]);
+
+  const rows = useMemo(() => {
+    return jobs.rows
+      .filter((j) => !j.deletedAt && j.status === 'rejected')
+      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  }, [jobs.rows]);
+
+  const loading = jobs.loading || vehicles.loading || customers.loading;
+
   return (
     <div className="page">
       <h1>รายการไม่อนุมัติ</h1>
-      <p className="page-sub">รายการซ่อม/อะไหล่ที่ลูกค้ายังไม่อนุมัติ — รอติดตามกลับ</p>
+      <p className="page-sub">งานที่ลูกค้าไม่อนุมัติใบเสนอราคา — รอติดตามกลับ</p>
 
       <h2 className="section-title">รอติดตาม</h2>
-      <div className="list-card">
-        {MOCK_REJECTED.map((r) => (
-          <div className="list-row" key={r.id} style={{ borderLeft: '4px solid var(--gold)', paddingLeft: 12 }}>
-            <div className="list-row-main">
-              <div className="list-row-title">
-                {r.jobNumber} · {r.vehicle} · {r.item} — ฿{r.price.toLocaleString('th-TH')}
-              </div>
-              <div className="list-row-note">เหตุผล: {r.reason}</div>
-              <div className="list-row-sub">{r.timestamp}</div>
-            </div>
-            <div className="list-row-actions">
-              <button type="button" className="btn secondary small">ติดตามลูกค้า</button>
-            </div>
-          </div>
-        ))}
-      </div>
+      {loading ? (
+        <div className="page-loading">กำลังโหลด...</div>
+      ) : rows.length === 0 ? (
+        <div className="empty-state">ไม่มีงานที่ถูกปฏิเสธ</div>
+      ) : (
+        <div className="list-card">
+          {rows.map((j) => {
+            const v = vehicleById.get(j.vehicleId);
+            const c = customerById.get(j.customerId);
+            const rejectedEntry = [...(j.statusHistory || [])].reverse().find((h) => h.status === 'rejected');
+            return (
+              <button
+                type="button"
+                key={j.id}
+                className="list-row"
+                style={{
+                  width: '100%',
+                  background: 'none',
+                  border: 'none',
+                  borderLeft: '4px solid var(--gold)',
+                  paddingLeft: 12,
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                }}
+                onClick={() => navigate(`/jobs/${j.id}`)}
+              >
+                <PlateBadge plate={v?.plate} province={v?.province} />
+                <div className="list-row-main">
+                  <div className="list-row-title">
+                    {j.jobNumber} · {v ? `${v.brand} ${v.model}` : 'ไม่ทราบรุ่นรถ'} — ฿{fmtMoney(jobGrandTotal(j))}
+                  </div>
+                  <div className="list-row-sub">
+                    {c?.name || 'ไม่ทราบชื่อลูกค้า'}{c?.phone ? ` · ${c.phone}` : ''}
+                    {rejectedEntry ? ` · ${new Date(rejectedEntry.changedAt).toLocaleString('th-TH')}` : ''}
+                  </div>
+                </div>
+                <span className="pill pill-danger">ไม่อนุมัติ</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

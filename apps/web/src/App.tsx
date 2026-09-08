@@ -1,6 +1,5 @@
 import { Navigate, Outlet, Route, Routes, useNavigate } from 'react-router-dom';
-import type { User } from 'firebase/auth';
-import { useAuth, type Role } from './hooks/useAuth';
+import { useAuth, type AuthUser, type Role } from './hooks/useAuth';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { LoginPage } from './routes/auth/LoginPage';
 import { FinancePage } from './routes/finance/FinancePage';
@@ -10,6 +9,11 @@ import { CheckInPage } from './routes/checkin/CheckInPage';
 import { ModelsPage } from './routes/catalog/ModelsPage';
 import { ModelDetailPage } from './routes/catalog/ModelDetailPage';
 import { MasterPartsPage } from './routes/catalog/MasterPartsPage';
+import { PriceBookPage } from './routes/catalog/PriceBookPage';
+import { BulkPrintPage } from './routes/catalog/BulkPrintPage';
+import { ModelPromotionsPage } from './routes/catalog/ModelPromotionsPage';
+import { StuckJobsPage } from './routes/jobs/StuckJobsPage';
+import { BlankFormPage } from './routes/print/BlankFormPage';
 import { BoardPage } from './routes/board/BoardPage';
 import { LookupPage } from './routes/lookup/LookupPage';
 import { AppShell } from './components/AppShell';
@@ -55,14 +59,19 @@ function AuthedApp() {
           shown without the sidebar/top-bar shell — that shell is for the staff
           console itself, not for choosing which surface to enter. */}
       <Route path="/" element={<HomeLauncherPage />} />
-      <Route element={<ShellLayout user={auth.user} role={auth.role} online={online} />}>
+      <Route element={<ShellLayout user={auth.user} role={auth.role} online={online} onLogout={auth.logout} />}>
         <Route path="/jobs" element={<JobListRoute />} />
         <Route path="/jobs/:jobId" element={<JobDetailPage />} />
         <Route path="/checkin" element={<CheckInRoute />} />
         <Route path="/finance" element={<FinancePage />} />
         <Route path="/models" element={<ModelsPage />} />
         <Route path="/models/:modelId" element={<ModelDetailPage />} />
+        <Route path="/models/:modelId/promotions" element={<ModelPromotionsPage />} />
         <Route path="/master-parts" element={<MasterPartsPage />} />
+        <Route path="/price-book" element={<PriceBookPage />} />
+        <Route path="/price-book/print" element={<BulkPrintPage />} />
+        <Route path="/stuck-jobs" element={<StuckJobsPage />} />
+        <Route path="/print/blank-checkin" element={<BlankFormPage />} />
         <Route path="/delivered" element={<DeliveredPage />} />
         <Route path="/rejected" element={<RejectedPage />} />
         <Route path="/warranty" element={<WarrantyPage />} />
@@ -78,9 +87,19 @@ function AuthedApp() {
   );
 }
 
-function ShellLayout({ user, role, online }: { user: User; role: Role | null; online: boolean }) {
+function ShellLayout({
+  user,
+  role,
+  online,
+  onLogout,
+}: {
+  user: AuthUser;
+  role: Role | null;
+  online: boolean;
+  onLogout: () => void;
+}) {
   return (
-    <AppShell user={user} role={role} online={online}>
+    <AppShell user={user} role={role} online={online} onLogout={onLogout}>
       <Outlet />
     </AppShell>
   );
