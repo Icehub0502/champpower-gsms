@@ -28,3 +28,8 @@ npm run seed -w packages/db
 - Every view must be declared `WITH (security_invoker = true)`. Without it the
   view runs as its owner and the row-level security of the tables it reads is
   skipped entirely.
+- **Every migration that touches an RLS policy must be verified by running
+  `psql -U postgres -d gsms -f packages/db/verify-rls.sql`, with the output
+  attached to the PR/report.** A migration that changes RLS without this
+  attached is not done — see `CLAUDE.md` §11 and `docs/WORK-ORDERS/WO-001-auth-hardening.md`
+  for what a missed policy split costs.
