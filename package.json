@@ -18,7 +18,7 @@
     "build:web": "npm run build -w apps/web",
     "build:api": "npm run build -w apps/api",
     "lint": "eslint . --ext .ts,.tsx",
-    "test": "npm run test -w packages/domain"
+    "test": "npm run test -w packages/domain && npm run test -w apps/api"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.15.0",

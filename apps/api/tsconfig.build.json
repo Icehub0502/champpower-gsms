@@ -1,0 +1,30 @@
+{
+  // Emit config. Identical to tsconfig.json except that the tests are left out
+  // of `lib/`.
+  //
+  // tsconfig.json deliberately DOES include `src/**/*.test.ts`, because one of
+  // the WO-001 tests is a compile-time test: `lib/txBrand.test.ts` uses
+  // `@ts-expect-error` to assert that handing a GroupTx to a function expecting
+  // a ScopedTx is a type error. `@ts-expect-error` only fails the build when the
+  // line it guards compiles CLEANLY — so that test is worthless unless
+  // `npm run typecheck` actually reads it.
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/test/**",
+    "src/db",
+    "src/lib/friendlyApiError.ts",
+    "src/lib/ids.ts",
+    "src/lib/secrets.ts",
+    "src/middleware/requireAdmin.ts",
+    "src/routes/ai.ts",
+    "src/routes/config.ts",
+    "src/routes/customers.ts",
+    "src/routes/jobs.ts",
+    "src/routes/masterParts.ts",
+    "src/routes/models.ts",
+    "src/routes/public.ts",
+    "src/routes/users.ts",
+    "src/routes/vehicles.ts"
+  ]
+}

@@ -8,5 +8,26 @@
     "rootDir": "src",
     "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  // MySQL-era files from before the PostgreSQL rewrite. They cannot compile
+  // since `mysql2` and `bcrypt` left the dependencies, and none of them is
+  // mounted in app.ts. This list is a QUEUE, not a settled state: a name comes
+  // off it as each screen is ported, and nothing is ever added to it. If you
+  // are about to add a line here, you are hiding live code from the compiler.
+  "exclude": [
+    "src/db",
+    "src/lib/friendlyApiError.ts",
+    "src/lib/ids.ts",
+    "src/lib/secrets.ts",
+    "src/middleware/requireAdmin.ts",
+    "src/routes/ai.ts",
+    "src/routes/config.ts",
+    "src/routes/customers.ts",
+    "src/routes/jobs.ts",
+    "src/routes/masterParts.ts",
+    "src/routes/models.ts",
+    "src/routes/public.ts",
+    "src/routes/users.ts",
+    "src/routes/vehicles.ts"
+  ]
 }
