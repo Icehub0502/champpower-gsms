@@ -1,0 +1,19 @@
+# PostgreSQL for development. The shop's machine runs the same image, so the
+# version staff use and the version tests run against never drift apart.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: gsms-db
+    environment:
+      POSTGRES_PASSWORD: gsms_dev
+      POSTGRES_DB: gsms
+      # Thai collation for correct name sorting; C.UTF-8 would sort ก after z.
+      LANG: th_TH.utf8
+    ports: ['5432:5432']
+    volumes: ['gsms-pgdata:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d gsms']
+      interval: 5s
+      retries: 10
+volumes:
+  gsms-pgdata:

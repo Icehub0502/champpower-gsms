@@ -7,13 +7,16 @@
     "packages/*"
   ],
   "scripts": {
+    "db:up": "docker compose up -d db",
+    "db:migrate": "npm run migrate -w packages/db",
+    "db:migrate:dry": "npm run migrate:dry -w packages/db",
+    "db:seed": "npm run seed -w packages/db",
+    "db:codegen": "kysely-codegen --dialect postgres --out-file packages/db/src/types.ts",
     "dev:web": "npm run dev -w apps/web",
     "dev:api": "npm run dev -w apps/api",
-    "dev:domain:test": "npm run test -w packages/domain",
     "build:domain": "npm run build -w packages/domain",
     "build:web": "npm run build -w apps/web",
     "build:api": "npm run build -w apps/api",
-    "migrate": "npm run migrate -w apps/api",
     "lint": "eslint . --ext .ts,.tsx",
     "test": "npm run test -w packages/domain"
   },
@@ -22,5 +25,8 @@
     "@typescript-eslint/parser": "^8.15.0",
     "eslint": "^8.57.0",
     "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=24 <25"
   }
 }
