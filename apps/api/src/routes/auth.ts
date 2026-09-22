@@ -12,7 +12,7 @@ import { sql } from 'kysely'
 import { unscoped, withShop } from '@gsms/db/client.js'
 import { randomUUID } from 'node:crypto'
 import { db } from '../lib/db.js'
-import { verifyRefresh, type Role } from '../lib/jwt.js'
+import { refreshExpiresAt, verifyRefresh, type Role } from '../lib/jwt.js'
 import { requireAuth, type AuthedRequest } from '../middleware/requireAuth.js'
 import { asyncRouter } from '../middleware/asyncHandler.js'
 import {
@@ -28,13 +28,74 @@ const loginSchema = z.object({
   shopId: z.string().uuid().optional(),
 })
 
+/**
+ * There is deliberately no `refreshToken` field here.
+ *
+ * The token arrives one way and one way only: the httpOnly cookie below, which
+ * the browser attaches by itself. A body fallback existed briefly, justified as
+ * "for non-browser clients"; an audit of the whole repository found no such
+ * client, and none is planned — the LINE bot (CLAUDE.md §5.9) is server-side
+ * and never holds a user's refresh token.
+ *
+ * It is not kept behind a test-only flag either. A credential-accepting path
+ * switched on by an environment variable is itself the risk: set that variable
+ * wrongly in production once and the door is open, silently. Tests set the
+ * cookie directly, the same way a browser does, so the code under test is the
+ * code that runs in production.
+ *
+ * If a non-browser client ever genuinely exists, this comes back with its own
+ * review. "In case we need it" is how a door stays propped open for years.
+ */
 const refreshSchema = z.object({
-  refreshToken: z.string().min(1),
   // §8 rule 2: the active shop normally travels inside the signed refresh
   // token. An explicit shopId is accepted only as an override and is still
   // checked against a real membership below.
   shopId: z.string().uuid().optional(),
 })
+
+/**
+ * The refresh token cookie.
+ *
+ * `httpOnly` — page JavaScript, including an XSS payload, can never read it.
+ * `secure` — sent only over HTTPS in production; browsers also special-case
+ *   `http://localhost` as a secure context, so this does not need to relax in
+ *   dev (see apps/web/vite.config.ts for the matching same-origin proxy that
+ *   makes SameSite=Strict work in dev at all).
+ * `sameSite: 'strict'` — the line between "an XSS costs the session" and "an
+ *   XSS costs fifteen minutes" (WO-004/T6). Settled in docs/ARCHITECTURE.md
+ *   §7 over `Lax`; do not soften it because a cross-site deployment (e.g. an
+ *   ngrok tunnel) makes it inconvenient — fix the topology instead.
+ * `path: '/api/auth'` — the cookie has no reason to be sent to any other
+ *   route; this is also what keeps it off the (larger) attack surface of every
+ *   other endpoint.
+ */
+const REFRESH_COOKIE_NAME = 'gsms_rt'
+const REFRESH_COOKIE_PATH = '/api/auth'
+
+function refreshCookieOptions(maxAgeMs?: number) {
+  return {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'strict' as const,
+    path: REFRESH_COOKIE_PATH,
+    ...(maxAgeMs !== undefined ? { maxAge: maxAgeMs } : {}),
+  }
+}
+
+function setRefreshCookie(res: import('express').Response, token: string): void {
+  const maxAgeMs = refreshExpiresAt().getTime() - Date.now()
+  res.cookie(REFRESH_COOKIE_NAME, token, refreshCookieOptions(maxAgeMs))
+}
+
+function clearRefreshCookie(res: import('express').Response): void {
+  res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions())
+}
+
+/** The cookie is the only source; see the note on `refreshSchema` above. */
+function readRefreshToken(req: import('express').Request): string | undefined {
+  const cookieValue = (req as { cookies?: Record<string, unknown> }).cookies?.[REFRESH_COOKIE_NAME]
+  return typeof cookieValue === 'string' && cookieValue ? cookieValue : undefined
+}
 
 interface Membership { shop_id: string; role: Role; shop_name: string; shop_slug: string }
 
@@ -127,9 +188,11 @@ authRouter.post('/login', async (req, res) => {
   const device = String(req.headers['user-agent'] ?? '').slice(0, 200) || null
   const tokens = await unscoped(db, (trx) => issueSession(trx, user.id, chosen, device))
 
+  setRefreshCookie(res, tokens.refreshToken)
   res.json({
     accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken,
+    // No refreshToken field here — WO-004/T6 condition 2. It travels only as
+    // the httpOnly cookie set above; page JavaScript must never hold it.
     user: { id: user.id, loginId: user.login_id, name: user.name },
     shop: { id: chosen.shop_id, name: chosen.shop_name, slug: chosen.shop_slug, role: chosen.role },
     shops: memberships.map((m) => ({
@@ -153,9 +216,19 @@ authRouter.post('/refresh', async (req, res) => {
     return
   }
 
+  const refreshToken = readRefreshToken(req)
+  if (!refreshToken) {
+    // No cookie means no session to refresh. Answered as 401 rather than 400:
+    // nothing about the request is malformed, the caller simply is not signed
+    // in, and the client's reaction — send the user to the login screen — is
+    // the same as for every other expired-session answer here.
+    res.status(401).json({ error: 'session_revoked' })
+    return
+  }
+
   let payload
   try {
-    payload = verifyRefresh(parsed.data.refreshToken)
+    payload = verifyRefresh(refreshToken)
   } catch {
     res.status(401).json({ error: 'invalid_token' })
     return
@@ -247,10 +320,12 @@ authRouter.post('/refresh', async (req, res) => {
     return issued
   })
 
+  setRefreshCookie(res, tokens.refreshToken)
   res.json({
     accessToken: tokens.accessToken,
-    // Rotated. Store this one and discard the token you presented.
-    refreshToken: tokens.refreshToken,
+    // Rotated, and set as the httpOnly cookie above — never in this body.
+    // Whatever refresh token the caller presented (cookie or fallback body)
+    // is now dead; the cookie just set is the only live one.
     shop: {
       id: current.shop_id, name: current.shop_name, slug: current.shop_slug, role: current.role,
     },
@@ -302,9 +377,9 @@ authRouter.post('/switch-shop', requireAuth, async (req: AuthedRequest, res) => 
     return issued
   })
 
+  setRefreshCookie(res, tokens.refreshToken)
   res.json({
     accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken,
     shop: { id: target.shop_id, name: target.shop_name, slug: target.shop_slug, role: target.role },
   })
 })
@@ -350,5 +425,9 @@ authRouter.post('/logout', requireAuth, async (req: AuthedRequest, res) => {
   // No successor: a logout ends the chain rather than continuing it, and
   // revokeSession leaves any `replaced_by` already on the row intact.
   await unscoped(db, (trx) => revokeSession(trx, req.auth!.jti, null))
+  // The session row is already dead, so the cookie is inert either way — but
+  // an inert cookie still sitting in the jar is one more thing to explain
+  // during an incident, and clearing it is one line.
+  clearRefreshCookie(res)
   res.json({ ok: true })
 })

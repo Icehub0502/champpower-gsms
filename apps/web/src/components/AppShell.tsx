@@ -14,19 +14,29 @@ interface AppShellProps {
   children: ReactNode;
 }
 
+// WO-004/T6: only /jobs, /checkin and /print/blank-checkin are wired to a
+// mounted API today (apps/api/src/app.ts). Every other screen this sidebar
+// used to link to (delivered/models/master-parts/price-book/stuck-jobs/
+// finance/calendar/settings/users) still calls an unmounted MySQL-era
+// endpoint, so its nav entry is removed rather than left to click through to
+// components/ui/NotYetAvailable.tsx — a link that always says "not available"
+// is worse than no link. The routes themselves still exist (App.tsx) for a
+// direct URL / bookmark, and the pages are kept on disk, unported, for a
+// later phase.
 const NAV_ITEMS: { to: string; label: string; icon: Parameters<typeof Icon>[0]['name'] }[] = [
   { to: '/jobs', label: 'งานวันนี้', icon: 'list' },
   { to: '/checkin', label: 'รับรถ', icon: 'plus' },
-  { to: '/delivered', label: 'รถทั้งหมด', icon: 'car' },
-  { to: '/models', label: 'รุ่นรถ / อะไหล่', icon: 'box' },
-  { to: '/master-parts', label: 'สินค้า', icon: 'wrench' },
-  { to: '/price-book', label: 'ตำราคา', icon: 'tag' },
-  { to: '/stuck-jobs', label: 'งานค้าง', icon: 'alert' },
-  { to: '/finance', label: 'รายได้', icon: 'money' },
-  { to: '/calendar', label: 'นัดหมาย', icon: 'calendar' },
-  { to: '/settings/users', label: 'ผู้ใช้งาน', icon: 'users' },
-  { to: '/settings', label: 'ตั้งค่า', icon: 'settings' },
 ];
+
+const ROLE_LABEL_TH: Record<Role, string> = {
+  owner: 'เจ้าของ',
+  manager: 'ผู้จัดการ',
+  assistant_manager: 'รองผู้จัดการ',
+  advisor: 'หน้าร้าน',
+  technician: 'ช่าง',
+  accountant: 'บัญชี',
+  viewer: 'ผู้ดูอย่างเดียว',
+};
 
 /** QR code for the public "find my car" page — generated client-side so it always
  * points at wherever this deploy is actually running (no hardcoded domain). */
@@ -59,7 +69,8 @@ function LookupQrButton() {
 
 export function AppShell({ user, role, online, onLogout, children }: AppShellProps) {
   const navigate = useNavigate();
-  const initial = (user.email || '?').charAt(0).toUpperCase();
+  const displayName = user.name || user.loginId;
+  const initial = (displayName || '?').charAt(0).toUpperCase();
 
   return (
     <div className="shell-v2">
@@ -96,7 +107,7 @@ export function AppShell({ user, role, online, onLogout, children }: AppShellPro
         <div className="sidebar-footer">
           v4.0 Redesign
           <br />
-          {user.email}
+          {displayName}
         </div>
       </aside>
 
@@ -115,8 +126,8 @@ export function AppShell({ user, role, online, onLogout, children }: AppShellPro
             <div className="topbar-profile">
               <div className="profile-chip" aria-hidden="true">{initial}</div>
               <div className="topbar-profile-meta">
-                <span>{user.email}</span>
-                <span className="role">{role === 'admin' ? 'ผู้ดูแลระบบ' : 'พนักงาน'}</span>
+                <span>{displayName}</span>
+                <span className="role">{role ? ROLE_LABEL_TH[role] : '-'}</span>
               </div>
             </div>
             <button type="button" className="btn small secondary" onClick={onLogout}>

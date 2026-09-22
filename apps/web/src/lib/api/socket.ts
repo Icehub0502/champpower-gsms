@@ -1,17 +1,28 @@
 import { io, type Socket } from 'socket.io-client';
-import { TOKEN_KEY } from './client';
+import { getAccessToken } from './client';
 
-const SOCKET_URL = (import.meta.env.VITE_SOCKET_URL as string | undefined) ?? '';
+// Relative: same-origin, same as client.ts — see apps/web/vite.config.ts for
+// the dev proxy that makes this (and the httpOnly refresh cookie) work
+// without CORS. VITE_SOCKET_URL is gone; an absolute cross-origin socket URL
+// is exactly the split-origin setup that breaks SameSite=Strict.
+const SOCKET_URL = '';
 
 function createSocket(): Socket {
-  const token = localStorage.getItem(TOKEN_KEY);
   return io(SOCKET_URL, {
     autoConnect: true,
-    auth: token ? { token } : {},
-    // Same ngrok free-tier workaround as the REST client (apps/web/src/lib/api/
-    // client.ts) — harmless against a real backend, only needed so the polling
-    // handshake isn't intercepted by ngrok's browser-warning interstitial.
-    extraHeaders: { 'ngrok-skip-browser-warning': '1' },
+    // A function, not a plain object: apps/api/src/lib/socket.ts disconnects
+    // a socket the moment the access token it connected with expires, and
+    // socket.io-client's own auto-reconnect logic re-invokes this on every
+    // attempt — so reading getAccessToken() here (WO-004/T6 condition 1: the
+    // in-memory holder in client.ts, never storage) means a reconnect after
+    // an ordinary 401-triggered background refresh (client.ts) picks up the
+    // new token by itself. A plain object would freeze in whatever token was
+    // current at the first connection and silently fall back to the public
+    // room on every reconnect after that.
+    auth: (cb: (data: Record<string, unknown>) => void) => {
+      const token = getAccessToken();
+      cb(token ? { token } : {});
+    },
   });
 }
 
@@ -23,10 +34,11 @@ export function getSocket(): Socket {
   return socket;
 }
 
-/** Tears down the current connection and opens a new one with whatever JWT is (or
- * isn't) in localStorage right now. Call this right after writing/clearing cp_token
- * (i.e. from useAuth's login/logout) so the server re-evaluates room membership
- * (`authed` vs `public`) under the new identity instead of keeping the old one. */
+/** Tears down the current connection and opens a new one with whatever access
+ * token is (or isn't) held in memory right now. Call this right after
+ * setAccessToken() changes (i.e. from useAuth's login/switchShop/logout) so
+ * the server re-evaluates room membership (`authed:{shopId}` vs `public`)
+ * under the new identity instead of keeping the old one. */
 export function reconnectSocket(): void {
   socket.disconnect();
   socket = createSocket();

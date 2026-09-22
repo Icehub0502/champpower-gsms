@@ -5,21 +5,25 @@ import { BoltIcon } from '../../components/ui/BoltIcon';
 
 export function LoginPage() {
   const { login } = useAuth();
-  const [email, setEmail] = useState('');
+  // "loginId": the API accepts either an email (office staff) or a bare
+  // username (technicians with no email — CLAUDE.md §8 "users.login_id" is
+  // "อีเมล หรือ username สำหรับช่างที่ไม่มีอีเมล"), so this is not necessarily
+  // an email address.
+  const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!email.trim() || !password) {
-      setError('กรุณากรอกอีเมลและรหัสผ่าน');
+    if (!loginId.trim() || !password) {
+      setError('กรุณากรอกชื่อผู้ใช้งานและรหัสผ่าน');
       return;
     }
     setBusy(true);
     setError('');
     try {
-      await login(email.trim(), password);
+      await login(loginId.trim(), password);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.status === 401 ? 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' : `เข้าสู่ระบบไม่สำเร็จ: ${err.message}`);
@@ -62,11 +66,11 @@ export function LoginPage() {
           <p className="login-sub">ระบบจัดการอู่บริการ (GSMS)</p>
           {error && <div className="login-error">{error}</div>}
           <label>
-            อีเมล
+            ชื่อผู้ใช้งาน
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              type="text"
+              value={loginId}
+              onChange={(e) => setLoginId(e.target.value)}
               autoComplete="username"
               placeholder="you@example.com"
             />

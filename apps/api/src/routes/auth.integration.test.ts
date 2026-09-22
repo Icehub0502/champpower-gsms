@@ -18,13 +18,16 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { db } from '../lib/db.js'
 import { hasDatabase, tier2 } from '../test/env.js'
 import {
-  auditFor, createTwoShopFixture, get, issueTokensFor, jtiOf, post, shopOf, startApi, PASSWORD,
+  auditFor, createTwoShopFixture, get, issueTokensFor, jtiOf, post, postWithRefreshCookie,
+  shopOf, startApi, PASSWORD,
   type RunningApi, type TwoShopFixture,
 } from '../test/fixtures.js'
 
 interface AuthBody {
   accessToken: string
-  refreshToken: string
+  // No refreshToken field: since WO-004/T6 it travels only as the httpOnly
+  // `gsms_rt` cookie (routes/auth.ts), never in JSON. Read it off
+  // `res.cookies.gsms_rt` (see fixtures.ts `ApiResponse.cookies`).
   shop: { id: string; role: string }
   shops?: { id: string }[]
 }
@@ -169,7 +172,7 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
 
       // Somebody presents the pre-switch refresh token. Refused as an ordinary
       // dead session...
-      const stale = await post(api, '/api/auth/refresh', { refreshToken: tablet.refreshToken })
+      const stale = await postWithRefreshCookie(api, '/api/auth/refresh', tablet.refreshToken)
       expect(stale.status).toBe(401)
 
       // ...but NOT treated as theft.
@@ -211,13 +214,14 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
      */
     it('rotates the refresh token, so the presented one stops working', async () => {
       const s = await session(fx.shopA)
-      const first = await post<AuthBody>(api, '/api/auth/refresh', { refreshToken: s.refreshToken })
+      const first = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s.refreshToken)
       expect(first.status, JSON.stringify(first.body)).toBe(200)
-      expect(first.body.refreshToken).not.toBe(s.refreshToken)
-      expect(jtiOf(first.body.refreshToken)).not.toBe(s.jti)
+      const rotatedToken = first.cookies.gsms_rt!
+      expect(rotatedToken).not.toBe(s.refreshToken)
+      expect(jtiOf(rotatedToken)).not.toBe(s.jti)
 
       // The new one works; the old one is spent.
-      expect((await post(api, '/api/auth/refresh', { refreshToken: first.body.refreshToken })).status)
+      expect((await postWithRefreshCookie(api, '/api/auth/refresh', rotatedToken)).status)
         .toBe(200)
     })
 
@@ -230,15 +234,15 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
     it('revokes the whole chain when an already-rotated token is replayed', async () => {
       const s = await session(fx.shopA)
       const bystander = await session(fx.shopA)
-      const rotated = await post<AuthBody>(api, '/api/auth/refresh', { refreshToken: s.refreshToken })
+      const rotated = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s.refreshToken)
       expect(rotated.status).toBe(200)
 
-      const replay = await post(api, '/api/auth/refresh', { refreshToken: s.refreshToken })
+      const replay = await postWithRefreshCookie(api, '/api/auth/refresh', s.refreshToken)
       expect(replay.status).toBe(401)
 
       // Everything the user holds is now dead: the successor the legitimate
       // holder is using, and the unrelated session too.
-      for (const jti of [jtiOf(rotated.body.refreshToken), bystander.jti]) {
+      for (const jti of [jtiOf(rotated.cookies.gsms_rt!), bystander.jti]) {
         const row = await db.selectFrom('sessions').select(['revoked_at'])
           .where('jti', '=', jti).executeTakeFirstOrThrow()
         expect(row.revoked_at, `session ${jti} survived the chain revocation`).not.toBeNull()
@@ -252,13 +256,13 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
     /** The retired row must point at its successor, or detection is blind. */
     it('records which session replaced the rotated one', async () => {
       const s = await session(fx.shopA)
-      const rotated = await post<AuthBody>(api, '/api/auth/refresh', { refreshToken: s.refreshToken })
+      const rotated = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s.refreshToken)
       expect(rotated.status).toBe(200)
 
       const old = await db.selectFrom('sessions').select(['revoked_at', 'replaced_by'])
         .where('jti', '=', s.jti).executeTakeFirstOrThrow()
       const next = await db.selectFrom('sessions').select(['id'])
-        .where('jti', '=', jtiOf(rotated.body.refreshToken)).executeTakeFirstOrThrow()
+        .where('jti', '=', jtiOf(rotated.cookies.gsms_rt!)).executeTakeFirstOrThrow()
 
       // The 0012 CHECK constraint says replaced_by implies revoked_at; assert
       // both are set in the same breath, as the migration's note requires.
@@ -289,24 +293,20 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
      */
     it('keeps the caller on their current shop when no shopId is sent', async () => {
       const s = await session(fx.shopB)
-      const refreshed = await post<AuthBody>(
-        api, '/api/auth/refresh', { refreshToken: s.refreshToken },
-      )
+      const refreshed = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s.refreshToken)
       expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200)
       expect(
         refreshed.body.shop.id,
         'refresh relocated the caller to a different branch',
       ).toBe(fx.shopB)
       expect(shopOf(refreshed.body.accessToken)).toBe(fx.shopB)
-      expect(shopOf(refreshed.body.refreshToken)).toBe(fx.shopB)
+      expect(shopOf(refreshed.cookies.gsms_rt!)).toBe(fx.shopB)
     })
 
     /** The shopId override is validated as a uuid by zod, not passed through raw. */
     it('rejects a non-uuid shopId with 400 rather than reaching the database', async () => {
       const s = await session(fx.shopA)
-      const res = await post(api, '/api/auth/refresh', {
-        refreshToken: s.refreshToken, shopId: 'not-a-uuid',
-      })
+      const res = await postWithRefreshCookie(api, '/api/auth/refresh', s.refreshToken, { shopId: 'not-a-uuid' })
       expect(res.status).toBe(400)
       expect(res.body).toMatchObject({ error: 'invalid_request' })
     })
@@ -314,9 +314,7 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
     /** An override naming a shop the caller has no membership in is refused. */
     it('refuses a shopId the caller is not a member of', async () => {
       const advisor = await advisorSession()
-      const res = await post(api, '/api/auth/refresh', {
-        refreshToken: advisor.refreshToken, shopId: fx.shopA,
-      })
+      const res = await postWithRefreshCookie(api, '/api/auth/refresh', advisor.refreshToken, { shopId: fx.shopA })
       expect(res.status).toBe(403)
       expect(res.body).toMatchObject({ error: 'no_shop_membership' })
     })
@@ -324,8 +322,8 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
     /** An unknown extra field must not be a way to smuggle anything in. */
     it('ignores anything else in the body', async () => {
       const s = await session(fx.shopB)
-      const res = await post<AuthBody>(api, '/api/auth/refresh', {
-        refreshToken: s.refreshToken, shop: fx.shopA, active_shop_id: fx.shopA, role: 'owner',
+      const res = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s.refreshToken, {
+        shop: fx.shopA, active_shop_id: fx.shopA, role: 'owner',
       })
       expect(res.status).toBe(200)
       expect(res.body.shop.id).toBe(fx.shopB)
@@ -347,7 +345,7 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
       await db.updateTable('users').set({ is_active: false })
         .where('id', '=', fx.outsiderId).execute()
       try {
-        const refreshed = await post(api, '/api/auth/refresh', { refreshToken: victim.refreshToken })
+        const refreshed = await postWithRefreshCookie(api, '/api/auth/refresh', victim.refreshToken)
         expect(refreshed.status).toBe(401)
         expect(refreshed.body).toMatchObject({ error: 'account_disabled' })
 
@@ -460,7 +458,57 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
       expect(res.body.shop.id).toBe(fx.shopB)
       // CLAUDE.md §8 rule 2: the active shop is a signed claim.
       expect(shopOf(res.body.accessToken)).toBe(fx.shopB)
-      expect(shopOf(res.body.refreshToken)).toBe(fx.shopB)
+      expect(shopOf(res.cookies.gsms_rt!)).toBe(fx.shopB)
+    })
+  })
+
+  // ===========================================================================
+  // WO-004/T6 condition 2 — the refresh token cookie's actual attributes
+  // ===========================================================================
+  describe('WO-004/T6: refresh token cookie', () => {
+    /**
+     * The fixtures' `cookies` map (test/fixtures.ts) deliberately throws away
+     * every attribute but name=value, because most tests only care about the
+     * token itself. This test is the one place that reads the raw
+     * `Set-Cookie` header, because the attributes ARE the point: HttpOnly is
+     * what keeps an XSS payload from reading the token at all, and
+     * SameSite=Strict is what keeps a cross-site request from riding along
+     * with it (docs/ARCHITECTURE.md §7; CLAUDE.md's non-negotiable per
+     * WO-003-ANSWERS-2 §2).
+     */
+    it('sets gsms_rt as HttpOnly, Secure, SameSite=Strict, scoped to /api/auth, and never in the JSON body', async () => {
+      const res = await fetch(`${api.url}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ loginId: fx.loginId, password: PASSWORD, shopId: fx.shopA }),
+      })
+      expect(res.status).toBe(200)
+
+      const setCookie = res.headers.getSetCookie().find((c) => c.startsWith('gsms_rt='))
+      expect(setCookie, 'no Set-Cookie for gsms_rt on /api/auth/login').toBeDefined()
+      expect(setCookie).toMatch(/;\s*HttpOnly/i)
+      expect(setCookie).toMatch(/;\s*Secure/i)
+      expect(setCookie).toMatch(/;\s*SameSite=Strict/i)
+      expect(setCookie).toMatch(/;\s*Path=\/api\/auth/i)
+
+      const body = await res.json() as Record<string, unknown>
+      expect(Object.keys(body)).not.toContain('refreshToken')
+      expect(JSON.stringify(body)).not.toContain('refreshToken')
+    })
+
+    it('clears gsms_rt on logout', async () => {
+      const s = await session(fx.shopA)
+      const res = await fetch(`${api.url}/api/auth/logout`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${s.accessToken}` },
+        body: '{}',
+      })
+      expect(res.status).toBe(200)
+      const setCookie = res.headers.getSetCookie().find((c) => c.startsWith('gsms_rt='))
+      expect(setCookie, 'logout did not clear gsms_rt').toBeDefined()
+      // express's res.clearCookie() sends an already-expired cookie with an
+      // empty value rather than an explicit "delete" verb.
+      expect(setCookie).toMatch(/^gsms_rt=;/)
     })
   })
 

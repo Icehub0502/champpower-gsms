@@ -16,7 +16,84 @@ import { assertTokenConfig } from './jwt.js'
  */
 export async function runStartupChecks(db: Db): Promise<void> {
   assertTokenConfig()
+  assertRefreshTtl()
+  assertCorsConfig()
   await assertAppRole(db)
+}
+
+/**
+ * The refresh window has to stay inside the range the shop agreed to.
+ *
+ * WO-001 deliberately cut this from 30 days to 14: the garage runs shared
+ * machines at the counter and phones that get lost, and rotation means a person
+ * who uses the system daily never meets the ceiling at all — the only people it
+ * logs out are the ones who have been away a fortnight, who should be proving
+ * who they are again anyway.
+ *
+ * That decision lived in a code default and was silently undone by a `.env`
+ * that still said 30d. A default only protects the case where nobody sets the
+ * variable, which is never true in a real deployment. So the range is checked,
+ * and a value outside it stops the boot rather than quietly widening the window
+ * a stolen token stays useful in.
+ */
+const MAX_REFRESH_DAYS = 14
+
+export function assertRefreshTtl(ttl = process.env.JWT_REFRESH_TTL ?? '14d'): void {
+  const m = /^(\d+)([smhd])$/.exec(ttl)
+  if (!m) {
+    throw new Error(
+      `JWT_REFRESH_TTL is "${ttl}", which is not a duration like "14d". Refusing to start.`,
+    )
+  }
+  const ms = Number(m[1]) * { s: 1e3, m: 6e4, h: 36e5, d: 864e5 }[m[2] as 's' | 'm' | 'h' | 'd']
+  const days = ms / 864e5
+  if (days <= 0 || days > MAX_REFRESH_DAYS) {
+    throw new Error(
+      `JWT_REFRESH_TTL is "${ttl}" (${days} days); the agreed maximum is ` +
+      `${MAX_REFRESH_DAYS} days (docs/ARCHITECTURE.md §7). Refusing to start. ` +
+      'Widening this is a security decision, not a configuration tweak.',
+    )
+  }
+}
+
+/**
+ * CORS must name real origins, and must not be defeated by a near-miss.
+ *
+ * Two failures this closes, both of which have already happened here:
+ *
+ *   `*`              — app.ts builds its allow-list by splitting CORS_ORIGINS,
+ *                      so a literal asterisk becomes an allowed origin and,
+ *                      paired with `credentials: true`, is an account-takeover
+ *                      path rather than a loose setting.
+ *   `CORS_ORIGIN`    — singular, no S. Nothing reads it. Someone sets it,
+ *                      sees a variable with a plausible name, and believes the
+ *                      policy is configured while the real one is untouched.
+ *                      A variable that looks like configuration but is inert is
+ *                      worse than one that is missing.
+ *
+ * Deleting the stray value from one `.env` fixes today; refusing to boot on it
+ * fixes every `.env` anyone writes afterwards.
+ */
+export function assertCorsConfig(env: NodeJS.ProcessEnv = process.env): void {
+  const raw = env.CORS_ORIGINS ?? ''
+  const origins = raw.split(',').map((s) => s.trim()).filter(Boolean)
+
+  if (origins.length === 0) {
+    throw new Error('CORS_ORIGINS is not set; refusing to start with an open CORS policy')
+  }
+  if (origins.includes('*')) {
+    throw new Error(
+      'CORS_ORIGINS contains "*". With credentials enabled that allows any site ' +
+      'to make authenticated requests as a signed-in user. Name the real origins.',
+    )
+  }
+  if (env.CORS_ORIGIN !== undefined) {
+    throw new Error(
+      'CORS_ORIGIN (singular) is set, and nothing reads it — the variable this ' +
+      'application uses is CORS_ORIGINS. Remove it, so nobody believes the CORS ' +
+      'policy is configured when it is not.',
+    )
+  }
 }
 
 /** Overridable so a test can point the check at its own role; strict default. */

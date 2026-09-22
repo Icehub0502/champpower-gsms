@@ -35,7 +35,11 @@ export function SignaturePad({ label, value, onSave }: SignaturePadProps) {
     const p = point(e);
     ctx.lineWidth = 2.4;
     ctx.lineCap = 'round';
-    ctx.strokeStyle = '#222831';
+    // CLAUDE.md §16: "the token is the truth" — a <canvas> 2D context cannot
+    // take a CSS variable directly, so the actual computed value of --dark is
+    // read here instead of a hardcoded hex duplicate that could drift from
+    // apps/web/src/styles/globals.css's :root.
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--dark').trim();
     ctx.beginPath();
     ctx.moveTo(last.current!.x, last.current!.y);
     ctx.lineTo(p.x, p.y);

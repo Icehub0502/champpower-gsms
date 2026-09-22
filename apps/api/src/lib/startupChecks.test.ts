@@ -22,7 +22,7 @@ import {
 } from 'kysely'
 import type { DB } from '@gsms/db/types.js'
 import type { Db } from '@gsms/db/client.js'
-import { assertAppRole } from './startupChecks.js'
+import { assertAppRole, assertCorsConfig, assertRefreshTtl } from './startupChecks.js'
 
 interface RoleRow { role_name: string; rolsuper: boolean; rolbypassrls: boolean }
 
@@ -160,5 +160,82 @@ describe('assertAppRole', () => {
   it('refuses to start when the role cannot be determined', async () => {
     const db = dbAnswering([])
     await expect(assertAppRole(db)).rejects.toThrow(/could not determine the database role/)
+  })
+})
+
+/**
+ * The two configuration guards added after WO-003.
+ *
+ * Both exist because a value that is merely wrong, rather than malformed, had
+ * already slipped through once: a `.env` carrying `JWT_REFRESH_TTL=30d` quietly
+ * reversed the security decision WO-001 made in code, and a stray `CORS_ORIGIN`
+ * (no S) sat in the same file looking like configuration while nothing read it.
+ * Pure functions, so these run with no database.
+ */
+describe('assertRefreshTtl', () => {
+  it('accepts the agreed 14 days', () => {
+    expect(() => assertRefreshTtl('14d')).not.toThrow()
+  })
+
+  it('accepts a shorter window', () => {
+    expect(() => assertRefreshTtl('1d')).not.toThrow()
+    expect(() => assertRefreshTtl('30m')).not.toThrow()
+  })
+
+  /** The exact value that was sitting in .env, undoing WO-001 in silence. */
+  it('refuses 30 days', () => {
+    expect(() => assertRefreshTtl('30d')).toThrow(/agreed maximum is 14 days/)
+  })
+
+  it('refuses a window expressed in hours that still exceeds the ceiling', () => {
+    expect(() => assertRefreshTtl('720h')).toThrow(/agreed maximum is 14 days/)
+  })
+
+  it('refuses a value that is not a duration at all', () => {
+    expect(() => assertRefreshTtl('2 weeks')).toThrow(/not a duration/)
+  })
+
+  it('refuses zero', () => {
+    expect(() => assertRefreshTtl('0d')).toThrow(/agreed maximum/)
+  })
+})
+
+describe('assertCorsConfig', () => {
+  it('accepts a real origin', () => {
+    expect(() => assertCorsConfig({ CORS_ORIGINS: 'http://localhost:5173' })).not.toThrow()
+  })
+
+  it('accepts several real origins', () => {
+    expect(() => assertCorsConfig({
+      CORS_ORIGINS: 'https://shop.example, https://office.example',
+    })).not.toThrow()
+  })
+
+  it('refuses an empty policy rather than defaulting to open', () => {
+    expect(() => assertCorsConfig({})).toThrow(/not set/)
+    expect(() => assertCorsConfig({ CORS_ORIGINS: '  ,  ' })).toThrow(/not set/)
+  })
+
+  /**
+   * With `credentials: true` in app.ts, an asterisk is not a loose setting —
+   * it lets any site on the internet make authenticated requests as whoever is
+   * signed in.
+   */
+  it('refuses a wildcard origin', () => {
+    expect(() => assertCorsConfig({ CORS_ORIGINS: '*' })).toThrow(/contains "\*"/)
+    expect(() => assertCorsConfig({ CORS_ORIGINS: 'http://localhost:5173,*' }))
+      .toThrow(/contains "\*"/)
+  })
+
+  /**
+   * The near-miss. Nothing reads CORS_ORIGIN, so setting it changes nothing
+   * while looking exactly like it has — the failure mode is a person believing
+   * the policy is configured.
+   */
+  it('refuses to start when the singular CORS_ORIGIN is also set', () => {
+    expect(() => assertCorsConfig({
+      CORS_ORIGINS: 'http://localhost:5173',
+      CORS_ORIGIN: '*',
+    })).toThrow(/nothing reads it/)
   })
 })

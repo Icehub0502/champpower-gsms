@@ -174,7 +174,10 @@ storage/<shop_id>/<yyyy>/<mm>/<uuid>.<ext>
 
 - **Access token** JWT อายุ 15 นาที เก็บ **ในหน่วยความจำของหน้าเว็บ** ไม่ใช่ localStorage
   payload: `user_id · active_shop_id · role · jti`
-- **Refresh token** อายุ 30 วัน เก็บใน **httpOnly + SameSite=Strict cookie**
+- **Refresh token** อายุ **14 วัน** เก็บใน **httpOnly + Secure + SameSite=Strict cookie** (ชื่อ `gsms_rt` · `Path=/api/auth`)
+  - 14 วันไม่ใช่ 30 — WO-001 ลดลงมาโดยเจตนา และมี **rotation** อยู่แล้ว คนที่ใช้งานประจำจึงไม่มีวันเจอเพดานนี้เลย คนที่ถูกบังคับล็อกอินใหม่คือคนที่หายไปเกินสองสัปดาห์ ซึ่งควรยืนยันตัวใหม่อยู่แล้ว
+  - `assertRefreshTtl()` ใน `apps/api/src/lib/startupChecks.ts` **ไม่ให้ boot ขึ้น** ถ้า `JWT_REFRESH_TTL` เกิน 14 วัน — เพราะ default ในโค้ดกันได้แค่กรณีที่ไม่มีใครตั้งค่า ซึ่งไม่เคยจริงในของที่ deploy จริง
+  - refresh token **ไม่เคยถูกส่งกลับเป็น JSON** และ `/api/auth/refresh` อ่านจาก cookie ทางเดียว ไม่มี fallback ใน body แม้แต่หลัง test flag
 - `sessions(id, user_id, jti, device, issued_at, revoked_at)` — ไล่พนักงานออกแล้วตัดสิทธิ์ได้ทันที
 - **สลับสาขา = endpoint ที่ตรวจ membership แล้วออก access token ใหม่** ไม่ใช่ส่ง `shopId` มากับ request (`CLAUDE.md` §8)
 - รหัสผ่าน **bcrypt** cost 12 (มีอยู่แล้วในโปรเจกต์)
