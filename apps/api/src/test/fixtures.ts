@@ -11,6 +11,7 @@
 import { createServer, type Server } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { hashSync } from 'bcryptjs'
+import { sql } from 'kysely'
 import { unscoped, withShop } from '@gsms/db/client.js'
 import { db } from '../lib/db.js'
 import { issueSession, type IssuedTokens } from '../services/sessions.js'
@@ -53,6 +54,19 @@ export async function createTwoShopFixture(prefix = 'wo001'): Promise<TwoShopFix
     ])
     .returning(['id', 'slug']).execute()
 
+  // A shop that cannot number a job is not a realistic shop. Document series
+  // are created by seed_document_series(), which packages/db/src/seed.ts calls
+  // and nothing else does — there is no shop-creation endpoint yet — so a
+  // fixture shop without this call makes every intake test exercise a branch
+  // that only a misconfigured branch would ever reach.
+  // It runs inside withShop because document_series carries RLS: the INSERT's
+  // WITH CHECK compares shop_id against current_shop_id(), which is NULL
+  // outside a shop scope, so on the bare handle every row would be refused.
+  for (const shop of [a!, b!]) {
+    await withShop(db, shop.id, (trx) =>
+      sql`select seed_document_series(${shop.id}::uuid)`.execute(trx))
+  }
+
   const loginId = `${prefix}-user-${tag}@example.test`
   const user = await db.insertInto('users')
     .values({ login_id: loginId, password_hash: hash, name: 'Fixture User', is_active: true })
@@ -87,7 +101,23 @@ export async function createTwoShopFixture(prefix = 'wo001'): Promise<TwoShopFix
       for (const shopId of [a!.id, b!.id]) {
         await withShop(db, shopId, async (trx) => {
           await trx.deleteFrom('audit_logs').where('shop_id', '=', shopId).execute()
+          // Jobs reference customers with RESTRICT, and bookings reference
+          // bays, so the order here is the foreign keys' order, not a
+          // convenient one. document_series is on the list because the shop
+          // DELETE below references it with RESTRICT too — a fixture that
+          // seeds it has to clear it.
+          await trx.deleteFrom('job_complaints').where('shop_id', '=', shopId).execute()
+          await trx.deleteFrom('job_photos').where('shop_id', '=', shopId).execute()
+          await trx.deleteFrom('jobs').where('shop_id', '=', shopId).execute()
+          await trx.deleteFrom('bookings').where('shop_id', '=', shopId).execute()
+          await trx.deleteFrom('vehicles').where('shop_id', '=', shopId).execute()
           await trx.deleteFrom('customers').where('shop_id', '=', shopId).execute()
+          await trx.deleteFrom('bays').where('shop_id', '=', shopId).execute()
+          await trx.deleteFrom('document_series').where('shop_id', '=', shopId).execute()
+          // Auto rows appear on their own whenever a test drives a shared
+          // phone past the threshold, so this is not optional tidying: shops
+          // references match_blocklist with RESTRICT.
+          await trx.deleteFrom('match_blocklist').where('shop_id', '=', shopId).execute()
         })
       }
       await db.deleteFrom('sessions').where('user_id', 'in', [user.id, outsider.id]).execute()
@@ -151,7 +181,31 @@ export async function startApi(): Promise<RunningApi> {
   }
 }
 
-export interface ApiResponse<T = Record<string, unknown>> { status: number; body: T }
+export interface ApiResponse<T = Record<string, unknown>> {
+  status: number
+  body: T
+  /**
+   * Cookies the response set, name -> value, ignoring attributes (Path,
+   * HttpOnly, ...). Since WO-004/T6 the refresh token never appears in a JSON
+   * body (routes/auth.ts) — it only ever travels this way, under
+   * `gsms_rt` — so any test that needs the rotated token reads it from here.
+   */
+  cookies: Record<string, string>
+}
+
+/** Parses one or more `Set-Cookie` response headers into name -> value pairs.
+ * Node's fetch (undici) exposes them individually via `getSetCookie()`
+ * rather than folded into one combined header. */
+function parseSetCookies(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const raw of headers.getSetCookie()) {
+    const firstPair = raw.split(';', 1)[0]!
+    const eq = firstPair.indexOf('=')
+    if (eq === -1) continue
+    out[firstPair.slice(0, eq).trim()] = firstPair.slice(eq + 1).trim()
+  }
+  return out
+}
 
 export async function post<T = Record<string, unknown>>(
   api: RunningApi, path: string, body: unknown, token?: string,
@@ -164,7 +218,29 @@ export async function post<T = Record<string, unknown>>(
     },
     body: JSON.stringify(body ?? {}),
   })
-  return { status: res.status, body: (await res.json().catch(() => ({}))) as T }
+  return {
+    status: res.status,
+    body: (await res.json().catch(() => ({}))) as T,
+    cookies: parseSetCookies(res.headers),
+  }
+}
+
+export async function patch<T = Record<string, unknown>>(
+  api: RunningApi, path: string, body: unknown, token?: string,
+): Promise<ApiResponse<T>> {
+  const res = await fetch(`${api.url}${path}`, {
+    method: 'PATCH',
+    headers: {
+      'content-type': 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body ?? {}),
+  })
+  return {
+    status: res.status,
+    body: (await res.json().catch(() => ({}))) as T,
+    cookies: parseSetCookies(res.headers),
+  }
 }
 
 export async function get<T = Record<string, unknown>>(
@@ -173,7 +249,46 @@ export async function get<T = Record<string, unknown>>(
   const res = await fetch(`${api.url}${path}`, {
     headers: token ? { authorization: `Bearer ${token}` } : {},
   })
-  return { status: res.status, body: (await res.json().catch(() => ({}))) as T }
+  return {
+    status: res.status,
+    body: (await res.json().catch(() => ({}))) as T,
+    cookies: parseSetCookies(res.headers),
+  }
+}
+
+/**
+ * The name of the refresh cookie, mirrored from routes/auth.ts.
+ *
+ * Kept here rather than exported from the route so a rename there fails these
+ * tests loudly instead of quietly changing what they exercise.
+ */
+export const REFRESH_COOKIE_NAME = 'gsms_rt'
+
+/**
+ * Call /api/auth/refresh or /api/auth/logout the way a browser does: with the
+ * refresh token in its cookie.
+ *
+ * The endpoint accepts the token from the cookie and nowhere else — the body
+ * fallback was removed deliberately (see the note on `refreshSchema` in
+ * routes/auth.ts). A test that reached in through a back door would be proving
+ * a code path that production never runs, which is worse than no test.
+ */
+export async function postWithRefreshCookie<T = Record<string, unknown>>(
+  api: RunningApi, path: string, refreshToken: string, body: unknown = {},
+): Promise<ApiResponse<T>> {
+  const res = await fetch(`${api.url}${path}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      cookie: `${REFRESH_COOKIE_NAME}=${refreshToken}`,
+    },
+    body: JSON.stringify(body),
+  })
+  return {
+    status: res.status,
+    body: (await res.json().catch(() => ({}))) as T,
+    cookies: parseSetCookies(res.headers),
+  }
 }
 
 /** The jti inside an access or refresh token, without verifying it. */

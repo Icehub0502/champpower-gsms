@@ -1,3 +1,4 @@
+import cookieParser from 'cookie-parser'
 import cors from 'cors'
 import express from 'express'
 import helmet from 'helmet'
@@ -5,6 +6,9 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 import { authRouter } from './routes/auth.js'
 import { adminRouter } from './routes/admin.js'
 import { healthRouter } from './routes/health.js'
+import { queueRouter } from './routes/queue.js'
+import { bookingsRouter } from './routes/bookings.js'
+import { checkinRouter } from './routes/checkin.js'
 
 export const app = express()
 
@@ -40,6 +44,10 @@ app.use(cors({ origin: origins, credentials: true }))
 // Photos are files on disk now, not base64 in JSON, so the old 25mb body limit
 // is no longer needed — and a large limit is free denial-of-service.
 app.use(express.json({ limit: '1mb' }))
+// Unsigned: the refresh cookie's only defence is httpOnly + Secure +
+// SameSite=Strict (routes/auth.ts), not a signature — there is nothing here
+// that benefits from cookie-parser's signing.
+app.use(cookieParser())
 
 /**
  * Three limiters, because one bucket cannot express what we need.
@@ -105,9 +113,34 @@ app.use('/health', rateLimit({
   message: { error: 'too_many_requests' },
 }))
 
+/**
+ * Writes on the intake path, limited; reads left alone.
+ *
+ * CLAUDE.md §12 asks for a limit on every endpoint that writes. The board is
+ * polled by every tablet in the shop all day and must not be throttled, so the
+ * limiter skips GET rather than covering the whole surface. The ceiling is
+ * generous on purpose: a busy Saturday morning is perhaps twenty check-ins an
+ * hour across the counter, and a limit that bites during real work would be
+ * met by staff reaching for the paper book.
+ */
+const intakeWriteLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === 'GET',
+  message: { error: 'too_many_requests' },
+})
+
 app.use('/health', healthRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/admin', adminRouter)
+
+// The board (/api/queue) and the two board edits (/api/jobs/:id/bay,
+// /api/jobs/:id/queue-no) share one router, so it mounts at /api.
+app.use('/api', intakeWriteLimiter, queueRouter)
+app.use('/api/bookings', intakeWriteLimiter, bookingsRouter)
+app.use('/api/checkin', intakeWriteLimiter, checkinRouter)
 
 // Routes from the MySQL version are parked until each screen is ported; see
 // docs/TEAM.md for the weekly order. They are not mounted, so nothing reaches

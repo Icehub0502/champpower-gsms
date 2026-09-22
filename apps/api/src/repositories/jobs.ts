@@ -1,0 +1,250 @@
+/**
+ * Jobs — opening one, and the two things the board lets staff change about it.
+ *
+ * Two rules shape everything in this file.
+ *
+ * 1. `trg_jobs_booking_immutable` (0011) is a BEFORE UPDATE trigger on the
+ *    WHOLE jobs table, and it raises whenever `booking_id` changes on a row
+ *    that already has one. Every UPDATE here therefore names exactly the
+ *    columns it means to change and never mentions `booking_id`. A convenience
+ *    "update job" helper that took a partial row would trip the trigger on any
+ *    booking-born job the first time someone moved its bay.
+ *
+ * 2. Nothing pre-checks what a constraint already guarantees. The queue number
+ *    is allocated and inserted in one transaction; if it collides, the database
+ *    says so and the caller retries or reports. See lib/pgError.ts.
+ */
+import { sql } from 'kysely'
+import type { ScopedTx } from '@gsms/db/client.js'
+
+/**
+ * The next free queue number for (shop, day).
+ *
+ * `max(queue_no) + 1`, read inside the SAME transaction that goes on to
+ * INSERT. That is not a guarantee on its own — two transactions can read the
+ * same max before either commits — and it is not meant to be one: the unique
+ * constraint `uq_queue_no` is the guarantee, this is only the good first guess.
+ * The caller retries a bounded number of times when the guess loses a race.
+ *
+ * Served by the constraint's own index (shop_id, job_date, queue_no) as a
+ * backward index scan, so no extra index exists for it.
+ */
+export async function nextQueueNo(
+  trx: ScopedTx,
+  shopId: string,
+  jobDate: string,
+): Promise<number> {
+  const row = await trx
+    .selectFrom('jobs')
+    .select(sql<number | null>`max(queue_no)`.as('max_no'))
+    .where('shop_id', '=', shopId)
+    // The generated type says `job_date` reads back as a Date, so the plain
+    // builder will not compare it to a 'YYYY-MM-DD' string. Casting in SQL
+    // keeps the value a bound parameter and keeps the comparison on the
+    // `date` type, which is what the uq_queue_no index is built on — comparing
+    // against a timestamp would not use it.
+    .where(sql<boolean>`job_date = ${jobDate}::date`)
+    .executeTakeFirst()
+  return (row?.max_no ?? 0) + 1
+}
+
+/**
+ * The job number, from the shop's JOB series counter.
+ *
+ * `allocate_document_number` (0003_numbering.sql) takes SELECT ... FOR UPDATE
+ * on the series row, so concurrent check-ins queue up rather than colliding.
+ * CLAUDE.md §5.3 rule 3 forbids `MAX(number)+1` here, and this is why the
+ * function exists rather than an application-side counter.
+ */
+export async function allocateJobNumber(trx: ScopedTx, shopId: string): Promise<string> {
+  const result = await sql<{ n: string }>`
+    select allocate_document_number(${shopId}::uuid, 'JOB') as n
+  `.execute(trx)
+  const n = result.rows[0]?.n
+  if (!n) throw new Error('allocate_document_number returned nothing')
+  return n
+}
+
+export interface InsertJob {
+  shopId: string
+  jobNumber: string
+  jobDate: string
+  queueNo: number
+  customerId: string
+  vehicleId: string
+  bayId?: string | null | undefined
+  mileageInKm?: number | null | undefined
+  /**
+   * Set ONLY when the job is being opened from a booking. `uq_jobs_booking`
+   * makes a second job for the same booking impossible, which is the whole
+   * mechanism behind "arrival is a transition, not a creation".
+   */
+  bookingId?: string | null | undefined
+}
+
+export async function insertJob(trx: ScopedTx, input: InsertJob): Promise<{ id: string }> {
+  return trx
+    .insertInto('jobs')
+    .values({
+      shop_id: input.shopId,
+      job_number: input.jobNumber,
+      job_date: input.jobDate,
+      queue_no: input.queueNo,
+      customer_id: input.customerId,
+      vehicle_id: input.vehicleId,
+      bay_id: input.bayId ?? null,
+      mileage_in_km: input.mileageInKm ?? null,
+      booking_id: input.bookingId ?? null,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow()
+}
+
+/** What the customer said is wrong with the car, in their words. */
+export async function addComplaint(
+  trx: ScopedTx,
+  shopId: string,
+  jobId: string,
+  text: string,
+): Promise<void> {
+  await trx
+    .insertInto('job_complaints')
+    .values({ shop_id: shopId, job_id: jobId, text, custom: true, sort_order: 0 })
+    .execute()
+}
+
+/**
+ * Link already-uploaded files to the job and pick the board thumbnail.
+ *
+ * The bytes were written by the upload endpoint (another slice); this only
+ * references the rows. `photo_count` is maintained here because no trigger
+ * does it — 0002 declares the column with a default and nothing else.
+ */
+export async function attachPhotos(
+  trx: ScopedTx,
+  shopId: string,
+  jobId: string,
+  fileIds: string[],
+): Promise<void> {
+  if (fileIds.length === 0) return
+  await trx
+    .insertInto('job_photos')
+    .values(fileIds.map((fileId, i) => ({
+      shop_id: shopId,
+      job_id: jobId,
+      file_id: fileId,
+      sort_order: i,
+    })))
+    .execute()
+  await trx
+    .updateTable('jobs')
+    // Named columns only — see the note at the top of this file about
+    // trg_jobs_booking_immutable.
+    .set({ thumb_file_id: fileIds[0]!, photo_count: fileIds.length })
+    .where('id', '=', jobId)
+    .execute()
+}
+
+/**
+ * Which of these file ids exist and belong to this shop.
+ *
+ * Read-only use of `files`, which another agent owns this week. RLS narrows
+ * the SELECT to the caller's shop, so a file id from another branch simply
+ * does not come back and the route answers `unknown_file`.
+ */
+export async function existingFileIds(
+  trx: ScopedTx,
+  fileIds: string[],
+): Promise<Set<string>> {
+  if (fileIds.length === 0) return new Set()
+  const rows = await trx
+    .selectFrom('files')
+    .select(['id'])
+    .where('id', 'in', fileIds)
+    .execute()
+  return new Set(rows.map((r) => r.id))
+}
+
+export interface JobBoardFacts {
+  id: string
+  bay_id: string | null
+  queue_no: number | null
+  /** Always 'YYYY-MM-DD' in Thai local terms — see the note in the query. */
+  job_date: string
+  status: string
+}
+
+/** The current values, read for the audit log's `before` and for 404s. */
+export async function findById(
+  trx: ScopedTx,
+  id: string,
+): Promise<JobBoardFacts | undefined> {
+  return trx
+    .selectFrom('jobs')
+    .select([
+      'id',
+      'bay_id',
+      'queue_no',
+      // Formatted in SQL, deliberately. node-postgres parses a `date` into a
+      // JS Date at the SERVER PROCESS's local midnight, so a row stored as
+      // 2026-09-16 comes back as 2026-09-15T17:00:00.000Z on a machine in
+      // Bangkok — and the first person to call .toISOString().slice(0,10) on
+      // it gets yesterday. The column is a calendar day, not an instant, and
+      // it leaves this repository as the string it actually is.
+      sql<string>`to_char(job_date, 'YYYY-MM-DD')`.as('job_date'),
+      'status',
+    ])
+    .where('id', '=', id)
+    .where('deleted_at', 'is', null)
+    .executeTakeFirst()
+}
+
+export async function updateBay(
+  trx: ScopedTx,
+  jobId: string,
+  bayId: string | null,
+): Promise<number> {
+  const r = await trx
+    .updateTable('jobs')
+    .set({ bay_id: bayId })
+    .where('id', '=', jobId)
+    .where('deleted_at', 'is', null)
+    .executeTakeFirst()
+  return Number(r.numUpdatedRows)
+}
+
+export async function updateQueueNo(
+  trx: ScopedTx,
+  jobId: string,
+  queueNo: number | null,
+): Promise<number> {
+  const r = await trx
+    .updateTable('jobs')
+    .set({ queue_no: queueNo })
+    .where('id', '=', jobId)
+    .where('deleted_at', 'is', null)
+    .executeTakeFirst()
+  return Number(r.numUpdatedRows)
+}
+
+/**
+ * How many OTHER cars are standing in this bay right now.
+ *
+ * Returned so the screen can warn. It is never a reason to refuse the move —
+ * see the note in repositories/bays.ts.
+ */
+export async function countOthersInBay(
+  trx: ScopedTx,
+  bayId: string,
+  exceptJobId: string,
+): Promise<number> {
+  const row = await trx
+    .selectFrom('jobs')
+    .select(sql<number>`count(*)`.as('n'))
+    .where('bay_id', '=', bayId)
+    .where('id', '!=', exceptJobId)
+    .where('deleted_at', 'is', null)
+    .where('status', 'not in', ['carout', 'rejected'])
+    .executeTakeFirst()
+  return Number(row?.n ?? 0)
+}
