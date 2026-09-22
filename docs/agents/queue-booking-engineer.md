@@ -19,10 +19,10 @@ The lesson generalises: **arrival is a state transition, never a creation.** Any
 | Invariant | Mechanism |
 |---|---|
 | One booking yields at most one job | `UNIQUE INDEX ON jobs (booking_id) WHERE booking_id IS NOT NULL` |
-| A booking's `job_id`, once set, never changes | trigger |
+| A job's `booking_id`, once set, never changes | trigger `trg_jobs_booking_immutable` (the link lives on `jobs` only; `bookings.job_id` was dropped in 0011) |
 | One live quotation per job | partial unique index on `documents (job_id)` where not superseded |
 | Two live bookings never overlap on one bay | `EXCLUDE USING gist (shop_id WITH =, bay_id WITH =, tstzrange(...) WITH &&)` |
-| A converted booking disappears from the appointment list | view `queue_today`, which excludes bookings holding a `job_id` |
+| A converted booking disappears from the appointment list | view `queue_board` (0013), which excludes any booking a job already points at |
 
 The last one is the fix for the reported symptom. **The queue screen reads one view.** If you ever find the frontend merging two lists, that is the bug returning under a new name.
 

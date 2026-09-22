@@ -16,3 +16,13 @@ firestore-debug.log
 # Portable local dev database/tunnel binaries + data (MariaDB, ngrok) — machine-specific,
 # never meant to be shared via git; each dev sets this up locally per the README.
 .local-mysql/
+
+# Uploaded check-in photos and other files (packages/db migration 0001 `files`
+# table stores the path here, never the bytes). Real customer data — never in
+# git. See CLAUDE.md §2 and apps/api/src/services/fileStorage.ts.
+/storage/
+
+# Local copies of the production dump used for the master-data import (WO-004).
+# Real customer data; never in git.
+_import/
+

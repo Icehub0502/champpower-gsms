@@ -44,9 +44,9 @@ booking ──(รถมาถึง)──▶ job
 | # | กติกา | บังคับด้วย |
 |---|---|---|
 | 1 | หนึ่ง booking สร้าง job ได้ไม่เกิน 1 ใบ | `CREATE UNIQUE INDEX ... ON jobs (booking_id) WHERE booking_id IS NOT NULL` |
-| 2 | booking ที่มี `job_id` แล้ว จะสร้าง job อีกไม่ได้ | trigger บน `bookings` ห้ามเปลี่ยน `job_id` จากค่าที่ไม่ใช่ NULL |
+| 2 | job ที่ผูก booking แล้ว จะเปลี่ยนไปผูก booking อื่นไม่ได้ | trigger `trg_jobs_booking_immutable` บน `jobs` (0011 ลบ `bookings.job_id` ทิ้ง ลิงก์อยู่ข้างเดียวที่ `jobs.booking_id`) |
 | 3 | หนึ่ง job มีใบเสนอราคาที่ยังไม่ถูกแทนที่ได้ 1 ใบ | partial unique index บน `documents (job_id)` where `kind='quotation' AND superseded_by IS NULL` |
-| 4 | หน้าคิวอ่านจาก **view เดียว** ไม่ใช่เอาสองลิสต์มาต่อกันที่ frontend | view `queue_today` — union แล้ว **ตัด booking ที่ `job_id IS NOT NULL` ออก** |
+| 4 | หน้าคิวอ่านจาก **view เดียว** ไม่ใช่เอาสองลิสต์มาต่อกันที่ frontend | view `queue_board` (0013 — แทน `queue_today` ของ 0011) — union แล้ว **ตัด booking ที่มี job แล้วออกด้วย `NOT EXISTS`** |
 
 ข้อ 4 คือข้อที่ตรงกับอาการที่เจอที่สุด — ของเก่าเด้งกลับมาเพราะหน้าจอถามสองที่แล้วเอามาต่อกัน
 พอมี view เดียว ของที่แปลงเป็นคิวแล้วจะหายจากลิสต์นัดหมายโดยอัตโนมัติ ไม่ต้องมีใครไปลบ
@@ -215,8 +215,9 @@ booking ──(รถมาถึง)──▶ job
 
 | ไฟล์ | เพิ่ม/แก้ |
 |---|---|
-| `0008_booking.sql` | unique index `jobs(booking_id)` · trigger ห้ามเปลี่ยน `bookings.job_id` ที่ตั้งแล้ว |
+| `0008_booking.sql` | `bays` · `bookings` + `EXCLUDE USING gist` กันจองซ้อนช่องยก
+(ลิงก์ booking↔job ย้ายไปอยู่ที่ `0011_queue_integrity.sql`: unique index `jobs(booking_id)` · trigger `trg_jobs_booking_immutable`) |
 | `0004_documents.sql` | partial unique index ใบเสนอราคาที่ยังไม่ถูกแทนที่ ต่อ 1 job · เลขที่จองตอนออกเอกสาร ไม่ใช่ตอนสร้างแถว |
 | `0005_money.sql` | `deposits` ผูก customer เป็นหลัก · `booking_id`/`job_id` เติมทีหลังได้ · สถานะ 4 ค่า |
-| `0011_reporting.sql` | view `queue_today` (ตัด booking ที่แปลงแล้ว) · แยก "เงินเข้าตามวันรับ" กับ "ยอดขายตามวันปิดบิล" |
+| `0011_queue_integrity.sql` → `0013_queue_board.sql` | view `queue_board` (ตัด booking ที่แปลงแล้ว · ฝั่ง job ไม่กรองวันที่) · แยก "เงินเข้าตามวันรับ" กับ "ยอดขายตามวันปิดบิล" |
 | ใหม่ | `bot_messages` — เก็บข้อความต้นฉบับทุกครั้งที่บอทปิดบิล + idempotency key |
