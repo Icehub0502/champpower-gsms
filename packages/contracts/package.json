@@ -1,0 +1,24 @@
+{
+  "name": "@gsms/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "exports": {
+    "./common.js": "./src/common.ts",
+    "./auth.js": "./src/auth.ts",
+    "./queue.js": "./src/queue.ts",
+    "./bookings.js": "./src/bookings.ts",
+    "./checkin.js": "./src/checkin.ts",
+    "./files.js": "./src/files.ts",
+    "./index.js": "./src/index.ts"
+  }
+}
