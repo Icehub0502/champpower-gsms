@@ -19,8 +19,9 @@
 --
 -- CORRECT RESULT — every check below must come back empty (0 rows) except
 -- check 1, which must show exactly four rows: SELECT, INSERT, UPDATE, DELETE,
--- each with the SAME table count (55 as of migration 0012; update this
--- number in this comment, and nowhere else, the next time a migration adds
+-- each with the SAME table count (56 as of migration 0015, which added the
+-- tenant table match_blocklist; update this number in this comment, and
+-- nowhere else, the next time a migration adds
 -- or removes a tenant table). Any row under any other check, or a row naming
 -- 'ALL' / 'NOT CONVERTED' under check 1, means a table can be read or
 -- written across shop boundaries. Stop and fix it before doing anything else

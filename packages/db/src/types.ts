@@ -386,17 +386,14 @@ export interface Jobs {
   est_unit: string | null;
   est_value: Numeric | null;
   id: Generated<string>;
+  job_date: Generated<Timestamp>;
   job_number: string;
   job_type: Generated<string>;
-  /**
-   * DEPRECATED: free text from the MySQL era. Use mileage_in_km.
-   */
-  mileage_in: string | null;
   mileage_in_km: number | null;
   mileage_out_km: number | null;
   parent_job_id: string | null;
   photo_count: Generated<number>;
-  queue_no: string | null;
+  queue_no: number | null;
   shop_id: string;
   status: Generated<string>;
   thumb_file_id: string | null;
@@ -435,6 +432,17 @@ export interface JobWorkers {
   role: Generated<string>;
   shop_id: string;
   technician_id: string;
+}
+
+export interface MatchBlocklist {
+  created_at: Generated<Timestamp>;
+  created_by: string | null;
+  id: Generated<string>;
+  kind: string;
+  reason: string | null;
+  shop_id: string;
+  source: Generated<string>;
+  value_key: string;
 }
 
 export interface ModelPartBrands {
@@ -590,19 +598,27 @@ export interface PurchaseSuggestions {
   status: Generated<string>;
 }
 
-export interface QueueToday {
+export interface QueueBoard {
+  assigned_team_id: string | null;
+  assigned_technician_id: string | null;
   at: Timestamp | null;
   bay_id: string | null;
+  brand: string | null;
+  color: string | null;
   customer_name: string | null;
   job_id: string | null;
+  job_type: string | null;
   kind: string | null;
+  model: string | null;
   note: string | null;
   phone: string | null;
   plate: string | null;
+  queue_no: number | null;
   ref_id: string | null;
   shop_id: string | null;
   source: string | null;
   status: string | null;
+  thumb_file_id: string | null;
 }
 
 export interface SchemaMigrations {
@@ -618,7 +634,13 @@ export interface Sessions {
   id: Generated<string>;
   issued_at: Generated<Timestamp>;
   jti: string;
+  /**
+   * Last time this refresh token was exchanged. Written on /refresh only, never per request, so it costs one row update per rotation rather than one per API call.
+   */
   last_used_at: Timestamp | null;
+  /**
+   * The session that superseded this one during refresh-token rotation. Set together with revoked_at. A token whose session has this set, presented again, is a replay: revoke the whole chain.
+   */
   replaced_by: string | null;
   revoked_at: Timestamp | null;
   user_id: string;
@@ -942,6 +964,7 @@ export interface DB {
   job_status_history: JobStatusHistory;
   job_technician_history: JobTechnicianHistory;
   job_workers: JobWorkers;
+  match_blocklist: MatchBlocklist;
   model_part_brands: ModelPartBrands;
   model_parts: ModelParts;
   owner_groups: OwnerGroups;
@@ -955,7 +978,7 @@ export interface DB {
   purchase_return_lines: PurchaseReturnLines;
   purchase_returns: PurchaseReturns;
   purchase_suggestions: PurchaseSuggestions;
-  queue_today: QueueToday;
+  queue_board: QueueBoard;
   schema_migrations: SchemaMigrations;
   sessions: Sessions;
   shop_memberships: ShopMemberships;
