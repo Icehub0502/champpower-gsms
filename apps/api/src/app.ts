@@ -9,6 +9,7 @@ import { healthRouter } from './routes/health.js'
 import { queueRouter } from './routes/queue.js'
 import { bookingsRouter } from './routes/bookings.js'
 import { checkinRouter } from './routes/checkin.js'
+import { filesRouter } from './routes/files.js'
 
 export const app = express()
 
@@ -141,6 +142,12 @@ app.use('/api/admin', adminRouter)
 app.use('/api', intakeWriteLimiter, queueRouter)
 app.use('/api/bookings', intakeWriteLimiter, bookingsRouter)
 app.use('/api/checkin', intakeWriteLimiter, checkinRouter)
+
+// Check-in photo upload/retrieval. Shares the intake write limiter — its
+// `skip: GET` means fetching an already-uploaded photo (routes/files.ts GET
+// /api/files/:id) is unlimited while the upload POST is capped like every
+// other intake write. Never express.static: CLAUDE.md §12.
+app.use('/api/files', intakeWriteLimiter, filesRouter)
 
 // Routes from the MySQL version are parked until each screen is ported; see
 // docs/TEAM.md for the weekly order. They are not mounted, so nothing reaches
