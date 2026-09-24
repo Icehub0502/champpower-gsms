@@ -24,11 +24,33 @@ describe('isPlaceholderKey — phones', () => {
     expect(isPlaceholderKey('phone', '0899999123')).toBe(false)
   })
 
-  it('does not classify 0993333333, which is why the table exists', () => {
-    // A placeholder by convention at this shop, not by shape: zero, then two
-    // nines, then sevens threes. No pattern can know it — match_blocklist
-    // carries it per shop, on top of this floor.
-    expect(isPlaceholderKey('phone', '0993333333')).toBe(false)
+  it('blocks 0993333333 by shape — the regression this rule exists for', () => {
+    // This test used to assert FALSE, on the theory that the per-shop table
+    // would carry this value. It could not: 0015's seed reached only shops that
+    // existed when it ran, and production creates its shops afterwards, so the
+    // real shop's table is empty. With the floor silent, the first person keyed
+    // as 0993333333 became a customer and every later stranger was matched to
+    // them — never a second customer, so the auto-block threshold never fired.
+    expect(isPlaceholderKey('phone', '0993333333')).toBe(true)
+  })
+
+  it('blocks the variants another shop\'s staff will invent', () => {
+    expect(isPlaceholderKey('phone', '0995555555')).toBe(true)
+    expect(isPlaceholderKey('phone', '0811111111')).toBe(true)
+    expect(isPlaceholderKey('phone', '021111111')).toBe(true)
+  })
+
+  it('accepts the cost: a genuine vanity number is not used as a key', () => {
+    // Deliberate. A duplicate record a person can merge beats a fusion nobody
+    // can unpick. The number is still stored; it just never FINDS a customer.
+    expect(isPlaceholderKey('phone', '0812222222')).toBe(true)
+  })
+
+  it('leaves a real number with a short repeated tail alone', () => {
+    expect(isPlaceholderKey('phone', '0812345666')).toBe(false)
+    expect(isPlaceholderKey('phone', '0812340000')).toBe(false)
+    // Six identical digits is one short of the threshold.
+    expect(isPlaceholderKey('phone', '0891222222')).toBe(false)
   })
 
   it('expects an already-normalised key and does not guess', () => {
@@ -42,6 +64,28 @@ describe('isPlaceholderKey — phones', () => {
     expect(isPlaceholderKey('phone', '')).toBe(false)
     expect(isPlaceholderKey('phone', '000')).toBe(false)
   })
+})
+
+describe('the floor covers everything the 0015 seed covers', () => {
+  // The guard against this defect coming back. Migration 0015 seeds these
+  // five values into match_blocklist, but only for shops that existed when it
+  // ran — production's shops are created later and have NONE of these rows.
+  // Every value the seed knows about must therefore be caught by the pure
+  // floor on its own. If someone adds a value to a future seed, add it here;
+  // if this test then fails, the floor has to grow, not the seed.
+  const SEEDED_BY_0015 = [
+    ['phone', '0999999999'],
+    ['phone', '0993333333'],
+    ['phone', '0000000000'],
+    ['plate', '1กอ2222'],
+    ['plate', '1กก1111'],
+  ] as const
+
+  for (const [kind, key] of SEEDED_BY_0015) {
+    it(`${kind} ${key} is blocked with an empty table`, () => {
+      expect(isPlaceholderKey(kind, key)).toBe(true)
+    })
+  }
 })
 
 describe('isPlaceholderKey — plates', () => {

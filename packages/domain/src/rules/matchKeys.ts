@@ -13,9 +13,27 @@
  * placeholders by construction, so a brand-new shop is protected on its first
  * day with an empty database. The second layer is the per-shop
  * `match_blocklist` table (migration 0015), which holds values a particular
- * shop discovers later — 0993333333 is one of those: it is a placeholder by
- * convention at this shop, not by shape, and no pattern could know it.
- * The table ADDS TO this floor, it never replaces it.
+ * shop discovers later. The table ADDS TO this floor, it never replaces it.
+ *
+ * THE FLOOR MUST COVER EVERY PLACEHOLDER WE ALREADY KNOW ABOUT. The table
+ * cannot be trusted to: 0015's seed INSERT reached only the shops that existed
+ * when it ran, and production runs the migrations against an EMPTY database
+ * and creates its shops afterwards (the WO-004 import). So on the real shop
+ * the table is empty on day one, and any known placeholder that lives only in
+ * the seed has no protection at all. An earlier version of this comment said
+ * 0993333333 was "a placeholder by convention, not by shape, and no pattern
+ * could know it" — that was wrong, a pattern can (the trailing-run rule below),
+ * and leaving it to the table left it unprotected exactly where it came from.
+ *
+ * The threshold auto-block does NOT rescue a gap in the floor. It fires at
+ * four customers sharing a number; but the first person keyed in as a
+ * placeholder becomes a customer, and every later stranger with that number is
+ * MATCHED to them — so a second customer is never created, the count stays at
+ * one, and the merge is silent and permanent. Only the floor stops that.
+ *
+ * This is the third defect of one shape in this codebase (seed_document_series,
+ * then this seed): a protection that exists only where it was seeded. Put it
+ * in the rule, not in the rows.
  *
  * Pure and in `packages/domain` on purpose: the API resolver and the
  * production import script must apply the same rule (findings §4 item 4), and
@@ -48,7 +66,33 @@ function isPlaceholderPhone(digits: string): boolean {
   // Thai number starts with one, then whatever key their finger is resting on.
   if (digits.startsWith('0') && isRepeated(digits.slice(1))) return true
 
+  // 0993333333, 0995555555 — a few real-looking digits, then the finger rests
+  // on one key. Seven or more identical digits at the end is the shape of
+  // every placeholder in the production dump and of the variants other shops'
+  // staff will invent. The cost is deliberate: a genuine vanity number such as
+  // 081-222-2222 is never used to FIND a customer, so that person may get a
+  // second record — a duplicate a human can merge, which is the trade the
+  // FAILING SAFE note above says to make. It is still STORED on the record.
+  if (trailingRun(digits) >= PLACEHOLDER_PHONE_TAIL) return true
+
   return false
+}
+
+/**
+ * The shortest run of one repeated digit, at the end of a phone number, that
+ * marks it as a placeholder. Seven, because it is the smallest length that
+ * covers 0993333333 (a placeholder in the production dump) while leaving
+ * ordinary numbers that happen to end in a few repeats (…5666, …0000) alone.
+ */
+export const PLACEHOLDER_PHONE_TAIL = 7
+
+/** How many identical characters the string ends with. */
+function trailingRun(s: string): number {
+  if (s.length === 0) return 0
+  const last = s[s.length - 1]
+  let n = 0
+  for (let i = s.length - 1; i >= 0 && s[i] === last; i--) n++
+  return n
 }
 
 /**

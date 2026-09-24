@@ -8,8 +8,14 @@
  *      floor, it needs no rows, and it protects a shop that opened this
  *      morning.
  *   2. The value is in this shop's `match_blocklist` table — a value this
- *      particular shop discovered was junk. 0993333333 is one: a placeholder
- *      by local convention, invisible to any pattern.
+ *      particular shop discovered was junk, added by hand or by the
+ *      auto-block threshold.
+ *
+ * Do not rely on the table for any placeholder already KNOWN. 0015's seed rows
+ * exist only in shops that were present when it ran, and production creates
+ * its shops afterwards, so a real shop starts with an empty table. Every known
+ * placeholder has to be caught by the floor alone (packages/domain
+ * matchKeys.test.ts, "the floor covers everything the 0015 seed covers").
  *
  * `isBlockedMatchKey` is exported rather than inlined into the resolver
  * because the production import script must apply THE SAME LIST
