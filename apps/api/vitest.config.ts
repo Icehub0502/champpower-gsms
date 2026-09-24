@@ -36,7 +36,28 @@ if (existsSync(envFile)) process.loadEnvFile(envFile)
 
 const realDatabaseUrl = process.env.DATABASE_URL?.trim() ?? ''
 
+// `@champpower/domain`'s package.json points `main` at `./dist/index.js`, and
+// nothing in `npm test -w apps/api` rebuilds that dist first. A reviewer
+// proved the consequence directly: revert a rule in packages/domain/src,
+// leave dist stale, run this suite — green, because every test that exercises
+// domain logic was importing the OLD compiled code the whole time. A
+// regression test guarding a rule it never actually runs is worse than no
+// test: it reads as coverage while proving nothing. `@gsms/contracts` and
+// `@gsms/db` export `./src/*.ts` directly and are unaffected; domain is the
+// only package in this monorepo resolved through a build artifact, which is
+// what makes this alias necessary here and nowhere else.
+//
+// This does NOT change how production or `tsx watch` resolve the package —
+// packages/domain/package.json is untouched on purpose, so a stale dist can
+// still bite the dev server or a production build. That is a separate,
+// wider-blast-radius decision. This alias only guarantees that THIS test run
+// always sees current source.
+const domainSrc = fileURLToPath(new URL('../../packages/domain/src/index.ts', import.meta.url))
+
 export default defineConfig({
+  resolve: {
+    alias: { '@champpower/domain': domainSrc },
+  },
   test: {
     include: ['src/**/*.test.ts'],
     // bcrypt at cost 10 in pure JS is slow on purpose; the timing test takes
