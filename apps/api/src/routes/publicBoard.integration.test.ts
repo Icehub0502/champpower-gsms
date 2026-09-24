@@ -169,6 +169,50 @@ describe.skipIf(!hasDatabase)(tier2('public waiting-room board (GET /api/public/
       expect(res.status).toBe(404)
       expect(await res.json()).toEqual({ error: 'not_found' })
     })
+
+    /**
+     * The route's MAX_TOKEN_LENGTH is 128. A real token is 43 characters, so
+     * both sides of this boundary are invalid — the point is that the boundary
+     * itself behaves identically on both sides and never 500s, which is what
+     * would happen if an off-by-one let a 129-character string reach the
+     * database lookup with a different code path than a 128-character one.
+     */
+    it('a 128-character and a 129-character token both answer the identical 404, never a 500', async () => {
+      const exactly128 = await board('a'.repeat(128))
+      const exactly129 = await board('a'.repeat(129))
+
+      for (const res of [exactly128, exactly129]) {
+        expect(res.status).toBe(404)
+        expect(res.body).toEqual({ error: 'not_found' })
+      }
+    })
+
+    /**
+     * A regression pin, not a live finding: Kysely parameterises every query
+     * this route issues, so this passes today regardless of the payload. The
+     * point is to catch the day someone "optimises" shopByToken() into a
+     * hand-built string — this test would start failing at case (b), the row
+     * count, well before anyone noticed the table was gone.
+     */
+    it('an SQL-injection-shaped token answers the same 404, and leaves the jobs table untouched', async () => {
+      const before = await unscoped(db, (trx) => trx.selectFrom('jobs')
+        .select(({ fn }) => fn.count<number>('id').as('n')).executeTakeFirstOrThrow())
+
+      // board() itself URL-encodes the token before it goes on the wire —
+      // these are the RAW payloads, not pre-encoded ones.
+      const payloads = ["' OR '1'='1", "x'; DROP TABLE jobs;--"]
+      for (const payload of payloads) {
+        const res = await board(payload)
+        expect(res.status, `payload: ${payload}`).toBe(404)
+        expect(res.body, `payload: ${payload}`).toEqual({ error: 'not_found' })
+      }
+
+      // (b) — the assertion that actually matters: the table is still there
+      // and nothing was deleted from it.
+      const stillThere = await unscoped(db, (trx) => trx.selectFrom('jobs')
+        .select(({ fn }) => fn.count<number>('id').as('n')).executeTakeFirstOrThrow())
+      expect(Number(stillThere.n)).toBe(Number(before.n))
+    })
   })
 
   // ===========================================================================

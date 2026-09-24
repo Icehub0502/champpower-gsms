@@ -420,5 +420,33 @@ describe.skipIf(!hasDatabase)(tier2('/today kanban (GET /api/jobs/today, PATCH s
       expect(after.shop_id).toBe(before.shop_id)
       expect(after.job_number).toBe(before.job_number)
     })
+
+    it('cannot set booking_id, shop_id, job_number or status through the sub-state PATCH body', async () => {
+      const s = await owner(fx.shopA)
+      const jobId = await checkinOn(s.accessToken, 'MASSASSIGN-2')
+      // A valid sub-state needs a status that allows it; 'received' allows
+      // none (see SUB_STATES_BY_STATUS), so move to 'inspecting' first, where
+      // 'call_customer' is valid.
+      const setup = await patch(api, `/api/jobs/${jobId}/status`, { to: 'inspecting', fromStatus: 'received' }, s.accessToken)
+      expect(setup.status, `setup move to inspecting failed: ${JSON.stringify(setup.body)}`).toBe(200)
+      const before = await jobRow(fx.shopA, jobId)
+
+      const foreignId = fx.shopB
+      const res = await patch(api, `/api/jobs/${jobId}/sub-state`, {
+        subState: 'call_customer',
+        bookingId: '00000000-0000-0000-0000-000000000000',
+        shopId: foreignId,
+        jobNumber: 'HACKED-0002',
+        status: 'delivered',
+      }, s.accessToken)
+      expect(res.status, JSON.stringify(res.body)).toBe(200)
+
+      const after = await jobRow(fx.shopA, jobId)
+      expect(after.sub_state).toBe('call_customer') // the one field the body is allowed to change
+      expect(after.booking_id).toBe(before.booking_id)
+      expect(after.shop_id).toBe(before.shop_id)
+      expect(after.job_number).toBe(before.job_number)
+      expect(after.status, 'a "status" field in the sub-state body changed the job\'s status').toBe(before.status)
+    })
   })
 })
