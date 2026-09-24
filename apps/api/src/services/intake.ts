@@ -24,22 +24,25 @@ import { writeAudit } from './audit.js'
 const MAX_ATTEMPTS = 5
 
 /**
- * The retry that exists because nothing pre-checks the queue number.
+ * The retry for the ONE collision the queue lock cannot prevent.
  *
- * `nextQueueNo` is `max(queue_no) + 1` read inside the transaction that then
- * inserts. Two check-ins a fraction of a second apart can both read 6 before
- * either commits; one of them loses `uq_queue_no` and that is correct — the
- * constraint, not the read, is what stops two cars answering to "6".
+ * It used to be the whole concurrency strategy: an optimistic max+1, raced and
+ * retried up to five times. That starved — the last of N simultaneous
+ * check-ins needed up to N rounds — and told staff a number was taken when
+ * nobody had typed it. Opening a job now takes lockQueueDay() first, so two
+ * check-ins for the same (shop, day) no longer race at all.
  *
- * A number the SERVER guessed is worth guessing again: retry, re-read the max,
- * insert. A number a PERSON typed is not — they meant that number, and the
- * honest answer is "คิว 6 มีรถคันอื่นแล้ว". Hence the `serverAllocated` flag.
+ * What is left is a write that does NOT take that lock: a person renumbering
+ * a car through PATCH /jobs/:id/queue-no onto exactly the number a check-in
+ * is allocating at the same moment. Rare, but real — so a number the SERVER
+ * chose is still re-chosen if uq_queue_no refuses it. A number a PERSON typed
+ * is never retried: they meant it, and the honest answer is
+ * "คิว 6 มีรถคันอื่นแล้ว". Hence the `serverAllocated` flag.
  *
- * The retry wraps the WHOLE transaction rather than just the INSERT: a failed
+ * The retry wraps the WHOLE transaction, not just the INSERT: a failed
  * statement aborts the PostgreSQL transaction it is in, so there is nothing
- * left to retry inside it. Bounded at five, because beyond that the shop is
- * under a load no garage generates and spinning is worse than a 409 the
- * counter can act on.
+ * left to retry inside it. Five attempts is now far more than the one
+ * remaining case can need.
  */
 export async function withQueueNoRetry<T>(
   serverAllocated: boolean,
@@ -132,6 +135,12 @@ export async function openJob(
   if (resolved.kind !== 'ok') return resolved
 
   const jobDate = input.jobDate ?? bangkokToday()
+  // Serialise every job opening for this (shop, day) — see lockQueueDay() for
+  // why the lock exists alongside uq_queue_no. Taken on BOTH paths, typed and
+  // server-allocated, so a number a person typed is judged only against rows
+  // already committed: it is refused if genuinely taken, and never because a
+  // server allocation happened to be in flight at the same instant.
+  await jobsRepo.lockQueueDay(trx, input.shopId, jobDate)
   const queueNo = input.queueNo ?? await jobsRepo.nextQueueNo(trx, input.shopId, jobDate)
   const jobNumber = await jobsRepo.allocateJobNumber(trx, input.shopId)
 

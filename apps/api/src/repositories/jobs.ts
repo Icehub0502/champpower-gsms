@@ -18,13 +18,61 @@ import { sql } from 'kysely'
 import type { ScopedTx } from '@gsms/db/client.js'
 
 /**
+ * Take the queue-number lock for one (shop, day), held until this transaction
+ * ends.
+ *
+ * WHY A LOCK, when uq_queue_no already refuses duplicates: the constraint
+ * decides who wins a race but not how many rounds it takes. Allocation used to
+ * be an optimistic max+1 retried up to five times. With N check-ins arriving
+ * together each round has exactly one winner, so the last of them needs up to
+ * N rounds — and at 8 or more on a busy morning some were told "เลขคิวนี้มีรถ
+ * คันอื่นแล้ว" about a number nobody at the counter had typed. Serialising
+ * allocation per (shop, day) means each check-in waits a few milliseconds for
+ * its predecessor to commit and then reads a max that already includes it: no
+ * conflict, no retry, no starvation, however many arrive at once.
+ *
+ * WHY THE CONSTRAINT STAYS: the lock is taken by the code that OPENS a job;
+ * it is not a rule the database enforces on every write. PATCH /jobs/:id/
+ * queue-no (a person renumbering a car) does not take it, and nothing stops a
+ * future code path forgetting to. uq_queue_no is what actually guarantees two
+ * cars never share a number; the lock only makes the common path never need
+ * to lean on it.
+ *
+ * WHICH LOCK: pg_advisory_xact_lock on a single 64-bit key, hashed with
+ * hashtextextended() from a string that is namespaced ('queue_no:') and
+ * carries the full shop uuid and the date. Chosen over the two-int32 form
+ * because that form would have to squeeze a 128-bit uuid into 32 bits; a 64-bit
+ * hash of the whole key makes collisions negligible. And a collision is only
+ * ever a performance event, never a correctness one — two unrelated
+ * (shop, day) pairs would briefly queue behind each other; they could never
+ * receive the same number, because the number comes from max() and the
+ * constraint, not from the lock. The namespace keeps any future advisory-lock
+ * user from colliding with this one by construction.
+ *
+ * xact, not session: it is released at COMMIT or ROLLBACK automatically, so
+ * an error mid-check-in can never leave a (shop, day) locked for the rest of
+ * the morning. Different shops and different days never contend at all.
+ *
+ * Deadlock check: this is always taken before allocate_document_number's row
+ * lock on document_series, on every path that opens a job, and nothing takes
+ * them in the other order — so no cycle is possible between them.
+ */
+export async function lockQueueDay(
+  trx: ScopedTx,
+  shopId: string,
+  jobDate: string,
+): Promise<void> {
+  await sql`select pg_advisory_xact_lock(
+    hashtextextended(${'queue_no:' + shopId + ':' + jobDate}, 0))`.execute(trx)
+}
+
+/**
  * The next free queue number for (shop, day).
  *
  * `max(queue_no) + 1`, read inside the SAME transaction that goes on to
- * INSERT. That is not a guarantee on its own — two transactions can read the
- * same max before either commits — and it is not meant to be one: the unique
- * constraint `uq_queue_no` is the guarantee, this is only the good first guess.
- * The caller retries a bounded number of times when the guess loses a race.
+ * INSERT, and AFTER lockQueueDay() for that (shop, day). Under READ COMMITTED
+ * each statement takes a fresh snapshot, so once the lock is granted this
+ * SELECT sees the row the previous holder just committed.
  *
  * Served by the constraint's own index (shop_id, job_date, queue_no) as a
  * backward index scan, so no extra index exists for it.

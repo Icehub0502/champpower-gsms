@@ -104,19 +104,29 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
   // Case 9 — queue numbers: unique per (shop, day), allocated without a race
   // ===========================================================================
   describe('queue number allocation', () => {
-    it('concurrent server-allocated check-ins all receive distinct queue numbers', async () => {
+    it('concurrent server-allocated check-ins get 1..N, every one, with no 409', async () => {
+      // This test was "flaky" at 8 concurrent requests and was not flaky at all:
+      // allocation was an optimistic max+1 retried at most 5 times, so the last
+      // of N racers needed up to N rounds and lost whenever arrivals bunched.
+      // The allocator now serialises per (shop, day) with an advisory lock, and
+      // this asserts the strong property that design promises — not merely
+      // "distinct", but exactly 1..N with zero refusals. N is set well above the
+      // old retry bound on purpose: it failed deterministically before the fix.
+      // Do NOT lower it to make a run pass; a failure here is a real bug.
+      const N = 20
       const s = await owner(fx.shopA)
       const jobDate = '2030-01-01' // far future, isolated from every other test's default-today numbers
-      const attempts = Array.from({ length: 8 }, (_, i) => post<CheckInBody>(api, '/api/checkin', {
+      const attempts = Array.from({ length: N }, (_, i) => post<CheckInBody>(api, '/api/checkin', {
         plate: `RACE-QNO-${i}`, customerName: `Race ${i}`, brand: 'Toyota', model: 'Vios', jobDate,
       }, s.accessToken))
 
       const results = await Promise.all(attempts)
-      for (const r of results) expect(r.status, JSON.stringify(r.body)).toBe(201)
+      const refused = results.filter((r) => r.status !== 201)
+      expect(refused.map((r) => `${r.status} ${JSON.stringify(r.body)}`), 'a server-allocated check-in was refused')
+        .toEqual([])
 
-      const queueNos = results.map((r) => r.body.queueNo)
-      expect(new Set(queueNos).size, `queue numbers were not all distinct: ${queueNos.join(',')}`)
-        .toBe(queueNos.length)
+      const queueNos = results.map((r) => r.body.queueNo).sort((a, b) => a - b)
+      expect(queueNos).toEqual(Array.from({ length: N }, (_, i) => i + 1))
     })
 
     it('a caller-supplied queue number that is already taken is refused, naming the number', async () => {
