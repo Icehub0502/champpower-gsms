@@ -227,6 +227,119 @@ export async function updateQueueNo(
   return Number(r.numUpdatedRows)
 }
 
+// ---------------------------------------------------------------------------
+// Status and sub-state — changed from the kanban
+// ---------------------------------------------------------------------------
+
+export interface LockedJob {
+  id: string
+  status: string
+  sub_state: string | null
+  appointment_date: Date | null
+}
+
+/**
+ * Read a job's status and TAKE THE ROW LOCK, in the transaction that will
+ * change it.
+ *
+ * FOR UPDATE is what makes the move check honest. Without it two staff
+ * dragging the same card both read "inspecting", both pass canMoveTo(), and
+ * the second write lands on a status it was never checked against. With it,
+ * the second request waits, then reads the status the first one wrote, and is
+ * judged against that — so it gets `status_changed` instead of an illegal move
+ * quietly applied.
+ */
+export async function lockForStatusChange(
+  trx: ScopedTx,
+  id: string,
+): Promise<LockedJob | undefined> {
+  return trx
+    .selectFrom('jobs')
+    .select(['id', 'status', 'sub_state', 'appointment_date'])
+    .where('id', '=', id)
+    .where('deleted_at', 'is', null)
+    .forUpdate()
+    .executeTakeFirst()
+}
+
+/**
+ * The job's status history, oldest first. prevStatusOf() needs it for the one
+ * status with two possible predecessors (carout came from scheduled or from
+ * rejected, and only the history says which).
+ */
+export async function statusHistoryOf(
+  trx: ScopedTx,
+  jobId: string,
+): Promise<{ status: string; changed_at: Date }[]> {
+  return trx
+    .selectFrom('job_status_history')
+    .select(['status', 'changed_at'])
+    .where('job_id', '=', jobId)
+    .orderBy('changed_at', 'asc')
+    .orderBy('id', 'asc')
+    .execute()
+}
+
+export interface ApplyStatus {
+  jobId: string
+  status: string
+  subState: string | null
+  /**
+   * undefined = leave appointment_date alone. A value = set it. null = clear
+   * it. Three states on purpose: most moves must not touch it at all.
+   */
+  appointmentDate?: string | null | undefined
+}
+
+export async function applyStatus(trx: ScopedTx, input: ApplyStatus): Promise<void> {
+  // Named columns only — never booking_id; see trg_jobs_booking_immutable in
+  // the note at the top of this file.
+  const values: { status: string; sub_state: string | null; appointment_date?: string | null } = {
+    status: input.status,
+    sub_state: input.subState,
+  }
+  if (input.appointmentDate !== undefined) values.appointment_date = input.appointmentDate
+  await trx.updateTable('jobs').set(values).where('id', '=', input.jobId).execute()
+}
+
+/** One row per move, append-only. job_board_state reads its timings from here. */
+export async function recordStatusHistory(
+  trx: ScopedTx,
+  shopId: string,
+  jobId: string,
+  status: string,
+  changedBy: string | null,
+): Promise<Date> {
+  const row = await trx
+    .insertInto('job_status_history')
+    .values({ shop_id: shopId, job_id: jobId, status, changed_by: changedBy })
+    .returning('changed_at')
+    .executeTakeFirstOrThrow()
+  return row.changed_at
+}
+
+export async function setSubState(
+  trx: ScopedTx,
+  jobId: string,
+  subState: string | null,
+): Promise<void> {
+  await trx.updateTable('jobs').set({ sub_state: subState }).where('id', '=', jobId).execute()
+}
+
+/** The bay's display name and the booking slot, for recomputing a card label after an edit. */
+export async function labelFactsOf(
+  trx: ScopedTx,
+  jobId: string,
+): Promise<{ bay_name: string | null; booking_slot_start: Date | null } | undefined> {
+  return trx
+    .selectFrom('jobs as j')
+    .leftJoin('bays as b', 'b.id', 'j.bay_id')
+    .leftJoin('bookings as bk', 'bk.id', 'j.booking_id')
+    .select(['b.name as bay_name', 'bk.slot_start as booking_slot_start'])
+    .where('j.id', '=', jobId)
+    .executeTakeFirst()
+}
+
 /**
  * How many OTHER cars are standing in this bay right now.
  *

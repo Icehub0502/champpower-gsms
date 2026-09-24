@@ -335,6 +335,16 @@ export interface IdempotencyKeys {
   user_id: string | null;
 }
 
+export interface JobBoardState {
+  job_id: string | null;
+  left_received_at: Timestamp | null;
+  on_board: boolean | null;
+  repair_ended_at: Timestamp | null;
+  repair_started_at: Timestamp | null;
+  shop_id: string | null;
+  status_changed_at: Timestamp | null;
+}
+
 export interface JobComplaints {
   custom: Generated<boolean>;
   id: Generated<string>;
@@ -396,6 +406,7 @@ export interface Jobs {
   queue_no: number | null;
   shop_id: string;
   status: Generated<string>;
+  sub_state: string | null;
   thumb_file_id: string | null;
   updated_at: Generated<Timestamp>;
   vehicle_id: string;
@@ -603,21 +614,30 @@ export interface QueueBoard {
   assigned_technician_id: string | null;
   at: Timestamp | null;
   bay_id: string | null;
+  booking_slot_start: Timestamp | null;
   brand: string | null;
   color: string | null;
   customer_name: string | null;
+  est_unit: string | null;
+  est_value: Numeric | null;
   job_id: string | null;
+  job_number: string | null;
   job_type: string | null;
   kind: string | null;
+  left_received_at: Timestamp | null;
   model: string | null;
   note: string | null;
   phone: string | null;
   plate: string | null;
   queue_no: number | null;
   ref_id: string | null;
+  repair_ended_at: Timestamp | null;
+  repair_started_at: Timestamp | null;
   shop_id: string | null;
   source: string | null;
   status: string | null;
+  status_changed_at: Timestamp | null;
+  sub_state: string | null;
   thumb_file_id: string | null;
 }
 
@@ -667,6 +687,7 @@ export interface Shops {
   name: string;
   owner_group_id: string;
   phone: Generated<string>;
+  public_board_token: Generated<string>;
   slug: string;
   tax_id: Generated<string>;
   updated_at: Generated<Timestamp>;
@@ -956,6 +977,7 @@ export interface DB {
   evaluation_templates: EvaluationTemplates;
   files: Files;
   idempotency_keys: IdempotencyKeys;
+  job_board_state: JobBoardState;
   job_complaints: JobComplaints;
   job_holds: JobHolds;
   job_notes: JobNotes;

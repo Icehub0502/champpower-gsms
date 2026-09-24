@@ -17,3 +17,5 @@ export * from './queue.js';
 export * from './bookings.js';
 export * from './checkin.js';
 export * from './files.js';
+export * from './today.js';
+export * from './publicBoard.js';

@@ -19,7 +19,9 @@ export interface StatusDef {
 
 export const STATUS_FLOW: StatusDef[] = [
   { key: 'received', label: 'รับรถ', cls: 'st-received' },
-  { key: 'inspecting', label: 'ตรวจเช็ค', cls: 'st-inspecting' },
+  // ก, not ค — as spelled in Figma 51–58 and 80 and confirmed in
+  // DECISION-job-status.md §1.
+  { key: 'inspecting', label: 'ตรวจเช็ก', cls: 'st-inspecting' },
   { key: 'quoted', label: 'เสนอราคา', cls: 'st-quoted' },
   { key: 'approved', label: 'อนุมัติ', cls: 'st-approved' },
   { key: 'scheduled', label: 'นัดวันมาทำ', cls: 'st-scheduled' },

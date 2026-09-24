@@ -10,6 +10,8 @@ import { queueRouter } from './routes/queue.js'
 import { bookingsRouter } from './routes/bookings.js'
 import { checkinRouter } from './routes/checkin.js'
 import { filesRouter } from './routes/files.js'
+import { kanbanRouter } from './routes/kanban.js'
+import { publicBoardRouter } from './routes/publicBoard.js'
 
 export const app = express()
 
@@ -137,9 +139,17 @@ app.use('/health', healthRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/admin', adminRouter)
 
+// The unauthenticated waiting-room screen. Mounted before the /api routers so a
+// stranger's request never walks through the authenticated ones, and carrying
+// its own limiter (routes/publicBoard.ts) so it cannot be mounted unlimited.
+app.use('/api/public/board', publicBoardRouter)
+
 // The board (/api/queue) and the two board edits (/api/jobs/:id/bay,
-// /api/jobs/:id/queue-no) share one router, so it mounts at /api.
-app.use('/api', intakeWriteLimiter, queueRouter)
+// /api/jobs/:id/queue-no) share one router, so it mounts at /api. The kanban
+// (/api/jobs/today, /api/jobs/:id/status, /api/jobs/:id/sub-state) rides on the
+// SAME mount so the write limiter runs once per request — two separate
+// app.use('/api', limiter, ...) lines would count every PATCH twice.
+app.use('/api', intakeWriteLimiter, queueRouter, kanbanRouter)
 app.use('/api/bookings', intakeWriteLimiter, bookingsRouter)
 app.use('/api/checkin', intakeWriteLimiter, checkinRouter)
 

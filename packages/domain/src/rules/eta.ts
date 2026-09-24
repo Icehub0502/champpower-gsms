@@ -98,8 +98,18 @@ export interface EtaState {
  * Everything the countdown needs, recomputed from the current clock. Returned as data
  * rather than markup so a 1-second tick can rewrite text in place instead of rebuilding
  * the whole card.
+ *
+ * `now` defaults to the real clock, so every existing caller is unchanged. It is a
+ * parameter because the kanban's "how many cars are over SLA" count (rules/kanban.ts)
+ * must give the same answer for the same rows in a test, and a function that reads
+ * Date.now() behind the caller's back cannot.
  */
-export function etaState(estMins: number, workStart: string, workEnd: string): EtaState | null {
+export function etaState(
+  estMins: number,
+  workStart: string,
+  workEnd: string,
+  now: number = Date.now(),
+): EtaState | null {
   const mins = Number(estMins) || 0;
   if (!mins) return null;
   const p = (n: number) => String(n).padStart(2, '0');
@@ -127,7 +137,6 @@ export function etaState(estMins: number, workStart: string, workEnd: string): E
     }
   }
 
-  const now = Date.now();
   const left = Math.round((end - now) / 1000); // seconds, so the display can tick
   if (left <= 0) {
     return { phase: 'late', text: 'เลยเวลา ' + fmtSecs(-left), sub: 'กำหนดเดิม ' + hhmm(end), pct: 100 };
