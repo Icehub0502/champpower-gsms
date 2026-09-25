@@ -27,14 +27,24 @@ export function getAccessToken(): string | null {
 }
 
 /** Thrown on any non-2xx response. `status` lets callers branch on 401/403/404/etc
- * without parsing the message string. Never carries the JWT itself. */
+ * without parsing the message string. Never carries the JWT itself.
+ *
+ * `body` is the parsed JSON of the error response, or undefined when the body
+ * was not JSON. Refusals carry their data there (a 409's candidates, owner
+ * names, missing fields); `message` stays the `error` code exactly as before,
+ * so no existing caller changes. It is `unknown` on purpose: narrow it with the
+ * matching @gsms/contracts schema's safeParse, and treat a mismatch as an
+ * unknown error — never cast it. NEVER log it: a refusal body can hold customer
+ * names (CLAUDE.md §12). */
 export class ApiError extends Error {
   status: number;
+  body: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -118,13 +128,15 @@ function refresh(): Promise<boolean> {
 
 async function parseError(res: Response): Promise<never> {
   let message = res.statusText || `Request failed (${res.status})`;
+  let body: unknown;
   try {
     const data = (await res.json()) as { error?: string };
+    body = data;
     if (data && typeof data.error === 'string' && data.error) message = data.error;
   } catch {
-    // Non-JSON error body — keep the status-text fallback above.
+    // Non-JSON error body — keep the status-text fallback above; body stays undefined.
   }
-  throw new ApiError(res.status, message);
+  throw new ApiError(res.status, message, body);
 }
 
 async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
