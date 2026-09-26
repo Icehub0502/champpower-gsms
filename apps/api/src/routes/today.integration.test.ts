@@ -11,6 +11,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { withShop } from '@gsms/db/client.js'
+import { canMoveTo, type MovableJob, type StatusHistoryEntry, type StatusKey } from '@champpower/domain'
 import { db } from '../lib/db.js'
 import { hasDatabase, tier2 } from '../test/env.js'
 import {
@@ -38,7 +39,12 @@ describe.skipIf(!hasDatabase)(tier2('/today kanban (GET /api/jobs/today, PATCH s
   let fx: TwoShopFixture
 
   beforeAll(async () => {
-    api = await startApi()
+    // A raised ceiling for THIS instance only — see CreateAppOptions in
+    // ../app.ts. Every OTHER test file in this suite still starts a
+    // production-shaped app via the plain `startApi()`, unmodified, and one
+    // test below ("the real write limiter") starts a THIRD, separate instance
+    // with no override at all to prove the real 120/min number still bites.
+    api = await startApi({ intakeWriteLimit: 100_000 })
     fx = await createTwoShopFixture('wo006today')
   })
   afterAll(async () => {
@@ -78,24 +84,50 @@ describe.skipIf(!hasDatabase)(tier2('/today kanban (GET /api/jobs/today, PATCH s
   /**
    * Put a job into a state for a test WITHOUT spending the write limiter.
    *
-   * Every request in this file shares one in-process app and one intake write
-   * limiter (120/min per address — a real ceiling that must not be weakened for
-   * the tests' convenience, the same reasoning as fixtures.ts gives for /login).
-   * Walking each job through the API one PATCH at a time burned that budget on
-   * SETUP, and the file started failing with 429 on tests that had nothing to
-   * do with rate limits. Setup is not the subject: the job's status and its
-   * history rows are written directly here, and only the move under test goes
-   * through the API. History timestamps are spaced one second apart, ending a
-   * minute ago, so any move the test then makes is recorded after them.
+   * Every request in this file shares one in-process app instance (the one
+   * `beforeAll` starts with a raised intake write limit — see the note there),
+   * so this no longer burns rate-limiter budget. It burns something else that
+   * matters more if left unchecked: walking straight to `writes: status, then
+   * a pile of job_status_history rows` can invent a history the real API could
+   * never have produced — a car that was never legally moved from `quoted` to
+   * `repairing`, say. So before anything is written, EVERY step is replayed
+   * through `canMoveTo()`, the exact function `PATCH /api/jobs/:id/status`
+   * checks — the same one this file's "illegal moves" tests are busy proving
+   * refuses bad moves. A `seedPath` that skipped this check could pass a test
+   * against a fixture the production code would have rejected; this makes that
+   * impossible: seedPath can only ever write a path the endpoint would also
+   * have allowed, one legal step at a time.
+   *
+   * History timestamps are spaced one second apart, ending a minute ago, so
+   * any move the test then makes through the API is recorded after them.
    */
   async function seedPath(shopId: string, jobId: string, statuses: string[]) {
     const last = statuses[statuses.length - 1]
     if (!last) throw new Error('seedPath needs at least one status')
+
     const start = Date.now() - 60_000 - statuses.length * 1000
+    const history: StatusHistoryEntry[] = []
+    let current: StatusKey = 'received'
+    const rows: { status: string; changed_at: Date }[] = []
+    for (let i = 0; i < statuses.length; i++) {
+      const to = statuses[i]!
+      const job: MovableJob = { status: current, statusHistory: history }
+      if (!canMoveTo(job, to as StatusKey)) {
+        throw new Error(
+          `seedPath: ${current} -> ${to} is not a move canMoveTo() allows; refusing to invent history `
+          + `(full path: received -> ${statuses.join(' -> ')})`,
+        )
+      }
+      const changedAt = new Date(start + i * 1000)
+      history.push({ status: to as StatusKey, changedAt: changedAt.toISOString() })
+      rows.push({ status: to, changed_at: changedAt })
+      current = to as StatusKey
+    }
+
     await withShop(db, shopId, async (trx) => {
       await trx.updateTable('jobs').set({ status: last }).where('id', '=', jobId).execute()
-      await trx.insertInto('job_status_history').values(statuses.map((status, i) => ({
-        shop_id: shopId, job_id: jobId, status, changed_at: new Date(start + i * 1000),
+      await trx.insertInto('job_status_history').values(rows.map((r) => ({
+        shop_id: shopId, job_id: jobId, status: r.status, changed_at: r.changed_at,
       }))).execute()
     })
   }
@@ -588,6 +620,37 @@ describe.skipIf(!hasDatabase)(tier2('/today kanban (GET /api/jobs/today, PATCH s
       expect(after.shop_id).toBe(before.shop_id)
       expect(after.job_number).toBe(before.job_number)
       expect(after.status, 'a "status" field in the sub-state body changed the job\'s status').toBe(before.status)
+    })
+  })
+
+  // ===========================================================================
+  // The real write limiter — proved on an UNMODIFIED app instance
+  // ===========================================================================
+  describe('the real write limiter', () => {
+    /**
+     * Every other test in this file runs against `api`, started with a raised
+     * `intakeWriteLimit` so setup does not spend the real budget (see
+     * `beforeAll` and `seedPath` above). That raised ceiling is the whole
+     * reason this test has to start its OWN app, with NO override: proving
+     * "the limiter still works" against an instance that has been told to
+     * ignore it would prove nothing.
+     */
+    it('answers 429 on the 121st intake write within a minute, on a plain instance', async () => {
+      const plain = await startApi()
+      try {
+        const s = await owner(fx.shopA)
+        let last: Awaited<ReturnType<typeof post>> | undefined
+        for (let i = 0; i < 121; i++) {
+          last = await post(plain, '/api/checkin', {
+            plate: `LIMIT-${i}`, customerName: 'Limiter Test', brand: 'Toyota', model: 'Vios',
+          }, s.accessToken)
+          if (last.status === 429) break
+        }
+        expect(last?.status, 'the 120/min intake write limiter never engaged within 121 writes').toBe(429)
+        expect(last?.body).toMatchObject({ error: 'too_many_requests' })
+      } finally {
+        await plain.close()
+      }
     })
   })
 })

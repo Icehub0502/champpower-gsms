@@ -168,10 +168,22 @@ export interface RunningApi {
   close: () => Promise<void>
 }
 
+export interface StartApiOptions {
+  /**
+   * TEST-ONLY: raise the intake write limiter's ceiling above the real 120/min
+   * for THIS instance only — see CreateAppOptions in ../app.ts for why this
+   * exists and why it cannot be reached by a client. Omit it and this starts
+   * the exact production app (`createApp()` with no overrides); every existing
+   * caller of `startApi()` that does not pass this keeps testing the real
+   * ceiling, unchanged.
+   */
+  intakeWriteLimit?: number
+}
+
 /** Start the real Express app on an ephemeral port. */
-export async function startApi(): Promise<RunningApi> {
-  const { app } = await import('../app.js')
-  const server: Server = createServer(app)
+export async function startApi(options: StartApiOptions = {}): Promise<RunningApi> {
+  const { createApp } = await import('../app.js')
+  const server: Server = createServer(createApp(options))
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const addr = server.address()
   if (typeof addr === 'string' || addr === null) throw new Error('no port')
