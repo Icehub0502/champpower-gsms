@@ -103,6 +103,17 @@ export async function nextQueueNo(
  * on the series row, so concurrent check-ins queue up rather than colliding.
  * CLAUDE.md §5.3 rule 3 forbids `MAX(number)+1` here, and this is why the
  * function exists rather than an application-side counter.
+ *
+ * PRECONDITION — any new code path that opens a job, i.e. that calls this with
+ * 'JOB', MUST call lockQueueDay() for the same (shop, day) FIRST, in the same
+ * transaction. Two reasons, both load-bearing:
+ *   - Queue numbers: a path that opens a job without the lock goes back to
+ *     racing on max(queue_no)+1, and the starvation fixed in c0ad86b returns
+ *     for whichever path forgot.
+ *   - Deadlock: every existing path takes the advisory lock and THEN this row
+ *     lock. A path taking them in the other order can deadlock against a
+ *     check-in. One order, everywhere.
+ * services/intake.ts openJob() is the only caller today, and does both.
  */
 export async function allocateJobNumber(trx: ScopedTx, shopId: string): Promise<string> {
   const result = await sql<{ n: string }>`
@@ -283,7 +294,6 @@ export interface LockedJob {
   id: string
   status: string
   sub_state: string | null
-  appointment_date: Date | null
 }
 
 /**
@@ -303,7 +313,7 @@ export async function lockForStatusChange(
 ): Promise<LockedJob | undefined> {
   return trx
     .selectFrom('jobs')
-    .select(['id', 'status', 'sub_state', 'appointment_date'])
+    .select(['id', 'status', 'sub_state'])
     .where('id', '=', id)
     .where('deleted_at', 'is', null)
     .forUpdate()
@@ -312,8 +322,8 @@ export async function lockForStatusChange(
 
 /**
  * The job's status history, oldest first. prevStatusOf() needs it for the one
- * status with two possible predecessors (carout came from scheduled or from
- * rejected, and only the history says which).
+ * status with two possible predecessors: `ready` came from repairing or, when
+ * alignment was not skipped, from aligning — and only the history says which.
  */
 export async function statusHistoryOf(
   trx: ScopedTx,
@@ -332,22 +342,16 @@ export interface ApplyStatus {
   jobId: string
   status: string
   subState: string | null
-  /**
-   * undefined = leave appointment_date alone. A value = set it. null = clear
-   * it. Three states on purpose: most moves must not touch it at all.
-   */
-  appointmentDate?: string | null | undefined
 }
 
 export async function applyStatus(trx: ScopedTx, input: ApplyStatus): Promise<void> {
   // Named columns only — never booking_id; see trg_jobs_booking_immutable in
   // the note at the top of this file.
-  const values: { status: string; sub_state: string | null; appointment_date?: string | null } = {
-    status: input.status,
-    sub_state: input.subState,
-  }
-  if (input.appointmentDate !== undefined) values.appointment_date = input.appointmentDate
-  await trx.updateTable('jobs').set(values).where('id', '=', input.jobId).execute()
+  await trx
+    .updateTable('jobs')
+    .set({ status: input.status, sub_state: input.subState })
+    .where('id', '=', input.jobId)
+    .execute()
 }
 
 /** One row per move, append-only. job_board_state reads its timings from here. */

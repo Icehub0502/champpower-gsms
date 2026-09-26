@@ -6,7 +6,6 @@ import {
   kanbanColumnOf,
   kpisOf,
   pulseOf,
-  requiresAppointmentDate,
   slaOf,
   SUB_STATE_LABEL,
   subStateAfterMove,
@@ -54,8 +53,7 @@ describe('kanbanColumnOf', () => {
     expect(kanbanColumnOf('approved')).toBe(3);
   });
 
-  it('gives the branch statuses no column — they are real, just not columns', () => {
-    expect(kanbanColumnOf('scheduled')).toBeNull();
+  it('gives the two closed-early statuses no column — they are real, just terminal', () => {
     expect(kanbanColumnOf('rejected')).toBeNull();
     expect(kanbanColumnOf('carout')).toBeNull();
     expect(kanbanColumnOf('not_a_status')).toBeNull();
@@ -70,7 +68,7 @@ describe('the inspecting label', () => {
 
 describe('isValidSubState', () => {
   it('always accepts null — no sub-state is the default', () => {
-    for (const s of ['received', 'quoted', 'delivered', 'scheduled']) {
+    for (const s of ['received', 'quoted', 'delivered', 'rejected']) {
       expect(isValidSubState(s, null)).toBe(true);
     }
   });
@@ -97,8 +95,8 @@ describe('isValidSubState', () => {
   });
 
   it('allows nothing on the statuses that are not kanban columns', () => {
-    expect(isValidSubState('scheduled', 'waiting_customer')).toBe(false);
     expect(isValidSubState('rejected', 'call_customer')).toBe(false);
+    expect(isValidSubState('carout', 'waiting_customer')).toBe(false);
   });
 
   it('refuses a value outside the enum', () => {
@@ -189,7 +187,7 @@ describe('kpisOf — counted from statuses, never from the design', () => {
   });
 
   it('ignores statuses that are not on the kanban', () => {
-    expect(kpisOf([{ status: 'scheduled' }, { status: 'rejected' }])).toEqual({
+    expect(kpisOf([{ status: 'carout' }, { status: 'rejected' }])).toEqual({
       openJobs: 0, awaitingDecision: 0, inRepair: 0, readyForHandover: 0,
     });
   });
@@ -296,22 +294,33 @@ describe('canMoveTo — built on transitions.ts', () => {
     expect(canMoveTo({ status: 'ready' }, 'delivered')).toBe(true);
   });
 
-  it('allows all three quote decisions from quoted', () => {
+  it('allows both quote decisions from quoted, and nothing called scheduled', () => {
     expect(canMoveTo({ status: 'quoted' }, 'approved')).toBe(true);
-    expect(canMoveTo({ status: 'quoted' }, 'scheduled')).toBe(true);
     expect(canMoveTo({ status: 'quoted' }, 'rejected')).toBe(true);
   });
 
-  it('lets a decision be taken back to quoted', () => {
+  it('lets an approval be taken back to quoted, but never a rejection', () => {
     expect(canMoveTo({ status: 'approved' }, 'quoted')).toBe(true);
-    expect(canMoveTo({ status: 'rejected' }, 'quoted')).toBe(true);
+    // Decision 6: rejected is terminal. No step back, no step on to carout.
+    expect(canMoveTo({ status: 'rejected' }, 'quoted')).toBe(false);
+    expect(canMoveTo({ status: 'rejected' }, 'carout')).toBe(false);
   });
 
-  it('refuses anything that skips a step', () => {
+  it('allows skipping alignment — repairing straight to ready (decision 7)', () => {
+    expect(canMoveTo({ status: 'repairing' }, 'ready')).toBe(true);
+  });
+
+  it('allows carout from open statuses up to aligning, but not from ready', () => {
+    expect(canMoveTo({ status: 'quoted' }, 'carout')).toBe(true);
+    expect(canMoveTo({ status: 'aligning' }, 'carout')).toBe(true);
+    expect(canMoveTo({ status: 'ready' }, 'carout')).toBe(false);
+  });
+
+  it('refuses anything else that skips a step', () => {
     expect(canMoveTo({ status: 'received' }, 'repairing')).toBe(false);
     expect(canMoveTo({ status: 'inspecting' }, 'approved')).toBe(false);
     expect(canMoveTo({ status: 'repairing' }, 'quoted')).toBe(false);
-    expect(canMoveTo({ status: 'repairing' }, 'ready')).toBe(false);
+    expect(canMoveTo({ status: 'approved' }, 'ready')).toBe(false);
   });
 
   it('refuses a move to where the job already is', () => {
@@ -346,24 +355,30 @@ describe('targetStatusForColumn — the drop rule', () => {
     expect(targetStatusForColumn({ status: 'received' }, 2)).toBe('inspecting');
     expect(targetStatusForColumn({ status: 'inspecting' }, 1)).toBe('received');
     expect(targetStatusForColumn({ status: 'aligning' }, 4)).toBe('ready');
-    expect(targetStatusForColumn({ status: 'ready' }, 3)).toBe('aligning');
+    // No history: back to repairing, never an invented alignment (see transitions.ts).
+    expect(targetStatusForColumn({ status: 'ready' }, 3)).toBe('repairing');
+    const aligned = [
+      { status: 'aligning' as const, changedAt: '2026-01-01T00:00:00Z' },
+      { status: 'ready' as const, changedAt: '2026-01-02T00:00:00Z' },
+    ];
+    expect(targetStatusForColumn({ status: 'ready', statusHistory: aligned }, 3)).toBe('aligning');
   });
 
-  it('refuses repairing onto column 4, because the next step is aligning', () => {
-    expect(targetStatusForColumn({ status: 'repairing' }, 4)).toBeNull();
+  it('lands repairing dropped on column 4 on ready — alignment skipped (decision 7)', () => {
+    expect(targetStatusForColumn({ status: 'repairing' }, 4)).toBe('ready');
+  });
+
+  it('sends ready back to where it actually came from', () => {
+    const cameFromRepairing = [
+      { status: 'repairing' as const, changedAt: '2026-01-01T00:00:00Z' },
+      { status: 'ready' as const, changedAt: '2026-01-02T00:00:00Z' },
+    ];
+    expect(targetStatusForColumn({ status: 'ready', statusHistory: cameFromRepairing }, 3)).toBe('repairing');
   });
 
   it('gives no target for a drop onto the job\'s own column', () => {
     // A multi-status column cannot say which status was meant.
     expect(targetStatusForColumn({ status: 'approved' }, 3)).toBeNull();
     expect(targetStatusForColumn({ status: 'ready' }, 4)).toBeNull();
-  });
-});
-
-describe('requiresAppointmentDate', () => {
-  it('is required for scheduled and nothing else', () => {
-    expect(requiresAppointmentDate('scheduled')).toBe(true);
-    expect(requiresAppointmentDate('approved')).toBe(false);
-    expect(requiresAppointmentDate('rejected')).toBe(false);
   });
 });

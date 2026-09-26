@@ -13,8 +13,8 @@
  * both sides of the wire — CLAUDE.md §2.
  */
 import type { StatusHistoryEntry } from '../types/job.js';
-import { DECISION_KEYS, MAIN_PATH, type StatusKey } from '../workflow/statusFlow.js';
-import { isDecisionPoint, nextStatusOf, prevStatusOf } from '../workflow/transitions.js';
+import { MAIN_PATH, type StatusKey } from '../workflow/statusFlow.js';
+import { allowedMovesFrom } from '../workflow/transitions.js';
 import { estMinutes, etaState, repairCycle, type EtaState } from './eta.js';
 
 // ============================================================================
@@ -50,11 +50,11 @@ export const KANBAN_COLUMNS: readonly KanbanColumnDef[] = [
 /**
  * The column a status belongs in, or null.
  *
- * null for the three branch statuses — `scheduled`, `rejected`, `carout`.
- * They are real and used daily (they are the exits from the quote decision,
- * and the owner's "why customers don't go ahead" report depends on
- * `rejected`), they are simply not kanban columns. Whoever renders a null
- * decides where the car goes; this function does not invent a fifth column.
+ * null for the two closed-early statuses, `rejected` and `carout`. They are
+ * real and kept distinct (the owner's "why customers don't go ahead" report
+ * depends on `rejected`), but they are terminal and off the board — the job
+ * is over. There is no `scheduled` any more: an appointment is a booking, and
+ * a car that is not in the workshop has no job (DECISION-7-today.md §6).
  */
 export function kanbanColumnOf(status: string): KanbanColumn | null {
   for (const def of KANBAN_COLUMNS) {
@@ -127,8 +127,7 @@ export function isSubState(value: unknown): value is SubState {
  *   ready        waiting_wash, waiting_customer,     finished; being cleaned, or waiting for —
  *                call_customer, paid                 or needing a call to — the owner, or paid
  *   delivered    paid                                gone, and settled
- *   scheduled,   (none)                              not on the kanban
- *   rejected,
+ *   rejected,    (none)                              closed early; not on the kanban
  *   carout
  *
  * Two choices worth checking with the shop:
@@ -424,24 +423,21 @@ export function pulseOf(rows: readonly BoardJob[], bays: readonly BoardBay[], no
 
 export interface MovableJob {
   status: StatusKey;
-  appointmentDate?: string | null;
   statusHistory?: StatusHistoryEntry[];
 }
 
 /**
  * May this job move from its current status to `to`?
  *
- * Built ENTIRELY on transitions.ts — this is not a second transition table.
- * A move is legal when it is one of exactly three things:
+ * Nothing but a lookup in allowedMovesFrom() — THE transition table, in
+ * workflow/transitions.ts. This is deliberately not a second table: the job
+ * screen's buttons and the kanban's drag answer from the same place, so the
+ * kanban can do nothing the job screen could not.
  *
- *   1. the next step:      nextStatusOf(job)            (the "next" button)
- *   2. the step back:      prevStatusOf(job)            (the "back" button)
- *   3. a quote decision:   from `quoted` to any of DECISION_KEYS
- *                          (approved · scheduled · rejected)
- *
- * Anything transitions.ts would not do through its own buttons is refused. In
- * particular no drag can skip a step: received cannot jump to repairing, and
- * a car cannot go from the lift back to "waiting for the customer" in one move.
+ * In particular no drag can skip a step it is not allowed to skip: received
+ * cannot jump to repairing, and a car cannot go from the lift back to "waiting
+ * for the customer" in one move. The one skip that IS allowed —
+ * repairing -> ready, past an alignment the car did not need — is in the table.
  *
  * NOTE FOR W3: CLAUDE.md §5 rule 5 forbids stepping a job back past a point
  * where a numbered document was issued. No documents exist in this release, so
@@ -452,11 +448,7 @@ export interface MovableJob {
  */
 export function canMoveTo(job: MovableJob, to: StatusKey): boolean {
   if (job.status === to) return false;
-  const withHistory = { ...job, appointmentDate: job.appointmentDate ?? null, statusHistory: job.statusHistory ?? [] };
-  if (isDecisionPoint(job.status) && DECISION_KEYS.includes(to)) return true;
-  if (nextStatusOf(withHistory)?.key === to) return true;
-  if (prevStatusOf(withHistory)?.key === to) return true;
-  return false;
+  return allowedMovesFrom({ status: job.status, statusHistory: job.statusHistory ?? [] }).includes(to);
 }
 
 /**
@@ -465,16 +457,16 @@ export function canMoveTo(job: MovableJob, to: StatusKey): boolean {
  * THE RULE: the column's statuses are tried in MAIN_PATH order and the first
  * one canMoveTo() allows wins. Written out for the moves that matter:
  *
- *   from quoted     onto column 3 -> approved     (the customer said yes; the
- *                                                  other two decisions have no
- *                                                  column, so a drag cannot make them)
+ *   from quoted     onto column 3 -> approved     (the customer said yes; "no" and
+ *                                                  "took it away" have no column, so
+ *                                                  a drag cannot make them)
  *   from approved   onto column 2 -> quoted       (the yes is withdrawn; back to deciding)
  *   from repairing  onto column 2 -> refused      (the step back from repairing is
  *   from aligning   onto column 2 -> refused       approved, which is still column 3)
  *   from inspecting onto column 3 -> refused      (nothing may skip the quote)
  *   from aligning   onto column 4 -> ready
- *   from repairing  onto column 4 -> refused      (the next step is aligning; see below)
- *   from ready      onto column 3 -> aligning     (back one step)
+ *   from repairing  onto column 4 -> ready        (alignment skipped — decision 7)
+ *   from ready      onto column 3 -> repairing or aligning, whichever it came from
  *
  * A drop onto the job's OWN column returns null: a column holding several
  * statuses gives no way to say which one was meant, so moves inside a column
@@ -489,13 +481,4 @@ export function targetStatusForColumn(job: MovableJob, column: KanbanColumn): St
     if (def.statuses.includes(candidate) && canMoveTo(job, candidate)) return candidate;
   }
   return null;
-}
-
-/**
- * `scheduled` means the customer will bring the car back on a date. Without
- * that date, transitions.ts reads the eventual `carout` as a dead end
- * (isRejectedCarout) and the car can never come back into the workshop.
- */
-export function requiresAppointmentDate(to: string): boolean {
-  return to === 'scheduled';
 }

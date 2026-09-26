@@ -43,21 +43,28 @@ export const filesRouter = asyncRouter()
 const PHOTO_WRITE_ROLES = ['owner', 'manager', 'assistant_manager', 'advisor', 'technician'] as const
 
 /**
- * Same five roles as PHOTO_WRITE_ROLES, for now — this is the narrow,
- * reversible default, not a settled policy call:
- *   - `accountant` is excluded by an explicit rule, not by guesswork here:
- *     CLAUDE.md §7 rule 13 — the accountant sees only what tax needs,
- *     "ไม่เห็นรูป/โน้ตภายใน/ประวัติช่าง".
- *   - `viewer` is excluded because the role matrix (§12.1) never grants it
- *     photos, and customer car photos are personal data with their own
- *     PDPA consent purpose (`customer_consents.purpose = 'photos'`,
- *     migration 0010). Excluding is the reversible direction — widening
- *     later is one line, while a franchise auditor who has already seen
- *     customers' photos cannot be un-shown them. If the owner later wants
- *     viewer/accountant read access, that is their call to make explicitly,
- *     not this route's to assume.
+ * Who may SEE a check-in photo: the five who may take one, plus `viewer`.
+ *
+ * `viewer` — THE OWNER'S DECISION (docs/WORK-ORDERS/DECISION-7-today.md §2,
+ * 24 Sep 2026), not a default: a check-in photo is the evidence of the car's
+ * condition on arrival, which is the single most important thing someone
+ * reviewing past work needs to see; without it the viewer role cannot actually
+ * review a job. The decision is conditional on `viewer` being an INTERNAL,
+ * signed-in role (an owner or manager who only looks) — which it is: it exists
+ * only as a shop_memberships role behind requireAuth. If `viewer` is ever
+ * repurposed for customers, this line must be revisited: the owner's answer
+ * for a customer-facing viewer was "no". Read only — `viewer` is deliberately
+ * NOT in PHOTO_WRITE_ROLES.
+ *
+ * `accountant` stays excluded, by an explicit rule rather than a default:
+ * CLAUDE.md §7 rule 13 — the accountant sees only what tax needs,
+ * "ไม่เห็นรูป/โน้ตภายใน/ประวัติช่าง".
+ *
+ * And the line nobody crosses, whatever role: the public waiting-room board
+ * (/api/public/board) carries NO photo for anyone. It needs no login and the
+ * whole room can see it; a photo of a customer's car is the customer's.
  */
-const PHOTO_READ_ROLES = PHOTO_WRITE_ROLES
+const PHOTO_READ_ROLES = [...PHOTO_WRITE_ROLES, 'viewer'] as const
 
 /**
  * memoryStorage + multer's own `limits.fileSize`: the cap is enforced by

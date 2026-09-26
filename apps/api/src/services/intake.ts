@@ -136,10 +136,17 @@ export async function openJob(
 
   const jobDate = input.jobDate ?? bangkokToday()
   // Serialise every job opening for this (shop, day) — see lockQueueDay() for
-  // why the lock exists alongside uq_queue_no. Taken on BOTH paths, typed and
-  // server-allocated, so a number a person typed is judged only against rows
-  // already committed: it is refused if genuinely taken, and never because a
-  // server allocation happened to be in flight at the same instant.
+  // why the lock exists alongside uq_queue_no.
+  //
+  // Taken on BOTH paths, typed and server-allocated. Be precise about who that
+  // helps, because an earlier comment here got it wrong (code review): it helps
+  // SERVER allocation. With every opening serialised, a server-chosen max+1 can
+  // never collide with a typed number being inserted at the same instant, so
+  // the server path never needs its retry. It does NOT, and cannot, protect a
+  // TYPED number: if a person types exactly the number the server would pick
+  // next, whichever opening runs first takes it, and if the server went first
+  // the typed request gets a 409 — which is correct, because the number really
+  // is taken. The lock decides the order; it does not make a collision vanish.
   await jobsRepo.lockQueueDay(trx, input.shopId, jobDate)
   const queueNo = input.queueNo ?? await jobsRepo.nextQueueNo(trx, input.shopId, jobDate)
   const jobNumber = await jobsRepo.allocateJobNumber(trx, input.shopId)

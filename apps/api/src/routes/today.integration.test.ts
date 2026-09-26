@@ -22,12 +22,9 @@ interface TodayJobRow {
   jobId: string; status: string; column: number | null; subState: string | null
   bookingSlotStart: string | null
 }
-interface TodayBookingRow { bookingId: string }
 interface TodayKpis { openJobs: number; awaitingDecision: number; inRepair: number; readyForHandover: number }
 interface TodayBody {
   jobs: TodayJobRow[]
-  awaitingTakeDown: TodayJobRow[]
-  bookings: TodayBookingRow[]
   kpis: TodayKpis
   truncated: boolean
 }
@@ -76,6 +73,31 @@ describe.skipIf(!hasDatabase)(tier2('/today kanban (GET /api/jobs/today, PATCH s
     return withShop(db, shopId, (trx) => trx.selectFrom('jobs')
       .select(['status', 'sub_state', 'booking_id', 'shop_id', 'job_number'])
       .where('id', '=', jobId).executeTakeFirstOrThrow())
+  }
+
+  /**
+   * Put a job into a state for a test WITHOUT spending the write limiter.
+   *
+   * Every request in this file shares one in-process app and one intake write
+   * limiter (120/min per address — a real ceiling that must not be weakened for
+   * the tests' convenience, the same reasoning as fixtures.ts gives for /login).
+   * Walking each job through the API one PATCH at a time burned that budget on
+   * SETUP, and the file started failing with 429 on tests that had nothing to
+   * do with rate limits. Setup is not the subject: the job's status and its
+   * history rows are written directly here, and only the move under test goes
+   * through the API. History timestamps are spaced one second apart, ending a
+   * minute ago, so any move the test then makes is recorded after them.
+   */
+  async function seedPath(shopId: string, jobId: string, statuses: string[]) {
+    const last = statuses[statuses.length - 1]
+    if (!last) throw new Error('seedPath needs at least one status')
+    const start = Date.now() - 60_000 - statuses.length * 1000
+    await withShop(db, shopId, async (trx) => {
+      await trx.updateTable('jobs').set({ status: last }).where('id', '=', jobId).execute()
+      await trx.insertInto('job_status_history').values(statuses.map((status, i) => ({
+        shop_id: shopId, job_id: jobId, status, changed_at: new Date(start + i * 1000),
+      }))).execute()
+    })
   }
 
   async function historyCount(shopId: string, jobId: string, status?: string): Promise<number> {
@@ -151,10 +173,17 @@ describe.skipIf(!hasDatabase)(tier2('/today kanban (GET /api/jobs/today, PATCH s
   })
 
   // ===========================================================================
-  // Case 7 — not-yet-arrived bookings are a separate array, uncounted
+  // Case 7 — not-yet-arrived bookings are NOT on the job board at all
+  //
+  // Rewritten 25 Sep 2026 for DECISION-7-today.md §1. This case used to assert
+  // that such bookings came back in a separate `bookings` array; the owner then
+  // took them off the board entirely — a booking that has not arrived is not a
+  // job, and the "รถมาถึงแล้ว" button lives on the today's-appointments screen
+  // (Figma 66) alone. The property the original case protected is kept: a
+  // booking must never leak into the job rows or move a KPI.
   // ===========================================================================
   describe('bookings that have not arrived', () => {
-    it('come back in their own array, and never move a KPI', async () => {
+    it('are not on the board in any form, and never move a KPI', async () => {
       const s = await owner(fx.shopA)
       const before = await get<TodayBody>(api, '/api/jobs/today', s.accessToken)
       const openBefore = before.body.kpis.openJobs
@@ -170,7 +199,10 @@ describe.skipIf(!hasDatabase)(tier2('/today kanban (GET /api/jobs/today, PATCH s
       expect(booking.status, JSON.stringify(booking.body)).toBe(201)
 
       const after = await get<TodayBody>(api, '/api/jobs/today', s.accessToken)
-      expect(after.body.bookings.some((b) => b.bookingId === booking.body.id)).toBe(true)
+      // Decision 1: the response has no bookings array to put it in. Checked on
+      // the raw body, so re-adding the field anywhere turns this red.
+      expect(after.body, 'a bookings array came back on the job board').not.toHaveProperty('bookings')
+      expect(after.body).not.toHaveProperty('awaitingTakeDown')
       expect(
         after.body.jobs.some((j) => j.jobId === booking.body.id),
         'a not-yet-arrived booking leaked into the jobs array',
@@ -242,6 +274,115 @@ describe.skipIf(!hasDatabase)(tier2('/today kanban (GET /api/jobs/today, PATCH s
       const after = await jobRow(fx.shopA, jobId)
       expect(after.status).toBe('repairing')
       expect(await historyCount(fx.shopA, jobId)).toBe(historyBefore)
+    })
+
+    it('refuses every move out of rejected — it is terminal (decision 6)', async () => {
+      const s = await owner(fx.shopA)
+      const jobId = await checkinOn(s.accessToken, 'TERMINAL-1')
+      await seedPath(fx.shopA, jobId, ['inspecting', 'quoted', 'rejected'])
+      const historyBefore = await historyCount(fx.shopA, jobId)
+
+      // Neither the old rejected -> carout step nor a step back to quoted.
+      for (const to of ['carout', 'quoted']) {
+        const res = await patch(api, `/api/jobs/${jobId}/status`, { to, fromStatus: 'rejected' }, s.accessToken)
+        expect(res.status, `rejected -> ${to} was allowed`).toBe(409)
+        expect(res.body).toMatchObject({ error: 'illegal_status_move' })
+      }
+      expect((await jobRow(fx.shopA, jobId)).status).toBe('rejected')
+      expect(await historyCount(fx.shopA, jobId)).toBe(historyBefore)
+    })
+
+    it('refuses a status that no longer exists', async () => {
+      const s = await owner(fx.shopA)
+      const jobId = await checkinOn(s.accessToken, 'NOSCHED-1')
+      // 'scheduled' is not a job status any more (decision 6): refused at the
+      // schema edge as an invalid request, before any rule is consulted.
+      const res = await patch(api, `/api/jobs/${jobId}/status`, { to: 'scheduled', fromStatus: 'received' }, s.accessToken)
+      expect(res.status).toBe(400)
+      expect((await jobRow(fx.shopA, jobId)).status).toBe('received')
+    })
+  })
+
+  // ===========================================================================
+  // Decision 7 — alignment is optional
+  // ===========================================================================
+  describe('skipping alignment', () => {
+    it('allows repairing -> ready directly, and the step back returns to repairing', async () => {
+      const s = await owner(fx.shopA)
+      const jobId = await checkinOn(s.accessToken, 'SKIPALIGN-1')
+      await seedPath(fx.shopA, jobId, ['inspecting', 'quoted', 'approved', 'repairing'])
+
+      const skip = await patch(api, `/api/jobs/${jobId}/status`, { to: 'ready', fromStatus: 'repairing' }, s.accessToken)
+      expect(skip.status, JSON.stringify(skip.body)).toBe(200)
+      expect(skip.body).toMatchObject({ status: 'ready', column: 4 })
+
+      // Back from ready must go where the car actually came from — history says
+      // repairing, so aligning (a step it never visited) is refused.
+      const toAligning = await patch(api, `/api/jobs/${jobId}/status`, { to: 'aligning', fromStatus: 'ready' }, s.accessToken)
+      expect(toAligning.status).toBe(409)
+      const back = await patch(api, `/api/jobs/${jobId}/status`, { to: 'repairing', fromStatus: 'ready' }, s.accessToken)
+      expect(back.status, JSON.stringify(back.body)).toBe(200)
+    })
+  })
+
+  // ===========================================================================
+  // Code review of decisions 6/7 — the fixes, pinned at the endpoint
+  // ===========================================================================
+  describe('code review fixes', () => {
+    it('HIGH: an un-delivered car that skipped alignment steps back to repairing, never to aligning', async () => {
+      // The bug: after delivered -> ready, the step back answered "aligning" — a
+      // step this car never had — and refused "repairing", the one it did.
+      const s = await owner(fx.shopA)
+      const jobId = await checkinOn(s.accessToken, 'CR-UNDELIVER-1')
+      await seedPath(fx.shopA, jobId, ['inspecting', 'quoted', 'approved', 'repairing', 'ready', 'delivered', 'ready'])
+
+      const toAligning = await patch(api, `/api/jobs/${jobId}/status`, { to: 'aligning', fromStatus: 'ready' }, s.accessToken)
+      expect(toAligning.status, 'offered an alignment the car never had').toBe(409)
+      const toRepairing = await patch(api, `/api/jobs/${jobId}/status`, { to: 'repairing', fromStatus: 'ready' }, s.accessToken)
+      expect(toRepairing.status, JSON.stringify(toRepairing.body)).toBe(200)
+    })
+
+    it('ready -> carout is refused: a finished car leaving is a delivery', async () => {
+      const s = await owner(fx.shopA)
+      const jobId = await checkinOn(s.accessToken, 'CR-READYOUT-1')
+      await seedPath(fx.shopA, jobId, ['inspecting', 'quoted', 'approved', 'repairing', 'ready'])
+      const res = await patch(api, `/api/jobs/${jobId}/status`, { to: 'carout', fromStatus: 'ready' }, s.accessToken)
+      expect(res.status).toBe(409)
+      expect(res.body).toMatchObject({ error: 'illegal_status_move' })
+    })
+
+    it('repairing -> carout is allowed: the customer took the car mid-job', async () => {
+      const s = await owner(fx.shopA)
+      const jobId = await checkinOn(s.accessToken, 'CR-REPOUT-1')
+      await seedPath(fx.shopA, jobId, ['inspecting', 'quoted', 'approved', 'repairing'])
+      const res = await patch(api, `/api/jobs/${jobId}/status`, { to: 'carout', fromStatus: 'repairing' }, s.accessToken)
+      expect(res.status, JSON.stringify(res.body)).toBe(200)
+    })
+
+    it('MEDIUM: a technician may not carout around the quote (quoted or approved) — a customer decision', async () => {
+      const s = await owner(fx.shopA)
+      const tech = await asRole(fx.shopA, 'technician')
+
+      const fromQuoted = await checkinOn(s.accessToken, 'CR-TECHOUT-1')
+      await seedPath(fx.shopA, fromQuoted, ['inspecting', 'quoted'])
+      const a = await patch(api, `/api/jobs/${fromQuoted}/status`, { to: 'carout', fromStatus: 'quoted' }, tech.accessToken)
+      expect(a.status).toBe(403)
+      expect((await jobRow(fx.shopA, fromQuoted)).status).toBe('quoted')
+
+      const fromApproved = await checkinOn(s.accessToken, 'CR-TECHOUT-2')
+      await seedPath(fx.shopA, fromApproved, ['inspecting', 'quoted', 'approved'])
+      const b = await patch(api, `/api/jobs/${fromApproved}/status`, { to: 'carout', fromStatus: 'approved' }, tech.accessToken)
+      expect(b.status).toBe(403)
+      expect((await jobRow(fx.shopA, fromApproved)).status).toBe('approved')
+    })
+
+    it('but a technician MAY record the car leaving mid-repair — not a quote decision', async () => {
+      const s = await owner(fx.shopA)
+      const tech = await asRole(fx.shopA, 'technician')
+      const jobId = await checkinOn(s.accessToken, 'CR-TECHOUT-3')
+      await seedPath(fx.shopA, jobId, ['inspecting', 'quoted', 'approved', 'repairing'])
+      const res = await patch(api, `/api/jobs/${jobId}/status`, { to: 'carout', fromStatus: 'repairing' }, tech.accessToken)
+      expect(res.status, JSON.stringify(res.body)).toBe(200)
     })
   })
 

@@ -108,55 +108,41 @@ export async function boardJobs(
   return { rows: rows.slice(0, BOARD_ROW_CAP), truncated: rows.length > BOARD_ROW_CAP }
 }
 
-export interface BoardBookingRow {
-  booking_id: string
-  at: Date
-  status: string
-  source: string
-  bay_id: string | null
-  bay_name: string | null
-  customer_name: string | null
-  phone: string | null
-  plate: string | null
-  brand: string | null
-  model: string | null
-  note: string | null
-}
-
 /**
- * Cars expected in [from, to) that have not arrived. The window applies to
- * BOOKINGS only — which is exactly where a date belongs: a booking is an
- * appointment for a day, a job is a car that is here.
+ * The status history of every job on the board, in ONE query.
+ *
+ * Needed because where a job may move next is not always knowable from its
+ * current status alone: stepping back from `ready` goes to `repairing` or
+ * `aligning` depending on which the car was actually in (alignment is
+ * optional — DECISION-7-today.md §7), and only the history says which. The
+ * server works that out for every card so the screen never has to guess.
+ *
+ * One read per board load, not one per card: a board of 30 cars is one query
+ * here, not 30. Every job's history is read, not only the `ready` ones — the
+ * set of statuses whose moves depend on history is a rule in
+ * packages/domain transitions.ts, and filtering here would silently go wrong
+ * the day that rule grows. Served by idx_status_history_job (job_id, changed_at).
  */
-export async function boardBookings(
+export async function historyForJobs(
   trx: ScopedTx,
-  from: Date,
-  to: Date,
-): Promise<BoardBookingRow[]> {
-  return trx
-    .selectFrom('queue_board as q')
-    .leftJoin('bays as bay', 'bay.id', 'q.bay_id')
-    .select([
-      sql<string>`q.ref_id`.as('booking_id'),
-      sql<Date>`q.at`.as('at'),
-      sql<string>`q.status`.as('status'),
-      sql<string>`q.source`.as('source'),
-      'q.bay_id',
-      'bay.name as bay_name',
-      'q.customer_name',
-      'q.phone',
-      'q.plate',
-      'q.brand',
-      'q.model',
-      'q.note',
-    ])
-    .where('q.kind', '=', 'booking')
-    .where('q.at', '>=', from)
-    .where('q.at', '<', to)
-    .orderBy('q.at', 'asc')
-    .orderBy('q.ref_id', 'asc')
-    .limit(BOARD_ROW_CAP)
+  jobIds: string[],
+): Promise<Map<string, { status: string; changedAt: string }[]>> {
+  const byJob = new Map<string, { status: string; changedAt: string }[]>()
+  if (jobIds.length === 0) return byJob
+  const rows = await trx
+    .selectFrom('job_status_history')
+    .select(['job_id', 'status', 'changed_at'])
+    .where('job_id', 'in', jobIds)
+    .orderBy('job_id')
+    .orderBy('changed_at', 'asc')
+    .orderBy('id', 'asc')
     .execute()
+  for (const r of rows) {
+    const list = byJob.get(r.job_id) ?? []
+    list.push({ status: r.status, changedAt: r.changed_at.toISOString() })
+    byJob.set(r.job_id, list)
+  }
+  return byJob
 }
 
 /** Every bay the shop has, active or not — the pulse needs the active count. */

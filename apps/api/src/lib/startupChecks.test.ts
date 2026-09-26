@@ -22,7 +22,7 @@ import {
 } from 'kysely'
 import type { DB } from '@gsms/db/types.js'
 import type { Db } from '@gsms/db/client.js'
-import { assertAppRole, assertCorsConfig, assertRefreshTtl } from './startupChecks.js'
+import { assertAppRole, assertCorsConfig, assertReadCommitted, assertRefreshTtl } from './startupChecks.js'
 
 interface RoleRow { role_name: string; rolsuper: boolean; rolbypassrls: boolean }
 
@@ -30,7 +30,7 @@ interface RoleRow { role_name: string; rolsuper: boolean; rolbypassrls: boolean 
  * A Kysely instance that answers every query with `rows`, so `assertAppRole`
  * can be run against any pg_roles answer we like without a server.
  */
-function dbAnswering(rows: RoleRow[]): Db {
+function dbAnswering(rows: readonly object[]): Db {
   const connection: DatabaseConnection = {
     async executeQuery<R>(): Promise<QueryResult<R>> {
       return { rows: rows as unknown as R[] }
@@ -237,5 +237,27 @@ describe('assertCorsConfig', () => {
       CORS_ORIGINS: 'http://localhost:5173',
       CORS_ORIGIN: '*',
     })).toThrow(/nothing reads it/)
+  })
+})
+
+describe('assertReadCommitted — the allocator needs READ COMMITTED', () => {
+  // The allocator (lockQueueDay + max(queue_no)+1) is only correct when each
+  // statement takes a fresh snapshot. A stricter database default brings back
+  // the queue-number starvation fixed in c0ad86b — refuse to start instead.
+  it('starts when the default is read committed', async () => {
+    await expect(assertReadCommitted(dbAnswering([{ level: 'read committed' }]))).resolves.toBeUndefined()
+  })
+
+  it('refuses repeatable read, naming the setting and why', async () => {
+    await expect(assertReadCommitted(dbAnswering([{ level: 'repeatable read' }])))
+      .rejects.toThrow(/default_transaction_isolation is "repeatable read".*Refusing to start/s)
+  })
+
+  it('refuses serializable', async () => {
+    await expect(assertReadCommitted(dbAnswering([{ level: 'serializable' }]))).rejects.toThrow(/serializable/)
+  })
+
+  it('refuses when the server gives no answer at all', async () => {
+    await expect(assertReadCommitted(dbAnswering([]))).rejects.toThrow(/unknown/)
   })
 })

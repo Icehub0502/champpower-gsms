@@ -8,7 +8,6 @@ const CLOSING_BY_STATUS: Record<string, string> = {
   inspecting: 'รอเช็ค',
   quoted: 'รอลูกค้าตัดสินใจ',
   approved: 'อนุมัติ',
-  scheduled: 'นัดวันมาทำ',
   rejected: 'ไม่อนุมัติ',
   repairing: 'กำลังซ่อม',
   aligning: 'รอตั้งศูนย์',

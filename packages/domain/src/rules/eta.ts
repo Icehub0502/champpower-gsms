@@ -47,7 +47,7 @@ export function estLabel(job: Pick<Job, 'estValue' | 'estUnit'> | null | undefin
  * 'repairing', and only look for a finish after it.
  */
 export const WORK_DONE_STATUSES = ['ready', 'delivered', 'carout'];
-export const PRE_REPAIR_STATUSES = ['received', 'inspecting', 'quoted', 'approved', 'scheduled', 'rejected'];
+export const PRE_REPAIR_STATUSES = ['received', 'inspecting', 'quoted', 'approved', 'rejected'];
 
 export interface RepairCycle {
   start: string;

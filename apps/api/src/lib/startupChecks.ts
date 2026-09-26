@@ -19,6 +19,7 @@ export async function runStartupChecks(db: Db): Promise<void> {
   assertRefreshTtl()
   assertCorsConfig()
   await assertAppRole(db)
+  await assertReadCommitted(db)
 }
 
 /**
@@ -92,6 +93,40 @@ export function assertCorsConfig(env: NodeJS.ProcessEnv = process.env): void {
       'CORS_ORIGIN (singular) is set, and nothing reads it — the variable this ' +
       'application uses is CORS_ORIGINS. Remove it, so nobody believes the CORS ' +
       'policy is configured when it is not.',
+    )
+  }
+}
+
+/**
+ * Refuse to run unless new transactions default to READ COMMITTED.
+ *
+ * The queue-number allocator (repositories/jobs.ts lockQueueDay + nextQueueNo)
+ * is correct ONLY under READ COMMITTED: each statement takes a fresh snapshot,
+ * so once the advisory lock is granted, max(queue_no) sees the row the previous
+ * holder just committed. Under REPEATABLE READ or SERIALIZABLE the snapshot is
+ * taken at the transaction's first statement — before the lock — so every
+ * waiter reads the same stale max, and the starvation fixed in c0ad86b returns:
+ * staff told "เลขคิวนี้มีรถคันอื่นแล้ว" about numbers nobody typed.
+ *
+ * Nothing in the code pins READ COMMITTED; it is only PostgreSQL's default. The
+ * tier-2 test (lib/isolation.integration.test.ts) catches a change in THIS
+ * repository. It cannot catch the person who runs
+ * `ALTER DATABASE gsms SET default_transaction_isolation = 'repeatable read'` on
+ * the production server one evening — this check does, the next time the API
+ * starts, before a single check-in is taken.
+ */
+export async function assertReadCommitted(db: Db): Promise<void> {
+  const result = await sql<{ level: string }>`
+    select current_setting('default_transaction_isolation') as level
+  `.execute(db)
+  const level = result.rows[0]?.level
+  if (level !== 'read committed') {
+    throw new Error(
+      `default_transaction_isolation is "${level ?? 'unknown'}", expected "read committed". ` +
+      'The queue-number allocator depends on it (see lockQueueDay in repositories/jobs.ts); ' +
+      'under a stricter level concurrent check-ins are refused numbers nobody typed. ' +
+      'Refusing to start. Undo the setting (ALTER DATABASE / ALTER ROLE ... RESET ' +
+      'default_transaction_isolation) or change the allocator — not this check.',
     )
   }
 }

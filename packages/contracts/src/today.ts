@@ -14,8 +14,10 @@ import { z } from 'zod';
 
 const isoDateTime = z.string().datetime();
 
+// The ten job statuses. No 'scheduled': an appointment is a BOOKING, and a car
+// that has not arrived has no job (DECISION-7-today.md §6, migration 0017).
 export const StatusKey = z.enum([
-  'received', 'inspecting', 'quoted', 'approved', 'scheduled', 'rejected',
+  'received', 'inspecting', 'quoted', 'approved', 'rejected',
   'repairing', 'aligning', 'ready', 'delivered', 'carout',
 ]);
 export type StatusKey = z.infer<typeof StatusKey>;
@@ -89,32 +91,6 @@ const TodayJobFields = {
 export const TodayJob = z.object({ ...TodayJobFields, column: KanbanColumn });
 export type TodayJob = z.infer<typeof TodayJob>;
 
-// A job the kanban has no column for: `scheduled` (the customer chose a later
-// date) whose car has not yet been taken down. It is still physically in the
-// workshop — on a lift, possibly in a bay — so it is returned rather than
-// silently dropped. Where to show it is the screen's call; making it vanish is
-// not an option.
-export const AwaitingTakeDownJob = z.object({ ...TodayJobFields, column: z.null() });
-export type AwaitingTakeDownJob = z.infer<typeof AwaitingTakeDownJob>;
-
-// A car expected today that has not arrived. Its button reads "รถมาถึงแล้ว"
-// and calls POST /api/bookings/:id/arrive — a transition, never a create.
-export const TodayBooking = z.object({
-  bookingId: z.string().uuid(),
-  at: isoDateTime,
-  status: z.string(),
-  source: z.string(),
-  bayId: z.string().uuid().nullable(),
-  bayName: z.string().nullable(),
-  customerName: z.string().nullable(),
-  phone: z.string().nullable(),
-  plate: z.string().nullable(),
-  brand: z.string().nullable(),
-  model: z.string().nullable(),
-  note: z.string().nullable(),
-});
-export type TodayBooking = z.infer<typeof TodayBooking>;
-
 export const TodayKpis = z.object({
   openJobs: z.number().int().min(0),          // งานเปิดทั้งหมด
   awaitingDecision: z.number().int().min(0),  // รอลูกค้าตัดสินใจ  (column 2)
@@ -134,12 +110,17 @@ export const TodayPulse = z.object({
 });
 export type TodayPulse = z.infer<typeof TodayPulse>;
 
+// Jobs only. Two arrays were removed on 24 Sep 2026 (DECISION-7-today.md):
+//   - `bookings` (decision 1): a booking that has not arrived is not a job and
+//     does not belong on the job board. The "รถมาถึงแล้ว" button lives on the
+//     today's-appointments screen (Figma 66) alone — one way in, not two.
+//   - `awaitingTakeDown` (decision 6): it existed only for `scheduled` jobs,
+//     and `scheduled` is no longer a job status.
+// Do not add either back here; the absence is the decision.
 export const TodayResponse = z.object({
   // Every car still in the workshop, WHENEVER it arrived — plus today's
   // deliveries. Not date-filtered, deliberately: see the route's doc comment.
   jobs: z.array(TodayJob),
-  awaitingTakeDown: z.array(AwaitingTakeDownJob),
-  bookings: z.array(TodayBooking),
   kpis: TodayKpis,
   pulse: TodayPulse,
   generatedAt: isoDateTime,
@@ -164,10 +145,6 @@ export type TodayResponse = z.infer<typeof TodayResponse>;
 export const UpdateJobStatusInput = z.object({
   to: StatusKey,
   fromStatus: StatusKey,
-  // Required when `to` is 'scheduled' — the date the customer will bring the
-  // car back. Without it the car can never return to the workshop through the
-  // normal flow (packages/domain transitions.ts, isRejectedCarout).
-  appointmentDate: isoDateTime.optional(),
 });
 export type UpdateJobStatusInput = z.infer<typeof UpdateJobStatusInput>;
 

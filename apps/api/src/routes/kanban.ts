@@ -15,8 +15,6 @@ import { withShop } from '@gsms/db/client.js'
 import {
   UpdateJobStatusInput,
   UpdateSubStateInput,
-  type AwaitingTakeDownJob,
-  type TodayBooking,
   type TodayJob,
   type TodayResponse,
   type UpdateJobStatusResult,
@@ -31,7 +29,6 @@ import {
   kanbanColumnOf,
   kpisOf,
   pulseOf,
-  requiresAppointmentDate,
   statusOf,
   SUB_STATE_LABEL,
   subStateAfterMove,
@@ -42,7 +39,6 @@ import {
 import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
 import { asyncRouter } from '../middleware/asyncHandler.js'
-import { bangkokToday, endOfDayExclusive, startOfDay } from '../lib/bangkokDate.js'
 import * as todayRepo from '../repositories/today.js'
 import * as jobsRepo from '../repositories/jobs.js'
 import { writeAudit } from '../services/audit.js'
@@ -76,10 +72,25 @@ const iso = (d: Date | null): string | null => (d === null ? null : d.toISOStrin
  * เสนอราคา to อนุมัติ is exactly that act wearing a different gesture, so the
  * technician's right to move a car along does not extend to it. The role gate
  * is on the ACT, not on the endpoint that happens to carry it.
+ *
+ * It covers three acts:
+ *   1. answering the quote          quoted -> approved | rejected
+ *   2. taking an answer back        approved -> quoted
+ *   3. the customer taking the car  quoted | approved -> carout
+ *      home around the decision
+ * The third is what `scheduled` used to be before decision 6 ("not now, I'll
+ * come back"): the customer deciding, at or just after the quote, not to have
+ * the work done here and now. Code review (MEDIUM) found a technician could
+ * still do it through carout; it is the same customer decision, so it is gated
+ * the same way. A carout from further along (repairing, aligning) is the car
+ * physically leaving mid-job and is not a quote decision, so it stays open to
+ * the person at the lift.
  */
 function isCustomerDecision(from: string, to: string): boolean {
   const decisions = DECISION_KEYS as readonly string[]
-  return (from === 'quoted' && decisions.includes(to)) || (decisions.includes(from) && to === 'quoted')
+  return (from === 'quoted' && decisions.includes(to))
+    || (decisions.includes(from) && to === 'quoted')
+    || ((from === 'quoted' || from === 'approved') && to === 'carout')
 }
 
 // ---------------------------------------------------------------------------
@@ -96,31 +107,33 @@ function isCustomerDecision(from: string, to: string): boolean {
  * vanishes at midnight while it is still sitting there. The path name will
  * tempt the next person — do not.
  *
- * What IS dated: bookings (an appointment belongs to a day — this screen shows
- * today's), and cars already handed back (kept for the day they left so the
- * column can show today's deliveries, then gone). Both are decided upstream —
- * bookings below, deliveries in the view job_board_state — not by a predicate
- * on the job rows here.
+ * The one thing that IS dated: cars already handed back, kept for the day they
+ * left so column 4 can show today's deliveries, then gone. That is decided in
+ * the view job_board_state (migration 0016), not by a predicate here.
+ *
+ * NO BOOKINGS ON THIS BOARD (DECISION-7-today.md §1). A booking that has not
+ * arrived is not a job, so it is not on the job board. The "รถมาถึงแล้ว"
+ * button lives in exactly one place — the today's-appointments screen, Figma
+ * 66 — because two ways into the same action are two code paths to test, and
+ * several ways of creating a job is precisely what made the prototype's
+ * duplicate-queue bug. Do not put a bookings array back here.
  */
 kanbanRouter.get(
   '/jobs/today',
   requireAuth,
   requireRole(...BOARD_READ_ROLES),
   async (req: AuthedRequest, res) => {
-    const today = bangkokToday()
     const now = Date.now()
 
     const data = await withShop(db, req.auth!.shop, async (trx) => {
-      const [jobs, bookings, bays] = await Promise.all([
+      const [jobs, bays] = await Promise.all([
         todayRepo.boardJobs(trx),
-        todayRepo.boardBookings(trx, startOfDay(today), endOfDayExclusive(today)),
         todayRepo.shopBays(trx),
       ])
-      return { jobs, bookings, bays }
+      return { jobs, bays }
     })
 
     const cards: TodayJob[] = []
-    const awaitingTakeDown: AwaitingTakeDownJob[] = []
     const forCounting: BoardJob[] = []
 
     for (const r of data.jobs.rows) {
@@ -175,29 +188,22 @@ kanbanRouter.get(
       }
 
       const column = kanbanColumnOf(r.status)
-      if (column === null) awaitingTakeDown.push({ ...common, column: null })
-      else cards.push({ ...common, column })
+      // Every status queue_board admits has a column now: the only statuses
+      // without one (rejected, carout) are terminal and job_board_state keeps
+      // them off the board. A null here would mean those two rules have
+      // drifted apart — skip the row rather than send a card with no column.
+      // But never SILENTLY: a status added later without a column would
+      // otherwise make cars vanish from the board with nothing to show why.
+      // The job id and status only — no name, phone or plate (CLAUDE.md §12).
+      if (column === null) {
+        console.warn(`[/api/jobs/today] skipped job ${r.job_id}: status "${r.status}" has no kanban column`)
+        continue
+      }
+      cards.push({ ...common, column })
     }
-
-    const bookings: TodayBooking[] = data.bookings.map((b) => ({
-      bookingId: b.booking_id,
-      at: b.at.toISOString(),
-      status: b.status,
-      source: b.source,
-      bayId: b.bay_id,
-      bayName: b.bay_name,
-      customerName: b.customer_name,
-      phone: b.phone,
-      plate: b.plate,
-      brand: b.brand,
-      model: b.model,
-      note: b.note,
-    }))
 
     const body: TodayResponse = {
       jobs: cards,
-      awaitingTakeDown,
-      bookings,
       kpis: kpisOf(forCounting),
       pulse: pulseOf(forCounting, data.bays.map((b) => ({ id: b.id, isActive: b.is_active })), now),
       generatedAt: new Date(now).toISOString(),
@@ -234,20 +240,12 @@ kanbanRouter.patch(
     }
     const auth = req.auth!
     const jobId = params.data.id
-    const { to, fromStatus, appointmentDate } = parsed.data
+    const { to, fromStatus } = parsed.data
 
     if (auth.role === 'technician' && isCustomerDecision(fromStatus, to)) {
       res.status(403).json({
         error: 'forbidden',
         message: 'การรับหรือยกเลิกการตัดสินใจของลูกค้าต้องทำโดยหน้าร้าน',
-      })
-      return
-    }
-    if (requiresAppointmentDate(to) && !appointmentDate) {
-      res.status(400).json({
-        error: 'appointment_date_required',
-        message: 'กรุณาระบุวันที่ลูกค้าจะนำรถกลับมา',
-        fields: { appointmentDate: ['required'] },
       })
       return
     }
@@ -271,7 +269,6 @@ kanbanRouter.patch(
       const legal = canMoveTo(
         {
           status: job.status as StatusKey,
-          appointmentDate: iso(job.appointment_date),
           statusHistory: history.map((h) => ({
             status: h.status as StatusKey,
             changedAt: h.changed_at.toISOString(),
@@ -284,15 +281,7 @@ kanbanRouter.patch(
       // A label that described the old status does not survive the move.
       const subState = subStateAfterMove(to, job.sub_state)
 
-      // appointment_date: set when the customer picks a later date; cleared
-      // when that decision is taken back or when the car comes back in for
-      // it. Left alone for every other move.
-      let appointment: string | null | undefined
-      if (to === 'scheduled') appointment = appointmentDate
-      else if (job.status === 'scheduled' && to === 'quoted') appointment = null
-      else if (job.status === 'carout' && to === 'repairing') appointment = null
-
-      await jobsRepo.applyStatus(trx, { jobId, status: to, subState, appointmentDate: appointment })
+      await jobsRepo.applyStatus(trx, { jobId, status: to, subState })
       const changedAt = await jobsRepo.recordStatusHistory(trx, auth.shop, jobId, to, auth.sub)
 
       await writeAudit(trx, {
@@ -305,7 +294,6 @@ kanbanRouter.patch(
         after: {
           status: to,
           sub_state: subState,
-          ...(appointment !== undefined ? { appointment_date: appointment } : {}),
         },
       })
 

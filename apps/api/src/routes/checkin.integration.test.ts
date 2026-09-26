@@ -129,6 +129,43 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
       expect(queueNos).toEqual(Array.from({ length: N }, (_, i) => i + 1))
     })
 
+    it('a typed number that no server allocation wants gets its 201 while allocations run beside it', async () => {
+      // WHAT THIS DOES AND DOES NOT PROVE (corrected after code review). The
+      // typed number (50) is far above anything the 8 server allocations will
+      // pick, so it can never collide with them — which also means this test
+      // passes with or without the lock on the typed path. The reviewer
+      // confirmed that by removing it: 4/4 still green. So this test only pins
+      // the ordinary case: typing a free number next to a burst of walk-ins
+      // works, and nobody's number is duplicated.
+      //
+      // What the lock on the typed path actually buys is on the SERVER side —
+      // its max+1 never races a concurrent typed insert, so it never retries.
+      // It cannot protect a typed number that collides for real: type exactly
+      // the next server number, and if the server opens first the 409 is the
+      // correct answer, because the number is genuinely taken.
+      const s = await owner(fx.shopA)
+      const jobDate = '2030-01-06'
+      const TYPED = 50
+      const serverAllocated = Array.from({ length: 8 }, (_, i) => post<CheckInBody>(api, '/api/checkin', {
+        plate: `MIX-SRV-${i}`, customerName: `Server ${i}`, brand: 'Toyota', model: 'Vios', jobDate,
+      }, s.accessToken))
+      const typed = post<CheckInBody>(api, '/api/checkin', {
+        plate: 'MIX-TYPED', customerName: 'Typed', brand: 'Toyota', model: 'Vios', jobDate, queueNo: TYPED,
+      }, s.accessToken)
+
+      const [typedRes, ...serverRes] = await Promise.all([typed, ...serverAllocated])
+      expect(typedRes.status, JSON.stringify(typedRes.body)).toBe(201)
+      expect(typedRes.body.queueNo).toBe(TYPED)
+      for (const r of serverRes) expect(r.status, JSON.stringify(r.body)).toBe(201)
+
+      // Every number distinct. NOT asserted: that the server's numbers are
+      // 1..8. Allocation is max+1 (WO-003-ANSWERS §c), so any server
+      // allocation that runs after the typed 50 commits is numbered 51, 52 …
+      // That is the rule as the owner set it, not a race.
+      const all = [typedRes, ...serverRes].map((r) => r.body.queueNo)
+      expect(new Set(all).size, `numbers collided: ${all.join(',')}`).toBe(all.length)
+    })
+
     it('a caller-supplied queue number that is already taken is refused, naming the number', async () => {
       const s = await owner(fx.shopA)
       const jobDate = '2030-01-02'

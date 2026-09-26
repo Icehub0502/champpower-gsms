@@ -245,11 +245,12 @@ describe.skipIf(!hasDatabase)(tier2('check-in photo files'), () => {
   // roles, not seven; §7 rule 13 excludes accountant from photos explicitly.
   // ===========================================================================
   describe('role gate', () => {
-    it('refuses viewer on both POST and GET, and leaves no row or file behind', async () => {
+    it('lets viewer READ a photo but never upload one — owner decision 2', async () => {
       const { accessToken: viewer } = await issueTokensFor(fx.userId, fx.shopA, 'viewer')
       const beforeRows = await fileCountForShop(fx.shopA)
       const beforeDisk = await diskFileCountForShop(fx.shopA)
 
+      // Upload stays refused: viewer is read-only.
       const up = await uploadFile(api, viewer, JPEG_BUF, 'viewer-attempt.jpg')
       expect(up.status).toBe(403)
       expect(up.body.error).toBe('forbidden')
@@ -260,8 +261,9 @@ describe.skipIf(!hasDatabase)(tier2('check-in photo files'), () => {
       expect(await fileCountForShop(fx.shopA)).toBe(beforeRows)
       expect(await diskFileCountForShop(fx.shopA)).toBe(beforeDisk)
 
-      // A viewer also cannot read a photo that legitimately exists — upload
-      // one as an allowed role first, then try to fetch it as viewer.
+      // Reading is allowed (DECISION-7-today.md §2): a check-in photo is the
+      // evidence of the car's condition, and an internal viewer reviewing a job
+      // must be able to see it. Upload one as an allowed role, fetch as viewer.
       const { accessToken: advisor } = await tokenA()
       const legit = await uploadFile(api, advisor, JPEG_BUF, 'legit.jpg')
       expect(legit.status).toBe(201)
@@ -269,7 +271,7 @@ describe.skipIf(!hasDatabase)(tier2('check-in photo files'), () => {
       createdFileIds.push(legitBody.photo.id, legitBody.thumb.id)
 
       const got = await getFile(api, viewer, legitBody.photo.id)
-      expect(got.status).toBe(403)
+      expect(got.status).toBe(200)
     })
 
     it('refuses accountant on both POST and GET — CLAUDE.md §7 rule 13', async () => {
