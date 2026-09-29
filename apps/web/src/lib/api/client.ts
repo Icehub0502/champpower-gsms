@@ -56,11 +56,15 @@ interface RequestOptions {
   /** Internal: set on the retry after a refresh, so a second 401 is reported
    * as-is instead of triggering another refresh attempt (see `request` below). */
   _isRetry?: boolean;
+  /** Multipart upload (api.upload). Sent as-is, never JSON.stringify'd, and
+   * with NO Content-Type header so the browser writes the multipart boundary.
+   * A FormData can be sent twice, so the one retry after a refresh resends it. */
+  formData?: FormData;
 }
 
 async function rawFetch(method: string, path: string, opts: RequestOptions): Promise<Response> {
-  const { body, auth = true } = opts;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const { body, auth = true, formData } = opts;
+  const headers: Record<string, string> = formData ? {} : { 'Content-Type': 'application/json' };
   if (auth && accessToken) headers.Authorization = `Bearer ${accessToken}`;
 
   return fetch(path, {
@@ -71,7 +75,7 @@ async function rawFetch(method: string, path: string, opts: RequestOptions): Pro
     // credentials: 'include' or the browser withholds ALL cookies, auth ones
     // included, on a same-origin fetch that doesn't ask for them explicitly.
     credentials: 'include',
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: formData ?? (body === undefined ? undefined : JSON.stringify(body)),
   });
 }
 
@@ -165,6 +169,9 @@ export const api = {
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, { body }),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, { body }),
   del: <T>(path: string) => request<T>('DELETE', path),
+  /** Multipart POST (e.g. /api/files). Same path as every call above — token,
+   * single-flight refresh, one retry after a 401 — only the body differs. */
+  upload: <T>(path: string, formData: FormData) => request<T>('POST', path, { formData }),
 };
 
 /** Public REST helpers for /api/public/* — deliberately never send Authorization,
