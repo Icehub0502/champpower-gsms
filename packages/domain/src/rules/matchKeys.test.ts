@@ -66,19 +66,19 @@ describe('isPlaceholderKey — phones', () => {
   })
 })
 
-describe('the floor covers everything the 0015 seed covers', () => {
+describe('the floor covers every seeded PHONE', () => {
   // The guard against this defect coming back. Migration 0015 seeds these
-  // five values into match_blocklist, but only for shops that existed when it
-  // ran — production's shops are created later and have NONE of these rows.
-  // Every value the seed knows about must therefore be caught by the pure
-  // floor on its own. If someone adds a value to a future seed, add it here;
-  // if this test then fails, the floor has to grow, not the seed.
+  // values into match_blocklist, but only for shops that existed when it ran —
+  // production's shops are created later and have NONE of these rows. Every
+  // phone the seed knows about must therefore be caught by the pure floor on
+  // its own. Plates are deliberately absent: the seed's two plates were test
+  // rows (the WO-004 import must drop them or add them to that shop's
+  // match_blocklist — docs/WORK-ORDERS/IMPORT-FINDINGS.md §4) and plates have
+  // no pattern rule now.
   const SEEDED_BY_0015 = [
     ['phone', '0999999999'],
     ['phone', '0993333333'],
     ['phone', '0000000000'],
-    ['plate', '1กอ2222'],
-    ['plate', '1กก1111'],
   ] as const
 
   for (const [kind, key] of SEEDED_BY_0015) {
@@ -88,33 +88,29 @@ describe('the floor covers everything the 0015 seed covers', () => {
   }
 })
 
-describe('isPlaceholderKey — plates', () => {
-  it('blocks the test plates from the dump', () => {
-    expect(isPlaceholderKey('plate', '1กก1111')).toBe(true)
-    // The leading 1 is why the rule reads the TRAILING run rather than every
-    // digit in the string: "all digits identical" would miss this one.
-    expect(isPlaceholderKey('plate', '1กอ2222')).toBe(true)
+describe('isPlaceholderKey — plates have no pattern rule', () => {
+  // Repeated-digit plates are real and valued; customers pay for them. Blocking
+  // them gave those cars a new vehicle record on every visit. Only an exact row
+  // in the shop's match_blocklist table refuses a plate (isBlockedMatchKey).
+  it('does not treat repeated trailing digits as a placeholder', () => {
+    expect(isPlaceholderKey('plate', '1กก1111')).toBe(false)
+    expect(isPlaceholderKey('plate', '1กอ2222')).toBe(false)
+    expect(isPlaceholderKey('plate', 'กข9999')).toBe(false)
+    expect(isPlaceholderKey('plate', 'กก1111')).toBe(false)
+    expect(isPlaceholderKey('plate', 'ขข999')).toBe(false)
   })
 
-  it('blocks a repeated run with no leading digit', () => {
-    expect(isPlaceholderKey('plate', 'กก1111')).toBe(true)
-    expect(isPlaceholderKey('plate', 'ขข999')).toBe(true)
-  })
-
-  it('leaves real plates alone', () => {
+  it('leaves ordinary plates alone', () => {
     expect(isPlaceholderKey('plate', 'กก1234')).toBe(false)
-    expect(isPlaceholderKey('plate', 'กท1325')).toBe(false)
     expect(isPlaceholderKey('plate', '2ฒษ4181')).toBe(false)
-    expect(isPlaceholderKey('plate', 'งง9876')).toBe(false)
-  })
-
-  it('does not block a two-digit repeat, which is common and real', () => {
     expect(isPlaceholderKey('plate', 'กก11')).toBe(false)
-    expect(isPlaceholderKey('plate', '1กก22')).toBe(false)
-  })
-
-  it('ignores a plate with no trailing digits', () => {
     expect(isPlaceholderKey('plate', 'กกกก')).toBe(false)
     expect(isPlaceholderKey('plate', '')).toBe(false)
+  })
+
+  it('does not apply phone rules to a plate', () => {
+    // Nine identical digits is a placeholder phone, but not a plate.
+    expect(isPlaceholderKey('plate', '999999999')).toBe(false)
+    expect(isPlaceholderKey('phone', '999999999')).toBe(true)
   })
 })

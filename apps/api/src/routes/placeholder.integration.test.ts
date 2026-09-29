@@ -1,6 +1,7 @@
 /**
- * Placeholder phones in a shop whose blocklist table is EMPTY — against a real
- * PostgreSQL.
+ * Placeholder phones in a shop whose blocklist table is EMPTY, and plates that
+ * depend only on the blocklist table (no pattern rule; per shop) — against a
+ * real PostgreSQL.
  *
  * TIER 2. Skipped when GSMS_TEST_DB is unset; see src/test/env.ts.
  *
@@ -22,6 +23,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { withShop } from '@gsms/db/client.js'
 import { db } from '../lib/db.js'
+import { plateKeyOf } from '../repositories/vehicles.js'
 import { hasDatabase, tier2 } from '../test/env.js'
 import {
   createTwoShopFixture, get, issueTokensFor, post, startApi,
@@ -30,7 +32,7 @@ import {
 
 interface CheckInBody { jobId: string; customerId: string; vehicleId: string }
 
-describe.skipIf(!hasDatabase)(tier2('placeholder phones with an empty blocklist'), () => {
+describe.skipIf(!hasDatabase)(tier2('placeholder phones with an empty blocklist, and plates via the blocklist'), () => {
   let api: RunningApi
   let fx: TwoShopFixture
 
@@ -43,8 +45,11 @@ describe.skipIf(!hasDatabase)(tier2('placeholder phones with an empty blocklist'
     await api?.close()
   })
 
-  const checkIn = async (plate: string, customerName: string, customerPhone: string) => {
-    const { accessToken } = await issueTokensFor(fx.userId, fx.shopA, 'owner')
+  const checkIn = async (
+    plate: string, customerName: string, customerPhone: string, shop: 'A' | 'B' = 'A',
+  ) => {
+    const { accessToken } = await issueTokensFor(
+      fx.userId, shop === 'A' ? fx.shopA : fx.shopB, 'owner')
     return post<CheckInBody>(api, '/api/checkin', {
       plate, customerName, customerPhone, brand: 'Toyota', model: 'Vigo',
     }, accessToken)
@@ -85,6 +90,38 @@ describe.skipIf(!hasDatabase)(tier2('placeholder phones with an empty blocklist'
     const { accessToken } = await issueTokensFor(fx.userId, fx.shopA, 'owner')
     const res = await get(api, '/api/checkin/customer-lookup?phone=0993333333', accessToken)
     expect(res.status).toBe(404)
+  })
+
+  it('a repeated-digit plate is a real car: it is matched, not treated as a placeholder', async () => {
+    for (const [plate, phone] of [['7กข 9999', '0861230001'], ['1กก 1111', '0861230004']] as const) {
+      const a = await checkIn(plate, 'เจ้าของทะเบียนสวย', phone)
+      const b = await checkIn(plate, 'เจ้าของทะเบียนสวย', phone)
+      expect(a.status).toBe(201)
+      expect(b.status).toBe(201)
+      expect(b.body.vehicleId, plate).toBe(a.body.vehicleId)
+    }
+  })
+
+  it('a plate in the shop blocklist table is still refused as a match key', async () => {
+    const plate = '7ขค 5555'
+    await withShop(db, fx.shopA, (trx) =>
+      trx.insertInto('match_blocklist').values({
+        shop_id: fx.shopA, kind: 'plate', value_key: plateKeyOf(plate),
+        reason: 'test row', source: 'manual',
+      }).execute())
+    const a = await checkIn(plate, 'คนแรก', '0861230002')
+    const b = await checkIn(plate, 'คนที่สอง', '0861230003')
+    expect(a.status).toBe(201)
+    expect(b.status).toBe(201)
+    expect(b.body.vehicleId).not.toBe(a.body.vehicleId)
+
+    // The blocklist is per shop (CLAUDE.md §8.6): the same plate in shop B, whose
+    // table has no such row, is an ordinary car and is matched on the second visit.
+    const c1 = await checkIn(plate, 'ลูกค้าสาขาบี', '0861230005', 'B')
+    const c2 = await checkIn(plate, 'ลูกค้าสาขาบี', '0861230005', 'B')
+    expect(c1.status).toBe(201)
+    expect(c2.status).toBe(201)
+    expect(c2.body.vehicleId).toBe(c1.body.vehicleId)
   })
 
   it('a real number still finds the same customer — the floor did not over-reach', async () => {

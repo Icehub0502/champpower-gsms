@@ -4,18 +4,21 @@
  * The answer is "no" in two cases, and both have to be consulted every time:
  *
  *   1. The value is a placeholder BY SHAPE — `isPlaceholderKey` in
- *      packages/domain. One repeated digit, a plate ending 1111. This is the
- *      floor, it needs no rows, and it protects a shop that opened this
+ *      packages/domain. Phones only (a repeated digit, a long identical tail):
+ *      plates have no shape rule because repeated-digit plates are real. This
+ *      is the floor, it needs no rows, and it protects a shop that opened this
  *      morning.
  *   2. The value is in this shop's `match_blocklist` table — a value this
  *      particular shop discovered was junk, added by hand or by the
  *      auto-block threshold.
  *
- * Do not rely on the table for any placeholder already KNOWN. 0015's seed rows
+ * Plates are blocked ONLY by a row here (or the empty-key check below).
+ *
+ * Do not rely on the table for any placeholder PHONE already KNOWN. 0015's seed rows
  * exist only in shops that were present when it ran, and production creates
  * its shops afterwards, so a real shop starts with an empty table. Every known
- * placeholder has to be caught by the floor alone (packages/domain
- * matchKeys.test.ts, "the floor covers everything the 0015 seed covers").
+ * phone has to be caught by the floor alone (packages/domain
+ * matchKeys.test.ts, "the floor covers every seeded PHONE").
  *
  * `isBlockedMatchKey` is exported rather than inlined into the resolver
  * because the production import script must apply THE SAME LIST
