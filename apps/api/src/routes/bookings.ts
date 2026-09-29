@@ -20,12 +20,17 @@ import {
   CreateBookingInput,
   PageQuery,
   UpdateBookingInput,
+  type BookingAlreadyArrivedError,
+  type BookingNotFoundError,
+  type BookingNotOpenError,
   type BookingSummary,
+  type InvalidRequestError,
 } from '@gsms/contracts/index.js'
 import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
 import { asyncRouter } from '../middleware/asyncHandler.js'
 import { sendPgError } from '../lib/pgError.js'
+import { fieldErrorsOf } from '../lib/fieldErrors.js'
 import { addDays, bangkokToday, endOfDayExclusive, startOfDay } from '../lib/bangkokDate.js'
 import * as bookingsRepo from '../repositories/bookings.js'
 import * as baysRepo from '../repositories/bays.js'
@@ -298,7 +303,14 @@ bookingsRouter.post(
     const params = idParam.safeParse(req.params)
     const parsed = ArriveInput.safeParse(req.body ?? {})
     if (!params.success || !parsed.success) {
-      res.status(400).json({ error: 'invalid_request' })
+      // Built as the contract type, with the failing fields when the BODY was
+      // at fault; a malformed booking id in the path has no field to point at.
+      const body: InvalidRequestError = {
+        error: 'invalid_request',
+        message: 'ข้อมูลที่กรอกไม่ครบหรือไม่ถูกต้อง',
+        ...(parsed.success ? {} : { fields: fieldErrorsOf(parsed.error) }),
+      }
+      res.status(400).json(body)
       return
     }
     const auth = req.auth!
@@ -343,6 +355,7 @@ bookingsRouter.post(
             model: input.model,
             color: input.color,
             year: input.year,
+            province: input.province,
             leadSource: input.leadSource,
             mileageInKm: input.mileageInKm,
             queueNo: input.queueNo,
@@ -386,21 +399,28 @@ bookingsRouter.post(
         }))
 
       switch (arrival.kind) {
-        case 'not_found':
-          res.status(404).json({ error: 'booking_not_found', message: 'ไม่พบการจองนี้' })
+        // Each built as its contract type (packages/contracts errors.ts).
+        case 'not_found': {
+          const body: BookingNotFoundError = { error: 'booking_not_found', message: 'ไม่พบการจองนี้' }
+          res.status(404).json(body)
           return
-        case 'already_arrived':
-          res.status(409).json({
+        }
+        case 'already_arrived': {
+          const body: BookingAlreadyArrivedError = {
             error: 'booking_already_arrived',
             message: 'การจองนี้ถูกเปิดงานไปแล้ว',
-          })
+          }
+          res.status(409).json(body)
           return
-        case 'not_open':
-          res.status(409).json({
+        }
+        case 'not_open': {
+          const body: BookingNotOpenError = {
             error: 'booking_not_open',
             message: `การจองนี้อยู่ในสถานะ ${arrival.status} จึงเปิดงานไม่ได้`,
-          })
+          }
+          res.status(409).json(body)
           return
+        }
         default: {
           const ok = arrival.outcome as Extract<OpenJobOutcome, { kind: 'ok' }>
           res.status(201).json({

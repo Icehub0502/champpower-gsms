@@ -15,6 +15,8 @@ import {
   CustomerLookupQuery,
   VehicleLookupQuery,
   type CheckInResult,
+  type CustomerAmbiguousError,
+  type InvalidRequestError,
   type CustomerLookupResult,
   type VehicleLookupResult,
 } from '@gsms/contracts/index.js'
@@ -22,6 +24,7 @@ import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
 import { asyncRouter } from '../middleware/asyncHandler.js'
 import { sendPgError } from '../lib/pgError.js'
+import { fieldErrorsOf } from '../lib/fieldErrors.js'
 import * as customersRepo from '../repositories/customers.js'
 import * as vehiclesRepo from '../repositories/vehicles.js'
 import { openJob, withQueueNoRetry, type OpenJobOutcome } from '../services/intake.js'
@@ -36,7 +39,12 @@ checkinRouter.post(
   async (req: AuthedRequest, res) => {
     const parsed = CheckInInput.safeParse(req.body)
     if (!parsed.success) {
-      res.status(400).json({ error: 'invalid_request', fields: parsed.error.flatten().fieldErrors })
+      const body: InvalidRequestError = {
+        error: 'invalid_request',
+        message: 'ข้อมูลที่กรอกไม่ครบหรือไม่ถูกต้อง',
+        fields: fieldErrorsOf(parsed.error),
+      }
+      res.status(400).json(body)
       return
     }
     const auth = req.auth!
@@ -57,6 +65,7 @@ checkinRouter.post(
             model: input.model,
             color: input.color,
             year: input.year,
+            province: input.province,
             leadSource: input.leadSource,
             mileageInKm: input.mileageInKm,
             queueNo: input.queueNo,
@@ -102,7 +111,12 @@ checkinRouter.get(
   async (req: AuthedRequest, res) => {
     const q = VehicleLookupQuery.safeParse(req.query)
     if (!q.success) {
-      res.status(400).json({ error: 'invalid_request' })
+      const body: InvalidRequestError = {
+        error: 'invalid_request',
+        message: 'ข้อมูลที่กรอกไม่ครบหรือไม่ถูกต้อง',
+        fields: fieldErrorsOf(q.error),
+      }
+      res.status(400).json(body)
       return
     }
 
@@ -118,6 +132,7 @@ checkinRouter.get(
         model: vehicle.model,
         color: vehicle.color,
         year: vehicle.year,
+        province: vehicle.province,
         customerName: customer?.name ?? null,
         customerPhone: customer?.phone ?? null,
       }
@@ -140,7 +155,12 @@ checkinRouter.get(
   async (req: AuthedRequest, res) => {
     const q = CustomerLookupQuery.safeParse(req.query)
     if (!q.success) {
-      res.status(400).json({ error: 'invalid_request' })
+      const body: InvalidRequestError = {
+        error: 'invalid_request',
+        message: 'ข้อมูลที่กรอกไม่ครบหรือไม่ถูกต้อง',
+        fields: fieldErrorsOf(q.error),
+      }
+      res.status(400).json(body)
       return
     }
 
@@ -172,11 +192,14 @@ checkinRouter.get(
       // The same answer the resolver gives, so the screen has one branch to
       // handle rather than two — and prefilling the oldest of them would be
       // the exact guess this rule exists to prevent.
-      res.status(409).json({
+      // Same schema as the resolver's refusal (packages/contracts errors.ts),
+      // built as an explicit id+name projection for the same reason.
+      const body: CustomerAmbiguousError = {
         error: 'customer_ambiguous',
         message: 'เบอร์นี้มีลูกค้ามากกว่าหนึ่งราย กรุณาเลือกว่าเป็นรายไหน',
-        candidates: match.candidates,
-      })
+        candidates: match.candidates.map((c) => ({ id: c.id, name: c.name })),
+      }
+      res.status(409).json(body)
       return
     }
     res.json(match.result)

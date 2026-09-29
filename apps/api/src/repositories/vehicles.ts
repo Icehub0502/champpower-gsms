@@ -25,6 +25,7 @@ export interface VehicleRow {
   model: string
   color: string | null
   year: string | null
+  province: string | null
 }
 
 /**
@@ -32,13 +33,26 @@ export interface VehicleRow {
  *
  * Enforced in the repository for the same reason as `customers.findByPhone`:
  * the counter screen calls `GET /api/checkin/vehicle-lookup` before it posts
- * anything, and a lookup that cheerfully returns a car for 1กก1111 would put
- * that car's owner on the form no matter how careful the resolver is
+ * anything, and a lookup that cheerfully returns a car for a blocklisted plate would
+ * put that car's owner on the form no matter how careful the resolver is
  * afterwards. Both doors, and every future one, go through here.
  *
  * A blocked plate is still stored on the vehicle created next; it just cannot
- * be used to find an existing one. In the production dump 1กอ2222 is on four
- * different cars (docs/WORK-ORDERS/IMPORT-FINDINGS.md §4).
+ * be used to find an existing one. Plates are blocked only by an exact row in
+ * the shop's match_blocklist — there is no pattern rule, because repeated-digit
+ * plates such as 1กก1111 are real and valued (the dump's copies were test rows; the WO-004 import must drop them or add them
+ * to that shop's match_blocklist — docs/WORK-ORDERS/IMPORT-FINDINGS.md §4).
+ *
+ * OPEN QUESTION, FOR THE OWNER — the matching key is plate_key ALONE; province
+ * is not part of it. Thai plate numbers repeat across provinces, so
+ * "กก 1234 กรุงเทพ" and "กก 1234 ชลบุรี" may be two different cars, and
+ * matching on plate alone would treat them as one. Adding province to the key
+ * would change how every returning customer is found — a car keyed in once
+ * without a province, or with it spelled differently, would stop matching — so
+ * it is the owner's call, not this function's (raised with them 25 Sep 2026).
+ * Until it is decided, the worst outcome of a false match is bounded: the
+ * resolver's vehicle_owner_mismatch refusal stops the car silently moving to a
+ * different customer (services/intake.ts).
  */
 export async function findByPlate(
   trx: ScopedTx,
@@ -49,7 +63,7 @@ export async function findByPlate(
   if (await isBlockedMatchKey(trx, 'plate', key)) return undefined
   return trx
     .selectFrom('vehicles')
-    .select(['id', 'customer_id', 'plate', 'brand', 'model', 'color', 'year'])
+    .select(['id', 'customer_id', 'plate', 'brand', 'model', 'color', 'year', 'province'])
     .where('plate_key', '=', key)
     // A plate can legitimately appear twice if a car changed owner and staff
     // created a second record. The newest is the one on the forecourt.
@@ -64,7 +78,7 @@ export async function findById(
 ): Promise<VehicleRow | undefined> {
   return trx
     .selectFrom('vehicles')
-    .select(['id', 'customer_id', 'plate', 'brand', 'model', 'color', 'year'])
+    .select(['id', 'customer_id', 'plate', 'brand', 'model', 'color', 'year', 'province'])
     .where('id', '=', id)
     .executeTakeFirst()
 }
@@ -97,6 +111,7 @@ export interface CreateVehicle {
   model: string
   color?: string | undefined
   year?: string | undefined
+  province?: string | undefined
 }
 
 export async function create(trx: ScopedTx, input: CreateVehicle): Promise<VehicleRow> {
@@ -110,7 +125,8 @@ export async function create(trx: ScopedTx, input: CreateVehicle): Promise<Vehic
       model: input.model,
       color: input.color ?? null,
       year: input.year ?? null,
+      province: input.province ?? null,
     })
-    .returning(['id', 'customer_id', 'plate', 'brand', 'model', 'color', 'year'])
+    .returning(['id', 'customer_id', 'plate', 'brand', 'model', 'color', 'year', 'province'])
     .executeTakeFirstOrThrow()
 }

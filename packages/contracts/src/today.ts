@@ -85,6 +85,15 @@ const TodayJobFields = {
   // When the job entered the status it is in now — the "รอ N นาที" line.
   statusChangedAt: isoDateTime,
   sla: SlaInputs.nullable(),
+  // Every status this job may move to next, FOR THE CALLER, decided on the
+  // server: the transition table (packages/domain allowedMovesFrom) fed the
+  // job's real status history, filtered by the role rule the PATCH enforces.
+  // Build the card's menu and drop targets from this list only — do not
+  // recompute it on the screen. Stepping back from 'ready' depends on whether
+  // the car was aligned, which only the history knows, and a technician is not
+  // offered the customer's quote decisions. Empty for roles that cannot move
+  // jobs (viewer, accountant) and for terminal jobs.
+  allowedMoves: z.array(StatusKey),
 };
 
 // A card on the kanban. `column` is never null here.

@@ -19,3 +19,4 @@ export * from './checkin.js';
 export * from './files.js';
 export * from './today.js';
 export * from './publicBoard.js';
+export * from './errors.js';

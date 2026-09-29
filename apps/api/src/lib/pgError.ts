@@ -37,6 +37,9 @@
  * which answers `internal_error` — no PostgreSQL text ever reaches a client.
  */
 import type { Response } from 'express'
+import type {
+  BookingAlreadyArrivedError, JobNumberSeriesMissingError, QueueNoTakenError,
+} from '@gsms/contracts/index.js'
 
 /** The subset of node-postgres' error shape this module reads. */
 interface PgErrorLike {
@@ -53,7 +56,15 @@ function asPgError(err: unknown): PgErrorLike | null {
 
 export interface MappedError {
   status: number
-  body: { error: string; message: string }
+  // Every body this module can produce, as its contract type (packages/contracts
+  // errors.ts) — no open-ended { error: string } fallback. bay_slot_taken is a
+  // BOOKING refusal, not a check-in/arrival one, so it has no schema in the
+  // intake union; it is still pinned to its exact literal here.
+  body:
+    | BookingAlreadyArrivedError
+    | QueueNoTakenError
+    | JobNumberSeriesMissingError
+    | { error: 'bay_slot_taken'; message: string }
 }
 
 /** Extra facts only the caller knows, used to put real values in the message. */
@@ -72,25 +83,24 @@ export function mapPgError(err: unknown, ctx: PgErrorContext = {}): MappedError 
     // concurrent "รถมาถึงแล้ว" lands here, which is the whole point: the losing
     // request finds out from the database, not from a check it raced past.
     if (pg.constraint === 'uq_jobs_booking') {
-      return {
-        status: 409,
-        body: {
-          error: 'booking_already_arrived',
-          message: 'การจองนี้ถูกเปิดงานไปแล้ว',
-        },
+      const body: BookingAlreadyArrivedError = {
+        error: 'booking_already_arrived',
+        message: 'การจองนี้ถูกเปิดงานไปแล้ว',
       }
+      return { status: 409, body }
     }
     // Two cars answering to the same number called across the shop floor is a
     // real-world collision, not a database nicety (WO-003-ANSWERS.md §c).
     if (pg.constraint === 'uq_queue_no') {
-      const n = ctx.queueNo
-      return {
-        status: 409,
-        body: {
-          error: 'queue_no_taken',
-          message: n == null ? 'เลขคิวนี้มีรถคันอื่นแล้ว' : `คิว ${n} มีรถคันอื่นแล้ว`,
-        },
+      const n = ctx.queueNo ?? null
+      const body: QueueNoTakenError = {
+        error: 'queue_no_taken',
+        message: n === null ? 'เลขคิวนี้มีรถคันอื่นแล้ว' : `คิว ${n} มีรถคันอื่นแล้ว`,
+        // The number as data, so the screen need not parse it out of the
+        // message. null when it was not a typed number.
+        queueNo: n,
       }
+      return { status: 409, body }
     }
   }
 
@@ -124,13 +134,11 @@ export function mapPgError(err: unknown, ctx: PgErrorContext = {}): MappedError 
   // person at the desk gets something they can act on and the monitor gets the
   // truth. The PostgreSQL message itself is never forwarded.
   if (pg.code === 'GS001') {
-    return {
-      status: 500,
-      body: {
-        error: 'job_number_series_missing',
-        message: 'สาขานี้ยังไม่ได้ตั้งค่าเลขที่ใบงาน (ชุด JOB) กรุณาตั้งค่าก่อนเปิดงาน',
-      },
+    const body: JobNumberSeriesMissingError = {
+      error: 'job_number_series_missing',
+      message: 'สาขานี้ยังไม่ได้ตั้งค่าเลขที่ใบงาน (ชุด JOB) กรุณาตั้งค่าก่อนเปิดงาน',
     }
+    return { status: 500, body }
   }
 
   return null

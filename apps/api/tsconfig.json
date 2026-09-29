@@ -6,7 +6,15 @@
     "target": "ES2022",
     "outDir": "lib",
     "rootDir": "src",
-    "types": ["node"]
+    "types": ["node"],
+    // Typecheck (and the editor) read @champpower/domain from SOURCE, through
+    // the "gsms-source" condition in packages/domain/package.json — the same
+    // source the dev server and the tests run. Without this, tsc resolved the
+    // package's "types" entry, dist/index.d.ts, and the API could typecheck
+    // green against stale declarations of rules that had already changed.
+    // tsconfig.build.json clears this again: the production build must go
+    // through dist.
+    "customConditions": ["gsms-source"]
   },
   "include": ["src"],
   // MySQL-era files from before the PostgreSQL rewrite. They cannot compile

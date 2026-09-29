@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { plate as plateSchema, thaiPhone } from './common.js';
+import { blankAsAbsent, plate as plateSchema, thaiPhone } from './common.js';
 // Arrival captures the car, so it reuses check-in's own vocabulary rather
 // than growing a parallel one that drifts. See ArriveInput below.
 import { LeadSource } from './checkin.js';
@@ -76,20 +76,25 @@ export type UpdateBookingInput = z.infer<typeof UpdateBookingInput>;
 // that the car must end up identifiable — an existing vehicle_id on the
 // booking, or a plate typed here.
 export const ArriveInput = z.object({
-  plate: plateSchema.optional(),
-  customerName: z.string().trim().min(1).max(200).optional(),
-  customerPhone: thaiPhone.optional(),
-  brand: z.string().trim().min(1).max(100).optional(),
-  model: z.string().trim().min(1).max(100).optional(),
-  color: z.string().trim().max(50).optional(),
-  year: z.string().trim().max(10).optional(),
-  mileageInKm: z.number().int().min(0).optional(),
-  bayId: z.string().uuid().optional(),
-  queueNo: z.number().int().min(1).optional(),
-  jobDate: isoDate.optional(),
-  symptom: z.string().trim().max(2000).optional(),
+  // Every optional TEXT field treats a blank as absent (common.ts
+  // blankAsAbsent): the booking is the fallback for each, so a blank must mean
+  // "use the booking's value", never "reject the arrival".
+  plate: blankAsAbsent(plateSchema),
+  customerName: blankAsAbsent(z.string().trim().min(1).max(200)),
+  customerPhone: blankAsAbsent(thaiPhone),
+  brand: blankAsAbsent(z.string().trim().min(1).max(100)),
+  model: blankAsAbsent(z.string().trim().min(1).max(100)),
+  color: blankAsAbsent(z.string().trim().max(50)),
+  year: blankAsAbsent(z.string().trim().max(10)),
+  // Same rule as CheckInInput.province: stored on a new car, never overwrites.
+  province: blankAsAbsent(z.string().trim().max(50)),
+  mileageInKm: blankAsAbsent(z.number().int().min(0)),
+  bayId: blankAsAbsent(z.string().uuid()),
+  queueNo: blankAsAbsent(z.number().int().min(1)),
+  jobDate: blankAsAbsent(isoDate),
+  symptom: blankAsAbsent(z.string().trim().max(2000)),
   photoFileIds: z.array(z.string().uuid()).max(30).optional(),
-  leadSource: LeadSource.optional(),
+  leadSource: blankAsAbsent(LeadSource),
 
   // Answers to the two refusals the resolver can return — see the identical
   // pair on CheckInInput, which they must stay in step with, since one service
@@ -98,14 +103,6 @@ export const ArriveInput = z.object({
   confirmOwnerChange: z.boolean().optional(),
 });
 export type ArriveInput = z.infer<typeof ArriveInput>;
-
-// The candidate list on a 409 customer_ambiguous. Id and name only: the caller
-// is choosing between people, not browsing them.
-export const CustomerCandidate = z.object({
-  id: z.string().uuid(),
-  name: z.string().nullable(),
-});
-export type CustomerCandidate = z.infer<typeof CustomerCandidate>;
 
 export const BookingSummary = z.object({
   id: z.string().uuid(),

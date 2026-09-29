@@ -13,6 +13,7 @@
  * advance the booking and open the job atomically. It never opens its own.
  */
 import type { ScopedTx } from '@gsms/db/client.js'
+import type { IntakeRequiredField } from '@gsms/contracts/index.js'
 import { isQueueNoConflict } from '../lib/pgError.js'
 import { bangkokToday } from '../lib/bangkokDate.js'
 import * as customersRepo from '../repositories/customers.js'
@@ -84,6 +85,13 @@ export interface OpenJobInput {
   model?: string | undefined
   color?: string | undefined
   year?: string | undefined
+  /**
+   * Stored when a NEW car is created, and only then. A car already on file
+   * keeps the province it has: a check-in carrying a different one does not
+   * rewrite it, for the same reason ownership is never changed silently — the
+   * record on file may be right and the typing wrong, and nothing here can tell.
+   */
+  province?: string | undefined
   leadSource?: string | undefined
 
   /**
@@ -202,7 +210,9 @@ export async function openJob(
 type CarResolution =
   | { kind: 'ok'; customerId: string; vehicleId: string }
   | { kind: 'vehicle_required' }
-  | { kind: 'details_required'; fields: string[] }
+  // Typed to the contract's IntakeRequiredField, so this service cannot name
+  // a missing field the error schema does not know.
+  | { kind: 'details_required'; fields: IntakeRequiredField[] }
   | { kind: 'customer_ambiguous'; candidates: customersRepo.CustomerCandidate[] }
   | {
       kind: 'vehicle_owner_mismatch'
@@ -230,7 +240,7 @@ async function resolveCar(trx: ScopedTx, input: OpenJobInput): Promise<CarResolu
     : undefined
   if (!vehicle && input.plate) {
     // Matched on plate_key, so spacing and punctuation do not matter — and
-    // never matched at all if the plate is a known placeholder like 1กก1111.
+    // never matched at all if the plate is in this shop's match_blocklist.
     vehicle = await vehiclesRepo.findByPlate(trx, input.plate)
   }
   // Nothing to go on. This is the phone booking that arrives knowing only a
@@ -360,7 +370,7 @@ async function resolveCar(trx: ScopedTx, input: OpenJobInput): Promise<CarResolu
   //    rather than invented — a placeholder here is a row someone has to
   //    correct later, and nobody ever does.
   // ---------------------------------------------------------------------
-  const missing: string[] = []
+  const missing: IntakeRequiredField[] = []
   if (!input.brand) missing.push('brand')
   if (!input.model) missing.push('model')
   if (!namedCustomerId && !input.customerName) missing.push('customerName')
@@ -389,6 +399,7 @@ async function resolveCar(trx: ScopedTx, input: OpenJobInput): Promise<CarResolu
     model: input.model!,
     color: input.color,
     year: input.year,
+    province: input.province,
   })
   return { kind: 'ok', customerId, vehicleId: created.id }
 }

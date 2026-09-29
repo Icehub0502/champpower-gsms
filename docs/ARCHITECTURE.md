@@ -259,6 +259,22 @@ storage/<shop_id>/<yyyy>/<mm>/<uuid>.<ext>
   - `pg_dump -Fc` + สำรอง `storage/` อัตโนมัติรายวัน ไปไดรฟ์คนละลูก
   - **ทดสอบ restore จริงหนึ่งรอบ** แล้วจดวันที่ไว้ — backup ที่ยังไม่เคย restore ไม่นับ
   - health check endpoint + pm2 auto-restart (มีแล้ว)
+- **`@champpower/domain` ถูกอ่านจากที่ไหน — แยกทีละเส้นทาง** (ยืนยันจริง 29 ก.ย. 2026 ด้วยการย้าย `packages/domain/dist` ออกไปชั่วคราว
+  เส้นทางไหนยังทำงานได้ตอนไม่มี `dist` = พิสูจน์ว่าอ่านจาก `src` · ทุกบรรทัดยืนยันด้วย `--traceResolution` หรือรันจริง ไม่ได้อนุมานจาก config)
+
+  | เส้นทาง | อ่านจาก | กลไก | หลักฐาน (ตอนไม่มี `dist`) |
+  |---|---|---|---|
+  | เทสของ api (`npm test -w apps/api`) | `src` | alias ใน `apps/api/vitest.config.ts` | เทสผ่าน |
+  | typecheck ของ api (`npm run typecheck -w apps/api`) | `src` | `customConditions: ["gsms-source"]` ใน `apps/api/tsconfig.json` | exit 0 · trace → `src/index.ts` |
+  | dev ของ api (`npm run dev -w apps/api`) | `src` | `tsx watch --conditions=gsms-source` | trace → `src/index.ts` · dev server เปิดและตอบ endpoint ที่ใช้ domain ได้ |
+  | **production** (`node lib/index.js`) | **`dist`** | ค่า `default` ใน `exports` (ไม่มี condition) | trace → `dist/index.js` · **ไม่มี `dist` = รันไม่ขึ้น (`ERR_MODULE_NOT_FOUND`)** |
+  | build ของ api (`npm run build -w apps/api`) | `dist` (d.ts) | `tsconfig.build.json` ล้าง `customConditions` เป็น `[]` · `prebuild` build domain ก่อน | ไม่มี `dist` ก็ build ผ่าน เพราะ `prebuild` สร้างให้ · `lib/` ไม่มีไฟล์ของ domain |
+  | เว็บ: tsc · vitest · vite build | `src` | `paths` ใน `tsconfig.app.json` · alias ใน `vitest.config.ts` และ `vite.config.ts` | trace → `src/index.ts` · เทสผ่าน · build exit 0 |
+
+  **สิ่งที่ต้องจำตอน deploy:** production คือเส้นทางเดียวที่อ่าน `dist` ตอนรัน
+  `npm run build -w apps/api` build domain ให้เองผ่าน `prebuild` จึงไม่มีทางได้ `dist` ค้างของเก่าถ้า build ผ่านคำสั่งนี้
+  แต่กติกาของ domain ที่ production รันมาจาก `packages/domain/dist` ไม่ใช่จาก `lib/` — ถ้า `dist` ค้างของเก่า (เช่น pull โค้ดใหม่แล้วรัน `node lib/index.js` โดยไม่ build ใหม่) ระบบจะรันกติกาเก่า**โดยไม่มี error เตือน**
+  (สถานะงาน · การลากการ์ด · เบอร์หลอก) — **ห้ามใส่ `--conditions=gsms-source` ใน production**: `node` ไม่ได้ออกแบบมาให้รัน `.ts` ของ domain ตรง ๆ
 - วันที่มี VPS: reverse proxy + TLS + สำรองนอกเครื่อง + monitoring
 
 ---

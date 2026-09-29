@@ -21,6 +21,7 @@
     "./files.js": "./src/files.ts",
     "./today.js": "./src/today.ts",
     "./publicBoard.js": "./src/publicBoard.ts",
+    "./errors.js": "./src/errors.ts",
     "./index.js": "./src/index.ts"
   }
 }

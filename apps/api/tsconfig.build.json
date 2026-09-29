@@ -9,6 +9,14 @@
   // line it guards compiles CLEANLY — so that test is worthless unless
   // `npm run typecheck` actually reads it.
   "extends": "./tsconfig.json",
+  // The production build resolves @champpower/domain through dist — built
+  // first by the "prebuild" script — never through source. tsconfig.json turns
+  // the "gsms-source" condition on for typechecking; inheriting it here would
+  // pull domain's .ts files into this compilation. An empty list overrides the
+  // inherited one.
+  "compilerOptions": {
+    "customConditions": []
+  },
   "exclude": [
     "src/**/*.test.ts",
     "src/test/**",

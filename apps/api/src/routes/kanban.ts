@@ -21,6 +21,7 @@ import {
   type UpdateSubStateResult,
 } from '@gsms/contracts/index.js'
 import {
+  allowedMovesFrom,
   canMoveTo,
   cardLabelOf,
   DECISION_KEYS,
@@ -93,6 +94,22 @@ function isCustomerDecision(from: string, to: string): boolean {
     || ((from === 'quoted' || from === 'approved') && to === 'carout')
 }
 
+/**
+ * May a caller with this role make this move — as far as ROLE goes?
+ *
+ * THE single role rule for status moves, used by BOTH doors: GET /jobs/today
+ * filters each card's `allowedMoves` through it, and PATCH /jobs/:id/status
+ * refuses with 403 through it. If the two ever used separate copies, the board
+ * could offer a move the server then refuses — exactly the drift allowedMoves
+ * exists to end. Whether the move is legal for the JOB is a separate question,
+ * answered by allowedMovesFrom() / canMoveTo() in packages/domain.
+ */
+function roleMayMove(role: string, from: string, to: string): boolean {
+  if (!(STATUS_WRITE_ROLES as readonly string[]).includes(role)) return false
+  if (role === 'technician' && isCustomerDecision(from, to)) return false
+  return true
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/jobs/today
 // ---------------------------------------------------------------------------
@@ -125,12 +142,15 @@ kanbanRouter.get(
   async (req: AuthedRequest, res) => {
     const now = Date.now()
 
+    const role = req.auth!.role
     const data = await withShop(db, req.auth!.shop, async (trx) => {
       const [jobs, bays] = await Promise.all([
         todayRepo.boardJobs(trx),
         todayRepo.shopBays(trx),
       ])
-      return { jobs, bays }
+      // ONE history query for every card on the board, not one per card.
+      const history = await todayRepo.historyForJobs(trx, jobs.rows.map((r) => r.job_id))
+      return { jobs, bays, history }
     })
 
     const cards: TodayJob[] = []
@@ -185,6 +205,18 @@ kanbanRouter.get(
         sla: mins > 0
           ? { estMinutes: mins, repairStartedAt: board.repairStartedAt, repairEndedAt: board.repairEndedAt }
           : null,
+        // Where this card may go, for THIS caller: the transition table fed
+        // the job's real history (stepping back from ready depends on whether
+        // alignment happened), then the same role rule PATCH enforces. The
+        // screen builds its menu and drop targets from this and nothing else —
+        // one place decides, the same place that enforces.
+        allowedMoves: allowedMovesFrom({
+          status: r.status as StatusKey,
+          statusHistory: (data.history.get(r.job_id) ?? []).map((h) => ({
+            status: h.status as StatusKey,
+            changedAt: h.changedAt,
+          })),
+        }).filter((to) => roleMayMove(role, r.status, to)),
       }
 
       const column = kanbanColumnOf(r.status)
@@ -242,7 +274,7 @@ kanbanRouter.patch(
     const jobId = params.data.id
     const { to, fromStatus } = parsed.data
 
-    if (auth.role === 'technician' && isCustomerDecision(fromStatus, to)) {
+    if (!roleMayMove(auth.role, fromStatus, to)) {
       res.status(403).json({
         error: 'forbidden',
         message: 'การรับหรือยกเลิกการตัดสินใจของลูกค้าต้องทำโดยหน้าร้าน',

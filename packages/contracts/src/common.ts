@@ -23,6 +23,38 @@ export const thaiPhone = z
     message: 'invalid_phone',
   });
 
+// -----------------------------------------------------------------------------
+// Blank means absent
+// -----------------------------------------------------------------------------
+
+/**
+ * An optional form field where a blank entry means "not given".
+ *
+ * A form sends `''` for a field nobody filled in (`value.trim()` of an empty
+ * input), not `undefined`. Left to the plain schema, `''` either FAILS —
+ * a `.min(1)`, a phone regex, a date regex, an enum, a uuid — and the whole
+ * request is a 400 with nothing to fix, or it PASSES and an empty string is
+ * stored where NULL belongs. The first is the worse bug: a walk-in whose
+ * province box was left empty could not open a job at all, which breaks the
+ * rule that a walk-in is never blocked for lack of optional details (code
+ * review, 26 Sep 2026).
+ *
+ * So a string that is empty after trimming — and `null`, which a form or a
+ * client library may send for "nothing selected" — becomes `undefined`
+ * BEFORE the field's own rules run: blank is treated exactly like the field
+ * being left out, and a non-blank value is still checked in full. Numeric
+ * fields are wrapped too: an empty number box arrives as `''` or `null`,
+ * never as a number, and must not block a walk-in either. Use this for optional
+ * fields a person types or picks — never for a required one, where a blank is
+ * genuinely invalid and must stay a 400.
+ */
+export function blankAsAbsent<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess(
+    (v) => (v === null || (typeof v === 'string' && v.trim() === '') ? undefined : v),
+    schema.optional(),
+  );
+}
+
 // Free text, not a strict format check: plates carry Thai script, province
 // names, and staff shorthand. The only real rule is "not empty, not absurd".
 export const plate = z.string().trim().min(1).max(20);

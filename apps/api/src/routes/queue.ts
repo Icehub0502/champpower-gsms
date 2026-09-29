@@ -18,7 +18,14 @@ import {
   QueueBoardQuery,
   UpdateBayInput,
   UpdateQueueNoInput,
+  type CustomerAmbiguousError,
+  type IntakeDetailsRequiredError,
+  type IntakeRequiredField,
+  type UnknownBayError,
+  type UnknownFileError,
   type QueueBoardRow,
+  type VehicleOwnerMismatchError,
+  type VehicleRequiredError,
 } from '@gsms/contracts/index.js'
 import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
@@ -52,6 +59,25 @@ export const INTAKE_WRITE_ROLES = [
 const idParam = z.object({ id: z.string().uuid() })
 
 /**
+ * The intake_details_required message, true to WHICH fields are missing.
+ *
+ * It used to say "รถคันนี้ยังไม่เคยเข้าร้าน" (this car has never been here) every
+ * time — false when the car IS on file and only the customer's name is missing
+ * (confirming an owner change to someone not yet a customer). The message is
+ * part of the contract now, so it names exactly what to type, and only calls
+ * the car new when brand or model is missing, which happens only for a car
+ * nobody has on file.
+ */
+export function detailsRequiredMessage(missing: IntakeRequiredField[]): string {
+  const label: Record<IntakeRequiredField, string> = {
+    brand: 'ยี่ห้อ', model: 'รุ่น', customerName: 'ชื่อลูกค้า',
+  }
+  const words = missing.map((f) => label[f]).join(' ')
+  const newCar = missing.includes('brand') || missing.includes('model')
+  return newCar ? `รถคันนี้ยังไม่เคยเข้าร้าน กรุณากรอก${words}` : `กรุณากรอก${words}`
+}
+
+/**
  * The failure half of `openJob`, in HTTP terms.
  *
  * Shared by both intake doors for the same reason the service itself is: if
@@ -67,44 +93,66 @@ export function sendIntakeOutcome(
   outcome: Exclude<OpenJobOutcome, { kind: 'ok' }>,
 ): void {
   switch (outcome.kind) {
-    case 'unknown_bay':
-      res.status(400).json({ error: 'unknown_bay', message: 'ไม่พบช่องยกนี้ในสาขานี้' })
+    case 'unknown_bay': {
+      const body: UnknownBayError = { error: 'unknown_bay', message: 'ไม่พบช่องยกนี้ในสาขานี้' }
+      res.status(400).json(body)
       return
-    case 'unknown_file':
-      res.status(400).json({ error: 'unknown_file', message: 'ไม่พบไฟล์รูปที่แนบมา' })
+    }
+    case 'unknown_file': {
+      const body: UnknownFileError = { error: 'unknown_file', message: 'ไม่พบไฟล์รูปที่แนบมา' }
+      res.status(400).json(body)
       return
-    case 'vehicle_required':
-      res.status(409).json({
+    }
+    // The four refusals below are built as the schema types in
+    // packages/contracts/src/errors.ts, so a field the schema lacks — or lacks
+    // here — is a COMPILE error, and the screen parses them with the same
+    // schemas. Each is an EXPLICIT PROJECTION (id: ..., name: ...), never a
+    // pass-through of an internal object: TypeScript only rejects extra fields
+    // in a literal, so `candidates: outcome.candidates` would compile even if
+    // a phone were ever added to the repository's rows. Spelling every field out
+    // is what makes "id and name only" true by construction.
+    case 'vehicle_required': {
+      const body: VehicleRequiredError = {
         error: 'vehicle_required',
         message: 'กรุณากรอกทะเบียนรถก่อนเปิดงาน',
-      })
+      }
+      res.status(409).json(body)
       return
-    // Both of the next two are 409 for the same reason: the request is
-    // well-formed, the server is fine, and resending it with one more field
-    // succeeds. That is what a conflict means.
-    case 'customer_ambiguous':
-      res.status(409).json({
+    }
+    // The next three are 409 for the same reason: the request is well-formed,
+    // the server is fine, and resending it with one more field succeeds. That
+    // is what a conflict means.
+    case 'customer_ambiguous': {
+      const body: CustomerAmbiguousError = {
         error: 'customer_ambiguous',
         message: 'เบอร์นี้มีลูกค้ามากกว่าหนึ่งราย กรุณาเลือกว่าเป็นรายไหน',
-        candidates: outcome.candidates,
-      })
+        candidates: outcome.candidates.map((c) => ({ id: c.id, name: c.name })),
+      }
+      res.status(409).json(body)
       return
-    case 'vehicle_owner_mismatch':
-      res.status(409).json({
+    }
+    case 'vehicle_owner_mismatch': {
+      const body: VehicleOwnerMismatchError = {
         error: 'vehicle_owner_mismatch',
         message: `ทะเบียนนี้อยู่ในชื่อ ${outcome.currentOwner.name ?? 'ลูกค้ารายอื่น'} `
           + `ถ้าต้องการย้ายรถมาเป็นของ ${outcome.newOwner.name ?? 'ลูกค้ารายนี้'} กรุณายืนยัน`,
-        currentOwner: outcome.currentOwner,
-        newOwner: outcome.newOwner,
         vehicleId: outcome.vehicleId,
-      })
+        currentOwner: { id: outcome.currentOwner.id, name: outcome.currentOwner.name },
+        newOwner: { id: outcome.newOwner.id, name: outcome.newOwner.name },
+      }
+      res.status(409).json(body)
       return
-    default:
-      res.status(409).json({
+    }
+    default: {
+      const fields: IntakeDetailsRequiredError['fields'] = {}
+      for (const f of outcome.fields) fields[f] = ['required']
+      const body: IntakeDetailsRequiredError = {
         error: 'intake_details_required',
-        message: 'รถคันนี้ยังไม่เคยเข้าร้าน กรุณากรอกยี่ห้อ รุ่น และชื่อลูกค้า',
-        fields: Object.fromEntries(outcome.fields.map((f) => [f, ['required']])),
-      })
+        message: detailsRequiredMessage(outcome.fields),
+        fields,
+      }
+      res.status(409).json(body)
+    }
   }
 }
 

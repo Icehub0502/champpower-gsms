@@ -5,7 +5,7 @@
 // ahead of them.
 
 import { z } from 'zod';
-import { plate as plateSchema, thaiPhone } from './common.js';
+import { blankAsAbsent, plate as plateSchema, thaiPhone } from './common.js';
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'invalid_date');
 
@@ -30,26 +30,30 @@ export const CheckInInput = z.object({
   // Optional on the form, but the shop asks for it almost every time — kept
   // optional rather than required because a walk-in must never be blocked
   // for lack of a phone number.
-  customerPhone: thaiPhone.optional(),
+  customerPhone: blankAsAbsent(thaiPhone),
   brand: z.string().trim().min(1).max(100),
   model: z.string().trim().min(1).max(100),
-  color: z.string().trim().max(50).optional(),
-  year: z.string().trim().max(10).optional(),
-  mileageInKm: z.number().int().min(0).optional(),
+  color: blankAsAbsent(z.string().trim().max(50)),
+  year: blankAsAbsent(z.string().trim().max(10)),
+  // จังหวัด as staff type it. Stored on a NEW car only — a check-in never
+  // rewrites the province of a car already on file (see vehiclesRepo). NOT part
+  // of how a car is found: that is plate_key alone.
+  province: blankAsAbsent(z.string().trim().max(50)),
+  mileageInKm: blankAsAbsent(z.number().int().min(0)),
   // Omitted = server allocates max(queue_no)+1 for (shop, jobDate) inside the
   // same transaction as the insert. Supplied = staff is fixing a collision or
   // deliberately reordering; the database still enforces uniqueness.
-  queueNo: z.number().int().min(1).optional(),
+  queueNo: blankAsAbsent(z.number().int().min(1)),
   // Defaults to today in Asia/Bangkok when omitted. The prototype lets staff
   // key a job in for an earlier day (a car that arrived after the desk closed
   // out the day, for instance) — jobs.job_date exists specifically for this,
   // separate from created_at.
-  jobDate: isoDate.optional(),
-  symptom: z.string().trim().max(2000).optional(),
-  bayId: z.string().uuid().optional(),
+  jobDate: blankAsAbsent(isoDate),
+  symptom: blankAsAbsent(z.string().trim().max(2000)),
+  bayId: blankAsAbsent(z.string().uuid()),
   // Already uploaded via the files endpoint before this form is submitted.
   photoFileIds: z.array(z.string().uuid()).max(30).optional(),
-  leadSource: LeadSource.optional(),
+  leadSource: blankAsAbsent(LeadSource),
 
   // Sent on the SECOND attempt, after the server refused the first one.
   //
@@ -96,6 +100,7 @@ export const VehicleLookupResult = z.object({
   model: z.string(),
   color: z.string().nullable(),
   year: z.string().nullable(),
+  province: z.string().nullable(),
   customerName: z.string().nullable(),
   customerPhone: z.string().nullable(),
 });
