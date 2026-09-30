@@ -11,6 +11,7 @@ import { bookingsRouter } from './routes/bookings.js'
 import { checkinRouter } from './routes/checkin.js'
 import { filesRouter } from './routes/files.js'
 import { kanbanRouter } from './routes/kanban.js'
+import { jobDetailRouter } from './routes/jobDetail.js'
 import { publicBoardRouter } from './routes/publicBoard.js'
 
 export interface CreateAppOptions {
@@ -187,6 +188,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   // SAME mount so the write limiter runs once per request — two separate
   // app.use('/api', limiter, ...) lines would count every PATCH twice.
   app.use('/api', intakeWriteLimiter, queueRouter, kanbanRouter)
+  // Read-only, so no write limiter. AFTER kanbanRouter: GET /api/jobs/today is
+  // kanban's, and must never be taken for GET /api/jobs/:id.
+  app.use('/api', jobDetailRouter)
   app.use('/api/bookings', intakeWriteLimiter, bookingsRouter)
   app.use('/api/checkin', intakeWriteLimiter, checkinRouter)
 

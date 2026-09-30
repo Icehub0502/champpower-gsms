@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { allowedMovesFrom, isTerminal, nextStatusOf, prevStatusOf } from './transitions.js';
-import { CAROUT_SOURCES, DECISION_KEYS, STATUS_FLOW, type StatusKey } from './statusFlow.js';
+import {
+  allowedMovesFrom,
+  isCounterOnlyMove,
+  isTerminal,
+  moveRequiresReason,
+  nextStatusOf,
+  prevStatusOf,
+} from './transitions.js';
+import {
+  CAROUT_SOURCES,
+  DECISION_KEYS,
+  EXIT_STATUSES,
+  STATUS_FLOW,
+  type StatusKey,
+} from './statusFlow.js';
 import type { StatusHistoryEntry } from '../types/job.js';
 
 function hist(...statuses: StatusKey[]): StatusHistoryEntry[] {
@@ -56,10 +69,14 @@ describe('rejected is terminal (decision 6)', () => {
   });
 });
 
-describe('delivered is finished, not terminal (code review MEDIUM)', () => {
+const ALL = STATUS_FLOW.map((s) => s.key);
+// ready's step back depends on history; give every status the same history so
+// the "who may move to X" sweeps below see ready's real moves.
+const READY_HIST = hist('repairing', 'ready');
+const sourcesOf = (to: StatusKey) => ALL.filter((k) => moves(k, READY_HIST).includes(to));
+
+describe('delivered is an exit, but may be undone (DECISION-carout.md §3)', () => {
   it('is not in the terminal set, and can step back to ready', () => {
-    // Column 4 holds ready and delivered; a mis-drag must be undoable until a
-    // numbered receipt exists (WO-005 will add that refusal).
     expect(isTerminal('delivered')).toBe(false);
     expect(moves('delivered')).toEqual(['ready']);
   });
@@ -67,23 +84,88 @@ describe('delivered is finished, not terminal (code review MEDIUM)', () => {
   it('still has no forward move', () => {
     expect(nextStatusOf({ status: 'delivered' })).toBeNull();
   });
+
+  it('comes from ready only', () => {
+    expect(sourcesOf('delivered')).toEqual(['ready']);
+  });
 });
 
-describe('carout sources', () => {
-  it('any open status up to and including aligning may end in carout', () => {
-    for (const s of ['received', 'inspecting', 'quoted', 'approved', 'repairing', 'aligning'] as const) {
-      expect(moves(s), `${s} should allow carout`).toContain('carout');
+describe('three independent exits (DECISION-carout.md §1)', () => {
+  it('are delivered, rejected and carout', () => {
+    expect(EXIT_STATUSES.slice().sort()).toEqual(['carout', 'delivered', 'rejected']);
+  });
+
+  it('rejected comes from quoted only', () => {
+    expect(sourcesOf('rejected')).toEqual(['quoted']);
+  });
+
+  it('no exit leads to another exit — none is a step after another', () => {
+    for (const e of EXIT_STATUSES) {
+      for (const other of EXIT_STATUSES) expect(moves(e), `${e} -> ${other}`).not.toContain(other);
     }
-    expect(CAROUT_SOURCES).toHaveLength(6);
+  });
+});
+
+describe('carout — only before a quotation exists (DECISION-carout.md §1)', () => {
+  it('received and inspecting may end in carout, and nothing else may', () => {
+    expect(CAROUT_SOURCES).toEqual(['received', 'inspecting']);
+    expect(sourcesOf('carout')).toEqual(['received', 'inspecting']);
   });
 
-  it('ready may NOT — a finished car leaving is delivered, and never owing', () => {
-    expect(moves('ready')).not.toContain('carout');
+  it('quoted onwards may not — a refused quote is rejected, and no car leaves mid-repair', () => {
+    for (const s of ['quoted', 'approved', 'repairing', 'aligning', 'ready', 'delivered', 'rejected', 'carout'] as const) {
+      expect(moves(s, READY_HIST), `${s} must not allow carout`).not.toContain('carout');
+    }
+  });
+});
+
+describe('moveRequiresReason', () => {
+  it('requires a reason to undo a delivery', () => {
+    expect(moveRequiresReason('delivered', 'ready')).toBe(true);
   });
 
-  it('terminal statuses may not', () => {
-    expect(moves('delivered')).not.toContain('carout');
-    expect(moves('rejected')).not.toContain('carout');
+  it('requires none for any other legal move', () => {
+    for (const from of ALL) {
+      for (const to of moves(from, READY_HIST)) {
+        if (from === 'delivered' && to === 'ready') continue;
+        expect(moveRequiresReason(from, to), `${from} -> ${to}`).toBe(false);
+      }
+    }
+  });
+});
+
+describe('isCounterOnlyMove — what the technician may not do', () => {
+  it('covers the quote decision and taking it back', () => {
+    expect(isCounterOnlyMove('quoted', 'approved')).toBe(true);
+    expect(isCounterOnlyMove('quoted', 'rejected')).toBe(true);
+    expect(isCounterOnlyMove('approved', 'quoted')).toBe(true);
+  });
+
+  it('does NOT cover carout, delivering or undoing a delivery — the owner has not restricted those', () => {
+    expect(isCounterOnlyMove('received', 'carout')).toBe(false);
+    expect(isCounterOnlyMove('inspecting', 'carout')).toBe(false);
+    expect(isCounterOnlyMove('ready', 'delivered')).toBe(false);
+    expect(isCounterOnlyMove('delivered', 'ready')).toBe(false);
+  });
+
+  it('covers nothing but the quote decision among all legal moves', () => {
+    for (const from of ALL) {
+      for (const to of moves(from, READY_HIST)) {
+        const decision = (from === 'quoted' && (to === 'approved' || to === 'rejected'))
+          || (from === 'approved' && to === 'quoted');
+        expect(isCounterOnlyMove(from, to), `${from} -> ${to}`).toBe(decision);
+      }
+    }
+  });
+
+  it('leaves moving a car along the workshop to the technician, unchanged', () => {
+    const open: [StatusKey, StatusKey][] = [
+      ['received', 'inspecting'], ['inspecting', 'received'], ['inspecting', 'quoted'],
+      ['quoted', 'inspecting'], ['approved', 'repairing'], ['repairing', 'approved'],
+      ['repairing', 'aligning'], ['repairing', 'ready'], ['aligning', 'ready'],
+      ['aligning', 'repairing'], ['ready', 'repairing'], ['ready', 'aligning'],
+    ];
+    for (const [from, to] of open) expect(isCounterOnlyMove(from, to), `${from} -> ${to}`).toBe(false);
   });
 });
 
@@ -135,11 +217,13 @@ describe('the whole table', () => {
   it('matches the table written in transitions.ts', () => {
     expect(moves('received')).toEqual(['carout', 'inspecting']);
     expect(moves('inspecting')).toEqual(['carout', 'quoted', 'received']);
-    expect(moves('quoted')).toEqual(['approved', 'carout', 'inspecting', 'rejected']);
-    expect(moves('approved')).toEqual(['carout', 'quoted', 'repairing']);
-    expect(moves('repairing')).toEqual(['aligning', 'approved', 'carout', 'ready']);
-    expect(moves('aligning')).toEqual(['carout', 'ready', 'repairing']);
+    expect(moves('quoted')).toEqual(['approved', 'inspecting', 'rejected']);
+    expect(moves('approved')).toEqual(['quoted', 'repairing']);
+    expect(moves('repairing')).toEqual(['aligning', 'approved', 'ready']);
+    expect(moves('aligning')).toEqual(['ready', 'repairing']);
     expect(moves('ready', hist('repairing', 'ready'))).toEqual(['delivered', 'repairing']);
     expect(moves('delivered')).toEqual(['ready']);
+    expect(moves('rejected')).toEqual([]);
+    expect(moves('carout')).toEqual([]);
   });
 });

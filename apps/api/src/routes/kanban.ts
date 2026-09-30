@@ -13,6 +13,8 @@
 import { z } from 'zod'
 import { withShop } from '@gsms/db/client.js'
 import {
+  type InvalidRequestError,
+  StatusMoveReason,
   UpdateJobStatusInput,
   UpdateSubStateInput,
   type TodayJob,
@@ -24,11 +26,12 @@ import {
   allowedMovesFrom,
   canMoveTo,
   cardLabelOf,
-  DECISION_KEYS,
   estMinutes,
+  isCounterOnlyMove,
   isValidSubState,
   kanbanColumnOf,
   kpisOf,
+  moveRequiresReason,
   pulseOf,
   statusOf,
   SUB_STATE_LABEL,
@@ -43,6 +46,7 @@ import { asyncRouter } from '../middleware/asyncHandler.js'
 import * as todayRepo from '../repositories/today.js'
 import * as jobsRepo from '../repositories/jobs.js'
 import { writeAudit } from '../services/audit.js'
+import { fieldErrorsOf } from '../lib/fieldErrors.js'
 import { BOARD_READ_ROLES } from './queue.js'
 
 export const kanbanRouter = asyncRouter()
@@ -58,41 +62,16 @@ const STATUS_WRITE_ROLES = [
 
 const idParam = z.object({ id: z.string().uuid() })
 
+// Used only to produce the standard `fields` entry for a missing reason, so a
+// missing reason reads exactly like any other missing field ('required').
+const ReasonRequired = z.object({ reason: StatusMoveReason })
+
 const EST_UNITS = new Set(['minute', 'hour', 'day'])
 function estUnitOf(v: string | null): 'minute' | 'hour' | 'day' | null {
   return v !== null && EST_UNITS.has(v) ? (v as 'minute' | 'hour' | 'day') : null
 }
 
 const iso = (d: Date | null): string | null => (d === null ? null : d.toISOString())
-
-/**
- * Is this move the CUSTOMER'S decision on the quote — made, or taken back?
- *
- * §12.1 gives "ทำใบเสนอราคา / รับอนุมัติลูกค้า" (quoting and taking the
- * customer's approval) to the counter and NOT to the technician. A drag from
- * เสนอราคา to อนุมัติ is exactly that act wearing a different gesture, so the
- * technician's right to move a car along does not extend to it. The role gate
- * is on the ACT, not on the endpoint that happens to carry it.
- *
- * It covers three acts:
- *   1. answering the quote          quoted -> approved | rejected
- *   2. taking an answer back        approved -> quoted
- *   3. the customer taking the car  quoted | approved -> carout
- *      home around the decision
- * The third is what `scheduled` used to be before decision 6 ("not now, I'll
- * come back"): the customer deciding, at or just after the quote, not to have
- * the work done here and now. Code review (MEDIUM) found a technician could
- * still do it through carout; it is the same customer decision, so it is gated
- * the same way. A carout from further along (repairing, aligning) is the car
- * physically leaving mid-job and is not a quote decision, so it stays open to
- * the person at the lift.
- */
-function isCustomerDecision(from: string, to: string): boolean {
-  const decisions = DECISION_KEYS as readonly string[]
-  return (from === 'quoted' && decisions.includes(to))
-    || (decisions.includes(from) && to === 'quoted')
-    || ((from === 'quoted' || from === 'approved') && to === 'carout')
-}
 
 /**
  * May a caller with this role make this move — as far as ROLE goes?
@@ -103,10 +82,17 @@ function isCustomerDecision(from: string, to: string): boolean {
  * could offer a move the server then refuses — exactly the drift allowedMoves
  * exists to end. Whether the move is legal for the JOB is a separate question,
  * answered by allowedMovesFrom() / canMoveTo() in packages/domain.
+ *
+ * The technician may move a car along the workshop but not make the
+ * customer's decision on the quote (nor take it back) — packages/domain
+ * isCounterOnlyMove(); the gate is on the ACT, not on the endpoint that
+ * carries it. Every role in STATUS_WRITE_ROLES may make every other legal
+ * move, so the roles that may press "ส่งแล้ว" are exactly the roles that may
+ * undo it (DECISION-carout.md §3 — no waiting for a manager).
  */
-function roleMayMove(role: string, from: string, to: string): boolean {
+export function roleMayMove(role: string, from: string, to: string): boolean {
   if (!(STATUS_WRITE_ROLES as readonly string[]).includes(role)) return false
-  if (role === 'technician' && isCustomerDecision(from, to)) return false
+  if (role === 'technician' && isCounterOnlyMove(from, to)) return false
   return true
 }
 
@@ -124,9 +110,9 @@ function roleMayMove(role: string, from: string, to: string): boolean {
  * vanishes at midnight while it is still sitting there. The path name will
  * tempt the next person — do not.
  *
- * The one thing that IS dated: cars already handed back, kept for the day they
- * left so column 4 can show today's deliveries, then gone. That is decided in
- * the view job_board_state (migration 0016), not by a predicate here.
+ * A job that has EXITED — delivered, rejected or carout — is off this board the
+ * moment it exits, not at the end of the day (DECISION-carout.md). That is
+ * decided in the view job_board_state (migration 0018), not by a predicate here.
  *
  * NO BOOKINGS ON THIS BOARD (DECISION-7-today.md §1). A booking that has not
  * arrived is not a job, so it is not on the job board. The "รถมาถึงแล้ว"
@@ -172,6 +158,18 @@ kanbanRouter.get(
       forCounting.push(board)
 
       const mins = estMinutes({ estValue: r.est_value ?? undefined, estUnit: board.estUnit ?? undefined })
+      // Where this card may go, for THIS caller: the transition table fed the
+      // job's real history (stepping back from ready depends on whether
+      // alignment happened), then the same role rule PATCH enforces. The
+      // screen builds its menu and drop targets from this and nothing else —
+      // one place decides, the same place that enforces.
+      const allowedMoves = allowedMovesFrom({
+        status: r.status as StatusKey,
+        statusHistory: (data.history.get(r.job_id) ?? []).map((h) => ({
+          status: h.status as StatusKey,
+          changedAt: h.changedAt,
+        })),
+      }).filter((to) => roleMayMove(role, r.status, to))
       const common = {
         jobId: r.job_id,
         jobNumber: r.job_number ?? '',
@@ -205,24 +203,14 @@ kanbanRouter.get(
         sla: mins > 0
           ? { estMinutes: mins, repairStartedAt: board.repairStartedAt, repairEndedAt: board.repairEndedAt }
           : null,
-        // Where this card may go, for THIS caller: the transition table fed
-        // the job's real history (stepping back from ready depends on whether
-        // alignment happened), then the same role rule PATCH enforces. The
-        // screen builds its menu and drop targets from this and nothing else —
-        // one place decides, the same place that enforces.
-        allowedMoves: allowedMovesFrom({
-          status: r.status as StatusKey,
-          statusHistory: (data.history.get(r.job_id) ?? []).map((h) => ({
-            status: h.status as StatusKey,
-            changedAt: h.changedAt,
-          })),
-        }).filter((to) => roleMayMove(role, r.status, to)),
+        allowedMoves,
+        movesNeedingReason: allowedMoves.filter((to) => moveRequiresReason(r.status, to)),
       }
 
       const column = kanbanColumnOf(r.status)
       // Every status queue_board admits has a column now: the only statuses
-      // without one (rejected, carout) are terminal and job_board_state keeps
-      // them off the board. A null here would mean those two rules have
+      // without one (delivered, rejected, carout — the exits) are exactly the
+      // ones job_board_state keeps off the board. A null here would mean those two rules have
       // drifted apart — skip the row rather than send a card with no column.
       // But never SILENTLY: a status added later without a column would
       // otherwise make cars vanish from the board with nothing to show why.
@@ -266,8 +254,18 @@ kanbanRouter.patch(
   async (req: AuthedRequest, res) => {
     const params = idParam.safeParse(req.params)
     const parsed = UpdateJobStatusInput.safeParse(req.body)
-    if (!params.success || !parsed.success) {
+    if (!params.success) {
       res.status(400).json({ error: 'invalid_request' })
+      return
+    }
+    if (!parsed.success) {
+      // Field codes only — never the submitted values (lib/fieldErrors.ts).
+      const body: InvalidRequestError = {
+        error: 'invalid_request',
+        message: 'ข้อมูลที่ส่งมาไม่ถูกต้อง',
+        fields: fieldErrorsOf(parsed.error),
+      }
+      res.status(400).json(body)
       return
     }
     const auth = req.auth!
@@ -281,6 +279,26 @@ kanbanRouter.patch(
       })
       return
     }
+
+    // A reason is REQUIRED where packages/domain says so (undoing a delivery,
+    // DECISION-carout.md §3) and REFUSED everywhere else, so text typed on
+    // the screen is never accepted and then silently dropped. Judged against
+    // fromStatus here; the transaction below refuses with 409 if the job is
+    // not really in fromStatus, so the two can never disagree about the move.
+    const needsReason = moveRequiresReason(fromStatus, to)
+    if (needsReason !== (parsed.data.reason !== undefined)) {
+      const fields = needsReason
+        ? fieldErrorsOf(ReasonRequired.safeParse({}).error!)
+        : { reason: ['not_allowed'] }
+      const body: InvalidRequestError = {
+        error: 'invalid_request',
+        message: needsReason ? 'กรุณาระบุเหตุผล' : 'การย้ายสถานะนี้ไม่ต้องระบุเหตุผล',
+        fields,
+      }
+      res.status(400).json(body)
+      return
+    }
+    const reason = needsReason ? parsed.data.reason! : null
 
     type Outcome =
       | { kind: 'ok'; result: UpdateJobStatusResult }
@@ -314,7 +332,7 @@ kanbanRouter.patch(
       const subState = subStateAfterMove(to, job.sub_state)
 
       await jobsRepo.applyStatus(trx, { jobId, status: to, subState })
-      const changedAt = await jobsRepo.recordStatusHistory(trx, auth.shop, jobId, to, auth.sub)
+      const historyRow = await jobsRepo.recordStatusHistory(trx, auth.shop, jobId, to, auth.sub, reason)
 
       await writeAudit(trx, {
         shopId: auth.shop,
@@ -329,6 +347,24 @@ kanbanRouter.patch(
         },
       })
 
+      // Undoing a delivery gets its own audit action so the owner can list
+      // every undo without reading every status change. It records WHICH
+      // history row holds the reason, never the reason itself: that is free
+      // text staff may fill with a customer's name, and audit_logs carries no
+      // personal data (services/audit.ts). The text lives on the history row
+      // only (migration 0019).
+      if (job.status === 'delivered' && to === 'ready') {
+        await writeAudit(trx, {
+          shopId: auth.shop,
+          actorId: auth.sub,
+          action: 'job_delivery_undone',
+          entityType: 'jobs',
+          entityId: jobId,
+          before: { status: job.status },
+          after: { status: to, job_id: jobId, user_id: auth.sub, status_history_id: historyRow.id },
+        })
+      }
+
       return {
         kind: 'ok',
         result: {
@@ -336,7 +372,7 @@ kanbanRouter.patch(
           status: to,
           subState,
           column: kanbanColumnOf(to),
-          statusChangedAt: changedAt.toISOString(),
+          statusChangedAt: historyRow.changedAt.toISOString(),
         },
       }
     })

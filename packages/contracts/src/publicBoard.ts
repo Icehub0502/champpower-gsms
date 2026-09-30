@@ -38,7 +38,10 @@ export const PublicBoardCar = z
     repairStartedAt: isoDateTime.nullable(),
     repairEndedAt: isoDateTime.nullable(),
 
-    // Handed back today. The screen fades these out; they are gone tomorrow.
+    // ALWAYS false since migration 0018 (DECISION-carout.md): a delivered car
+    // leaves this screen the moment "ส่งแล้ว" is pressed — there is no
+    // end-of-day fade any more. Kept only so the current screen keeps
+    // compiling; remove it together with the web's fade code.
     deliveredToday: z.boolean(),
     statusChangedAt: isoDateTime,
   })

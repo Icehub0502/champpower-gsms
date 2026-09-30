@@ -46,7 +46,7 @@ describe.skipIf(!hasDatabase)(tier2('allowedMoves on /api/jobs/today'), () => {
   // Ordinary plates: matching is not what this test is about.
   async function openJob(plate: string): Promise<string> {
     const res = await post<{ jobId: string }>(api, '/api/checkin', {
-      plate, customerName: 'ทดสอบ', brand: 'Toyota', model: 'Vios',
+      plate, customerName: 'ทดสอบ', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร',
     }, await tokenAs('owner'))
     expect(res.status, JSON.stringify(res.body)).toBe(201)
     return res.body.jobId
@@ -98,26 +98,54 @@ describe.skipIf(!hasDatabase)(tier2('allowedMoves on /api/jobs/today'), () => {
     expect((await patch('repairing')).status, 'the offered move was refused').toBe(200)
   })
 
-  it('a technician is never offered the quote decision, nor carout around it', async () => {
+  it('a technician is never offered the quote decision; nobody is offered carout once quoted', async () => {
     const jobId = await openJob('ปป 4567')
     await seedPath(jobId, ['inspecting', 'quoted'])
-    // The counter sees the customer's decisions...
-    expect(await movesFor(jobId, 'owner')).toEqual(['approved', 'carout', 'inspecting', 'rejected'])
+    // The counter sees the customer's decisions — and no carout (DECISION-carout.md)...
+    expect(await movesFor(jobId, 'owner')).toEqual(['approved', 'inspecting', 'rejected'])
     // ...the technician sees only the step back.
     expect(await movesFor(jobId, 'technician')).toEqual(['inspecting'])
   })
 
-  it('a technician on an approved job is not offered to take it back to quoted, or carout', async () => {
+  it('a technician on an approved job is not offered to take it back to quoted; nobody is offered carout', async () => {
     const jobId = await openJob('ปป 5678')
     await seedPath(jobId, ['inspecting', 'quoted', 'approved'])
-    expect(await movesFor(jobId, 'owner')).toEqual(['carout', 'quoted', 'repairing'])
+    expect(await movesFor(jobId, 'owner')).toEqual(['quoted', 'repairing'])
     expect(await movesFor(jobId, 'technician')).toEqual(['repairing'])
   })
 
-  it('a technician IS offered carout mid-repair — not a quote decision', async () => {
+  it('nobody is offered carout mid-repair — this shop has none (DECISION-carout.md)', async () => {
     const jobId = await openJob('ปป 6789')
     await seedPath(jobId, ['inspecting', 'quoted', 'approved', 'repairing'])
-    expect(await movesFor(jobId, 'technician')).toEqual(['aligning', 'approved', 'carout', 'ready'])
+    expect(await movesFor(jobId, 'owner')).toEqual(['aligning', 'approved', 'ready'])
+    expect(await movesFor(jobId, 'technician')).toEqual(['aligning', 'approved', 'ready'])
+  })
+
+  it('carout is offered before a quote exists — to the counter and the technician alike', async () => {
+    const received = await openJob('ปป 6790')
+    expect(await movesFor(received, 'advisor')).toEqual(['carout', 'inspecting'])
+    expect(await movesFor(received, 'technician')).toEqual(['carout', 'inspecting'])
+
+    const inspecting = await openJob('ปป 6791')
+    await seedPath(inspecting, ['inspecting'])
+    expect(await movesFor(inspecting, 'advisor')).toEqual(['carout', 'quoted', 'received'])
+    expect(await movesFor(inspecting, 'technician')).toEqual(['carout', 'quoted', 'received'])
+  })
+
+  it('a technician is offered delivered, as before — only the quote decision is barred', async () => {
+    const jobId = await openJob('ปป 6792')
+    await seedPath(jobId, ['inspecting', 'quoted', 'approved', 'repairing', 'ready'])
+    expect(await movesFor(jobId, 'advisor')).toEqual(['delivered', 'repairing'])
+    expect(await movesFor(jobId, 'technician')).toEqual(['delivered', 'repairing'])
+  })
+
+  it('no card on /today needs a reason — the only such move starts from delivered, which is off the board', async () => {
+    const jobId = await openJob('ปป 6793')
+    await seedPath(jobId, ['inspecting', 'quoted', 'approved', 'repairing', 'ready'])
+    const res = await get<{ jobs: (Card & { movesNeedingReason?: string[] })[] }>(
+      api, '/api/jobs/today', await tokenAs('owner'))
+    const card = res.body.jobs.find((j) => j.jobId === jobId)
+    expect(card?.movesNeedingReason).toEqual([])
   })
 
   it('roles that cannot move jobs see the board with no moves at all', async () => {

@@ -14,7 +14,7 @@
  */
 import type { StatusHistoryEntry } from '../types/job.js';
 import { MAIN_PATH, type StatusKey } from '../workflow/statusFlow.js';
-import { allowedMovesFrom } from '../workflow/transitions.js';
+import { allowedMovesFrom, moveRequiresReason } from '../workflow/transitions.js';
 import { estMinutes, etaState, repairCycle, type EtaState } from './eta.js';
 
 // ============================================================================
@@ -39,22 +39,28 @@ export interface KanbanColumnDef {
  * 2 it would inflate that count and, worse, send staff to phone customers who
  * already said yes. An approved car is work to start, so it sits with the
  * work. Do not move it back to match the picture.
+ *
+ * Column 4 is `ready` ONLY (DECISION-carout.md, 30 Sep 2026 — overrides
+ * DECISION-job-status.md §2 and the Figma card that faded "ส่งแล้ว" out at the
+ * end of the day). A delivered car has left; its card goes the moment
+ * "ส่งแล้ว" is pressed.
  */
 export const KANBAN_COLUMNS: readonly KanbanColumnDef[] = [
   { column: 1, title: 'รับรถ / ตรวจรับ', statuses: ['received'] },
   { column: 2, title: 'ตรวจเช็ก / รออนุมัติ', statuses: ['inspecting', 'quoted'] },
   { column: 3, title: 'กำลังซ่อม / ตั้งศูนย์', statuses: ['approved', 'repairing', 'aligning'] },
-  { column: 4, title: 'พร้อมชำระ / ส่งมอบ', statuses: ['ready', 'delivered'] },
+  { column: 4, title: 'พร้อมชำระ / ส่งมอบ', statuses: ['ready'] },
 ];
 
 /**
  * The column a status belongs in, or null.
  *
- * null for the two closed-early statuses, `rejected` and `carout`. They are
- * real and kept distinct (the owner's "why customers don't go ahead" report
- * depends on `rejected`), but they are terminal and off the board — the job
- * is over. There is no `scheduled` any more: an appointment is a booking, and
- * a car that is not in the workshop has no job (DECISION-7-today.md §6).
+ * null for the three exits — `delivered`, `rejected`, `carout`
+ * (EXIT_STATUSES, DECISION-carout.md §1). Each takes the card off /today and
+ * the public board immediately; the same rule is written for the database as
+ * job_board_state.on_board (migration 0018). They stay distinct statuses (the
+ * owner's "why customers don't go ahead" report depends on `rejected`). There
+ * is no `scheduled`: an appointment is a booking (DECISION-7-today.md §6).
  */
 export function kanbanColumnOf(status: string): KanbanColumn | null {
   for (const def of KANBAN_COLUMNS) {
@@ -254,13 +260,13 @@ export interface BoardJob {
 }
 
 export interface Kpis {
-  /** งานเปิดทั้งหมด — every car on the kanban that has not been handed back. */
+  /** งานเปิดทั้งหมด — every card on the kanban (the sum of the four columns). */
   openJobs: number;
   /** รอลูกค้าตัดสินใจ — column 2 exactly. */
   awaitingDecision: number;
   /** ซ่อม / ตั้งศูนย์ — column 3 exactly. */
   inRepair: number;
-  /** พร้อมส่ง / รอชำระ — status `ready`. */
+  /** พร้อมส่ง / รอชำระ — column 4 exactly, which is status `ready`. */
   readyForHandover: number;
 }
 
@@ -268,19 +274,10 @@ export interface Kpis {
  * The four KPI tiles, counted from real statuses — never from the numbers in
  * the design, which are sample data (DECISION-job-status.md §2).
  *
- * Columns 2 and 3 are counted exactly as the columns are. Two definitions are
- * narrower than "count the column", deliberately:
- *
- *   - openJobs leaves out `delivered`. A car that has been handed back is not
- *     an open job, whatever column it is fading out of.
- *   - readyForHandover is `ready` only. Column 4 also holds today's delivered
- *     cars, and a delivered car is neither "ready to hand over" nor "waiting to
- *     pay": this shop never lets a customer leave owing (CLAUDE.md §5.3 rule 3),
- *     so delivered means paid and gone.
- *
- * With no delivered cars on the board, openJobs is exactly the sum of the four
- * columns, which is the arithmetic the decision was verified against
- * (18 = 6 + 6 + 3 + 3).
+ * Every tile is a column count, and openJobs is the sum of the four columns —
+ * the arithmetic the decision was verified against (18 = 6 + 6 + 3 + 3).
+ * Since DECISION-carout.md, column 4 is `ready` only: a delivered car is off
+ * the board, so there is nothing left to carve out of a column.
  */
 export function kpisOf(rows: readonly Pick<BoardJob, 'status'>[]): Kpis {
   let openJobs = 0;
@@ -290,10 +287,10 @@ export function kpisOf(rows: readonly Pick<BoardJob, 'status'>[]): Kpis {
   for (const r of rows) {
     const col = kanbanColumnOf(r.status);
     if (col === null) continue;
-    if (r.status !== 'delivered') openJobs++;
+    openJobs++;
     if (col === 2) awaitingDecision++;
     if (col === 3) inRepair++;
-    if (r.status === 'ready') readyForHandover++;
+    if (col === 4) readyForHandover++;
   }
   return { openJobs, awaitingDecision, inRepair, readyForHandover };
 }
@@ -382,8 +379,9 @@ export function pulseOf(rows: readonly BoardJob[], bays: readonly BoardBay[], no
 
   const occupied = new Set<string>();
   for (const r of onBoard) {
-    // A delivered car has left; its bay row is history, not occupancy.
-    if (r.status !== 'delivered' && r.bayId !== null && active.has(r.bayId)) occupied.add(r.bayId);
+    // onBoard never holds a delivered car (no column), so every bay here is
+    // really occupied.
+    if (r.bayId !== null && active.has(r.bayId)) occupied.add(r.bayId);
   }
 
   const today = BANGKOK_YMD.format(new Date(now));
@@ -457,9 +455,9 @@ export function canMoveTo(job: MovableJob, to: StatusKey): boolean {
  * THE RULE: the column's statuses are tried in MAIN_PATH order and the first
  * one canMoveTo() allows wins. Written out for the moves that matter:
  *
- *   from quoted     onto column 3 -> approved     (the customer said yes; "no" and
- *                                                  "took it away" have no column, so
- *                                                  a drag cannot make them)
+ *   from quoted     onto column 3 -> approved     (the customer said yes; the three
+ *                                                  exits — delivered, rejected, carout —
+ *                                                  have no column, so no drag can make them)
  *   from approved   onto column 2 -> quoted       (the yes is withdrawn; back to deciding)
  *   from repairing  onto column 2 -> refused      (the step back from repairing is
  *   from aligning   onto column 2 -> refused       approved, which is still column 3)
@@ -470,14 +468,17 @@ export function canMoveTo(job: MovableJob, to: StatusKey): boolean {
  *
  * A drop onto the job's OWN column returns null: a column holding several
  * statuses gives no way to say which one was meant, so moves inside a column
- * (approved -> repairing -> aligning, ready -> delivered) are made with an
- * explicit status through PATCH /api/jobs/:id/status, not by dragging.
+ * (approved -> repairing -> aligning) are made with an explicit status through
+ * PATCH /api/jobs/:id/status, not by dragging — as are the exits.
  */
 export function targetStatusForColumn(job: MovableJob, column: KanbanColumn): StatusKey | null {
   if (kanbanColumnOf(job.status) === column) return null;
   const def = KANBAN_COLUMNS.find((c) => c.column === column);
   if (!def) return null;
   for (const candidate of MAIN_PATH) {
+    // A drop carries no reason, so a move that needs one (undoing a delivery)
+    // is never a drop target — it is made from the job screen, with a reason.
+    if (moveRequiresReason(job.status, candidate)) continue;
     if (def.statuses.includes(candidate) && canMoveTo(job, candidate)) return candidate;
   }
   return null;

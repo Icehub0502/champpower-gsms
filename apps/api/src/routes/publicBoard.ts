@@ -117,8 +117,8 @@ publicBoardRouter.get('/:token', async (req, res) => {
         estMinutes: estMinutes(est),
         repairStartedAt: c.repair_started_at?.toISOString() ?? null,
         repairEndedAt: c.repair_ended_at?.toISOString() ?? null,
-        // on_board keeps a delivered car only for the day it left, so any
-        // delivered car on this list was delivered today.
+        // on_board (migration 0018) drops a delivered car the moment it is
+        // delivered, so this is always false; see the contract's note.
         deliveredToday: c.status === 'delivered',
         statusChangedAt: (c.status_changed_at ?? new Date()).toISOString(),
       }

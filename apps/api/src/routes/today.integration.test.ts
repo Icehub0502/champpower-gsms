@@ -60,7 +60,7 @@ describe.skipIf(!hasDatabase)(tier2('/today kanban (GET /api/jobs/today, PATCH s
     token: string, plate: string, extra: Record<string, unknown> = {},
   ): Promise<string> {
     const res = await post<CheckInBody>(api, '/api/checkin', {
-      plate, customerName: `Today Test ${plate}`, brand: 'Toyota', model: 'Vios', ...extra,
+      plate, customerName: `Today Test ${plate}`, brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร', ...extra,
     }, token)
     expect(res.status, `setup: check-in for plate ${plate} failed: ${JSON.stringify(res.body)}`).toBe(201)
     return res.body.jobId
@@ -383,39 +383,9 @@ describe.skipIf(!hasDatabase)(tier2('/today kanban (GET /api/jobs/today, PATCH s
       expect(res.body).toMatchObject({ error: 'illegal_status_move' })
     })
 
-    it('repairing -> carout is allowed: the customer took the car mid-job', async () => {
-      const s = await owner(fx.shopA)
-      const jobId = await checkinOn(s.accessToken, 'CR-REPOUT-1')
-      await seedPath(fx.shopA, jobId, ['inspecting', 'quoted', 'approved', 'repairing'])
-      const res = await patch(api, `/api/jobs/${jobId}/status`, { to: 'carout', fromStatus: 'repairing' }, s.accessToken)
-      expect(res.status, JSON.stringify(res.body)).toBe(200)
-    })
-
-    it('MEDIUM: a technician may not carout around the quote (quoted or approved) — a customer decision', async () => {
-      const s = await owner(fx.shopA)
-      const tech = await asRole(fx.shopA, 'technician')
-
-      const fromQuoted = await checkinOn(s.accessToken, 'CR-TECHOUT-1')
-      await seedPath(fx.shopA, fromQuoted, ['inspecting', 'quoted'])
-      const a = await patch(api, `/api/jobs/${fromQuoted}/status`, { to: 'carout', fromStatus: 'quoted' }, tech.accessToken)
-      expect(a.status).toBe(403)
-      expect((await jobRow(fx.shopA, fromQuoted)).status).toBe('quoted')
-
-      const fromApproved = await checkinOn(s.accessToken, 'CR-TECHOUT-2')
-      await seedPath(fx.shopA, fromApproved, ['inspecting', 'quoted', 'approved'])
-      const b = await patch(api, `/api/jobs/${fromApproved}/status`, { to: 'carout', fromStatus: 'approved' }, tech.accessToken)
-      expect(b.status).toBe(403)
-      expect((await jobRow(fx.shopA, fromApproved)).status).toBe('approved')
-    })
-
-    it('but a technician MAY record the car leaving mid-repair — not a quote decision', async () => {
-      const s = await owner(fx.shopA)
-      const tech = await asRole(fx.shopA, 'technician')
-      const jobId = await checkinOn(s.accessToken, 'CR-TECHOUT-3')
-      await seedPath(fx.shopA, jobId, ['inspecting', 'quoted', 'approved', 'repairing'])
-      const res = await patch(api, `/api/jobs/${jobId}/status`, { to: 'carout', fromStatus: 'repairing' }, tech.accessToken)
-      expect(res.status, JSON.stringify(res.body)).toBe(200)
-    })
+    // The carout / rejected / delivered rules of DECISION-carout.md are proven
+    // in exits.integration.test.ts; the two cases that lived here (carout mid-
+    // repair allowed, and allowed to a technician) are now the opposite rule.
   })
 
   // ===========================================================================
@@ -642,7 +612,7 @@ describe.skipIf(!hasDatabase)(tier2('/today kanban (GET /api/jobs/today, PATCH s
         let last: Awaited<ReturnType<typeof post>> | undefined
         for (let i = 0; i < 121; i++) {
           last = await post(plain, '/api/checkin', {
-            plate: `LIMIT-${i}`, customerName: 'Limiter Test', brand: 'Toyota', model: 'Vios',
+            plate: `LIMIT-${i}`, customerName: 'Limiter Test', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร',
           }, s.accessToken)
           if (last.status === 429) break
         }

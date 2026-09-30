@@ -59,7 +59,7 @@ describe.skipIf(!hasDatabase)(tier2('public waiting-room board (GET /api/public/
     token: string, plate: string, extra: Record<string, unknown> = {},
   ): Promise<string> {
     const res = await post<CheckInBody>(api, '/api/checkin', {
-      plate, customerName: 'Public Board Placeholder', brand: 'Toyota', model: 'Vios', ...extra,
+      plate, customerName: 'Public Board Placeholder', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร', ...extra,
     }, token)
     expect(res.status, `setup: check-in for plate ${plate} failed: ${JSON.stringify(res.body)}`).toBe(201)
     return res.body.jobId
@@ -230,16 +230,15 @@ describe.skipIf(!hasDatabase)(tier2('public waiting-room board (GET /api/public/
       expect(body.cars.some((c) => c.plate === 'BOARD-DT-PROG-YEST')).toBe(true)
     })
 
-    it('a car delivered TODAY IS on the board', async () => {
+    it('a car delivered TODAY is NOT on the board — it leaves the moment it is delivered (DECISION-carout.md)', async () => {
       const s = await owner(fx.shopA)
       const jobId = await checkinOn(s.accessToken, 'BOARD-DT-DELIV-TOD')
       await setStatus(fx.shopA, jobId, 'delivered')
-      // created_at left at "now" — job_board_state falls back to created_at
-      // for status_changed_at when no job_status_history row exists.
+      // created_at left at "now": under 0016 this car stayed until midnight.
 
       const token = await tokenOf(fx.shopA)
       const { body } = await board(token)
-      expect(body.cars.some((c) => c.plate === 'BOARD-DT-DELIV-TOD')).toBe(true)
+      expect(body.cars.some((c) => c.plate === 'BOARD-DT-DELIV-TOD')).toBe(false)
     })
 
     it('a car delivered YESTERDAY is NOT on the board', async () => {

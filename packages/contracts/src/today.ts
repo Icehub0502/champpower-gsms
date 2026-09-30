@@ -91,9 +91,16 @@ const TodayJobFields = {
   // Build the card's menu and drop targets from this list only — do not
   // recompute it on the screen. Stepping back from 'ready' depends on whether
   // the car was aligned, which only the history knows, and a technician is not
-  // offered the customer's quote decisions. Empty for roles that cannot move
-  // jobs (viewer, accountant) and for terminal jobs.
+  // offered the customer's quote decision (packages/domain isCounterOnlyMove).
+  // Empty for roles that
+  // cannot move jobs (viewer, accountant) and for terminal jobs.
   allowedMoves: z.array(StatusKey),
+  // The subset of allowedMoves that must be sent WITH A REASON (packages/domain
+  // moveRequiresReason). Today that is only delivered -> ready, and a
+  // delivered job is never on this board, so on /today this is always [] —
+  // it is here so the screen never decides "needs a reason" for itself.
+  // Optional only so existing callers keep compiling; the server always sends it.
+  movesNeedingReason: z.array(StatusKey).optional(),
 };
 
 // A card on the kanban. `column` is never null here.
@@ -104,7 +111,9 @@ export const TodayKpis = z.object({
   openJobs: z.number().int().min(0),          // งานเปิดทั้งหมด
   awaitingDecision: z.number().int().min(0),  // รอลูกค้าตัดสินใจ  (column 2)
   inRepair: z.number().int().min(0),          // ซ่อม / ตั้งศูนย์   (column 3)
-  readyForHandover: z.number().int().min(0),  // พร้อมส่ง / รอชำระ  (status ready)
+  readyForHandover: z.number().int().min(0),  // พร้อมส่ง / รอชำระ  (column 4 = status ready only)
+  // openJobs = the sum of the four columns. Delivered, rejected and carout are
+  // off the board the moment they happen (DECISION-carout.md), so none counts.
 });
 export type TodayKpis = z.infer<typeof TodayKpis>;
 
@@ -127,8 +136,9 @@ export type TodayPulse = z.infer<typeof TodayPulse>;
 //     and `scheduled` is no longer a job status.
 // Do not add either back here; the absence is the decision.
 export const TodayResponse = z.object({
-  // Every car still in the workshop, WHENEVER it arrived — plus today's
-  // deliveries. Not date-filtered, deliberately: see the route's doc comment.
+  // Every car still in the workshop, WHENEVER it arrived. No exited job —
+  // delivered, rejected, carout — is ever here, not even for the rest of the
+  // day (DECISION-carout.md). Not date-filtered: see the route's doc comment.
   jobs: z.array(TodayJob),
   kpis: TodayKpis,
   pulse: TodayPulse,
@@ -151,9 +161,20 @@ export type TodayResponse = z.infer<typeof TodayResponse>;
 // began. If someone else moved the card in the meantime the server answers 409
 // `status_changed` rather than applying a move that was judged against a board
 // that no longer exists.
+//
+// `reason` — why. REQUIRED for a move packages/domain moveRequiresReason() names
+// (today: delivered -> ready, undoing a "ส่งแล้ว" pressed by mistake —
+// DECISION-carout.md §3) and REFUSED on every other move, so a reason typed on
+// the screen is never silently dropped. Trimmed; 1–500 characters after trim.
+// Stored, trimmed, on the job_status_history row ONLY (migration 0019) — never
+// in the audit log, which records the history row's id instead.
+export const STATUS_REASON_MAX = 500;
+export const StatusMoveReason = z.string().trim().min(1).max(STATUS_REASON_MAX);
+
 export const UpdateJobStatusInput = z.object({
   to: StatusKey,
   fromStatus: StatusKey,
+  reason: StatusMoveReason.optional(),
 });
 export type UpdateJobStatusInput = z.infer<typeof UpdateJobStatusInput>;
 

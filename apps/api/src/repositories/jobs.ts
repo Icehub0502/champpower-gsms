@@ -354,20 +354,31 @@ export async function applyStatus(trx: ScopedTx, input: ApplyStatus): Promise<vo
     .execute()
 }
 
-/** One row per move, append-only. job_board_state reads its timings from here. */
+/**
+ * One row per move, append-only. job_board_state reads its timings from here.
+ *
+ * `reason` is set only for a move that carries one (packages/domain
+ * moveRequiresReason — today, undoing a delivery), and must arrive ALREADY
+ * TRIMMED: the zod schema trims, and ck_status_history_reason (0019) refuses
+ * a value with whitespace at either end rather than trimming it here.
+ *
+ * Returns the row's id as well as its time: an undo's audit entry points at
+ * this row instead of copying the reason (free text stays out of audit_logs).
+ */
 export async function recordStatusHistory(
   trx: ScopedTx,
   shopId: string,
   jobId: string,
   status: string,
   changedBy: string | null,
-): Promise<Date> {
+  reason: string | null = null,
+): Promise<{ id: string; changedAt: Date }> {
   const row = await trx
     .insertInto('job_status_history')
-    .values({ shop_id: shopId, job_id: jobId, status, changed_by: changedBy })
-    .returning('changed_at')
+    .values({ shop_id: shopId, job_id: jobId, status, changed_by: changedBy, reason })
+    .returning(['id', 'changed_at'])
     .executeTakeFirstOrThrow()
-  return row.changed_at
+  return { id: row.id, changedAt: row.changed_at }
 }
 
 export async function setSubState(

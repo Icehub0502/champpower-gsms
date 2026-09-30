@@ -18,5 +18,6 @@ export * from './bookings.js';
 export * from './checkin.js';
 export * from './files.js';
 export * from './today.js';
+export * from './jobDetail.js';
 export * from './publicBoard.js';
 export * from './errors.js';

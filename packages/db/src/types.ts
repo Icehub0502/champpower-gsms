@@ -422,6 +422,7 @@ export interface JobStatusHistory {
   changed_by: string | null;
   id: Generated<string>;
   job_id: string;
+  reason: string | null;
   shop_id: string;
   status: string;
 }

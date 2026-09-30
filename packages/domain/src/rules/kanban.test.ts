@@ -34,14 +34,17 @@ function row(overrides: Partial<BoardJob> = {}): BoardJob {
 }
 
 describe('kanbanColumnOf', () => {
-  it('maps the eight main statuses onto four columns', () => {
+  it('maps the seven in-workshop statuses onto four columns', () => {
     expect(kanbanColumnOf('received')).toBe(1);
     expect(kanbanColumnOf('inspecting')).toBe(2);
     expect(kanbanColumnOf('quoted')).toBe(2);
     expect(kanbanColumnOf('repairing')).toBe(3);
     expect(kanbanColumnOf('aligning')).toBe(3);
     expect(kanbanColumnOf('ready')).toBe(4);
-    expect(kanbanColumnOf('delivered')).toBe(4);
+  });
+
+  it('column 4 is ready only — delivered leaves the board the moment it is pressed (DECISION-carout.md)', () => {
+    expect(kanbanColumnOf('delivered')).toBeNull();
   });
 
   it('puts approved in column 3, NOT column 2 where the Figma frame draws it', () => {
@@ -186,8 +189,16 @@ describe('kpisOf — counted from statuses, never from the design', () => {
       .toEqual({ openJobs: 1, awaitingDecision: 0, inRepair: 0, readyForHandover: 1 });
   });
 
-  it('ignores statuses that are not on the kanban', () => {
-    expect(kpisOf([{ status: 'carout' }, { status: 'rejected' }])).toEqual({
+  it('counts readyForHandover as column 4 exactly, and openJobs as the sum of the columns', () => {
+    const k = kpisOf([
+      { status: 'received' }, { status: 'quoted' }, { status: 'approved' }, { status: 'ready' }, { status: 'ready' },
+    ]);
+    expect(k.readyForHandover).toBe(2);
+    expect(k.openJobs).toBe(5);
+  });
+
+  it('ignores the three exits — none is on the kanban', () => {
+    expect(kpisOf([{ status: 'carout' }, { status: 'rejected' }, { status: 'delivered' }])).toEqual({
       openJobs: 0, awaitingDecision: 0, inRepair: 0, readyForHandover: 0,
     });
   });
@@ -239,7 +250,7 @@ describe('pulseOf', () => {
     { id: 'old', isActive: false },
   ];
 
-  it('counts a bay once however many cars share it, and never a delivered car', () => {
+  it('counts a bay once however many cars share it, and never a car off the board', () => {
     const p = pulseOf([
       row({ status: 'repairing', bayId: 'b1' }),
       row({ status: 'aligning', bayId: 'b1' }),       // two cars, one bay: allowed, counted once
@@ -310,10 +321,12 @@ describe('canMoveTo — built on transitions.ts', () => {
     expect(canMoveTo({ status: 'repairing' }, 'ready')).toBe(true);
   });
 
-  it('allows carout from open statuses up to aligning, but not from ready', () => {
-    expect(canMoveTo({ status: 'quoted' }, 'carout')).toBe(true);
-    expect(canMoveTo({ status: 'aligning' }, 'carout')).toBe(true);
-    expect(canMoveTo({ status: 'ready' }, 'carout')).toBe(false);
+  it('allows carout only before a quote exists (DECISION-carout.md)', () => {
+    expect(canMoveTo({ status: 'received' }, 'carout')).toBe(true);
+    expect(canMoveTo({ status: 'inspecting' }, 'carout')).toBe(true);
+    for (const s of ['quoted', 'approved', 'repairing', 'aligning', 'ready'] as const) {
+      expect(canMoveTo({ status: s }, 'carout'), s).toBe(false);
+    }
   });
 
   it('refuses anything else that skips a step', () => {
@@ -380,5 +393,10 @@ describe('targetStatusForColumn — the drop rule', () => {
     // A multi-status column cannot say which status was meant.
     expect(targetStatusForColumn({ status: 'approved' }, 3)).toBeNull();
     expect(targetStatusForColumn({ status: 'ready' }, 4)).toBeNull();
+  });
+
+  it('never makes undoing a delivery a drop — that move needs a reason', () => {
+    expect(targetStatusForColumn({ status: 'delivered' }, 4)).toBeNull();
+    expect(targetStatusForColumn({ status: 'delivered' }, 3)).toBeNull();
   });
 });
