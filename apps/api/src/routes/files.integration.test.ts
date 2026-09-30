@@ -12,6 +12,8 @@
  * file — a 403 would itself confirm the id exists.
  */
 import { promises as fsp } from 'node:fs'
+import sharp from 'sharp'
+import { crc32, deflateSync } from 'node:zlib'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { withShop } from '@gsms/db/client.js'
 import { InvalidRequestError } from '@gsms/contracts/index.js'
@@ -34,6 +36,43 @@ const JPEG_BASE64 =
   'AQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX' +
   '/9k='
 const JPEG_BUF = Buffer.from(JPEG_BASE64, 'base64')
+
+/**
+ * The stored original is a re-encode (EXIF/GPS stripped), so it is no longer
+ * byte-identical to the upload. What must hold: it still decodes, as the same
+ * kind of image at the same size.
+ */
+async function expectDecodesAsTinyJpeg(buf: Buffer): Promise<void> {
+  const meta = await sharp(buf).metadata()
+  expect(meta.format).toBe('jpeg')
+  expect([meta.width, meta.height]).toEqual([1, 1])
+}
+
+/**
+ * A 1-bit greyscale PNG declaring 12000x12000 (144 MP, over the 100 MP cap): a
+ * few KB on disk, but it would expand to hundreds of MB decoded if we let it.
+ * Built by hand so the test itself stays cheap.
+ */
+function hugePng(): Buffer {
+  const W = 12000
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length)
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body))
+    return Buffer.concat([len, body, crc])
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(W, 4)
+  ihdr[8] = 1 // bit depth
+  ihdr[9] = 0 // greyscale
+  const rowBytes = 1 + Math.ceil(W / 8) // filter byte + packed pixels
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(Buffer.alloc(rowBytes * W))),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
 
 interface UploadResponse {
   photo: { id: string; kind: string; mime: string; bytes: number; width: number; height: number }
@@ -142,7 +181,7 @@ describe.skipIf(!hasDatabase)(tier2('check-in photo files'), () => {
     const body = up.body as unknown as UploadResponse
     expect(body.photo.kind).toBe('checkin_photo')
     expect(body.thumb.kind).toBe('checkin_thumb')
-    expect(body.photo.bytes).toBe(JPEG_BUF.length)
+    expect(body.photo.bytes).toBeGreaterThan(0)
     createdFileIds.push(body.photo.id, body.thumb.id)
 
     // The row landed in the caller's own shop, with the sniffed mime — not
@@ -157,7 +196,8 @@ describe.skipIf(!hasDatabase)(tier2('check-in photo files'), () => {
 
     const got = await getFile(api, access, body.photo.id)
     expect(got.status).toBe(200)
-    expect(got.buf.equals(JPEG_BUF)).toBe(true)
+    await expectDecodesAsTinyJpeg(got.buf)
+    expect(got.buf.length).toBe(body.photo.bytes)
     expect(got.contentType).toBe('image/jpeg')
     // Private: these are one shop's customer photos, never a shared cache —
     // CLAUDE.md §12.
@@ -166,6 +206,93 @@ describe.skipIf(!hasDatabase)(tier2('check-in photo files'), () => {
     const gotThumb = await getFile(api, access, body.thumb.id)
     expect(gotThumb.status).toBe(200)
     expect(gotThumb.buf.length).toBeGreaterThan(0)
+  })
+
+  it('strips EXIF/GPS from the stored original, and keeps the picture upright at the right size', async () => {
+    const CANARY = 'HOME-LOCATION-CANARY'
+    // 40x20 pixels tagged Orientation 6 (rotate 90deg): a viewer shows 20x40.
+    const raw = await sharp({
+      create: { width: 40, height: 20, channels: 3, background: { r: 200, g: 20, b: 20 } },
+    }).withMetadata({
+      orientation: 6,
+      exif: {
+        IFD0: { ImageDescription: CANARY },
+        IFD3: {
+          GPSLatitudeRef: 'N', GPSLatitude: '13/1 39/1 0/1',
+          GPSLongitudeRef: 'E', GPSLongitude: '100/1 35/1 0/1',
+        },
+      },
+    }).jpeg().toBuffer()
+    // The precondition: the upload really does carry metadata.
+    const rawMeta = await sharp(raw).metadata()
+    expect(rawMeta.exif).toBeDefined()
+    expect(rawMeta.orientation).toBe(6)
+    expect(raw.includes(Buffer.from(CANARY))).toBe(true)
+
+    const { accessToken } = await tokenA()
+    const up = await uploadFile(api, accessToken, raw, 'gps.jpg')
+    expect(up.status).toBe(201)
+    const body = up.body as unknown as UploadResponse
+    createdFileIds.push(body.photo.id, body.thumb.id)
+
+    const got = await getFile(api, accessToken, body.photo.id)
+    expect(got.status).toBe(200)
+    const meta = await sharp(got.buf).metadata()
+    expect(meta.exif, 'EXIF survived the upload').toBeUndefined()
+    expect(meta.xmp).toBeUndefined()
+    expect(meta.iptc).toBeUndefined()
+    expect(got.buf.includes(Buffer.from(CANARY))).toBe(false)
+    // Orientation baked into the pixels: sideways source is now 20x40 upright,
+    // and the API reports the dimensions a viewer sees.
+    expect([meta.width, meta.height]).toEqual([20, 40])
+    expect([body.photo.width, body.photo.height]).toEqual([20, 40])
+    expect(body.photo.bytes).toBe(got.buf.length)
+    expect(meta.orientation ?? 1).toBe(1)
+  })
+
+  it('uploads beyond the decode slots all complete, whether they succeed or are refused', async () => {
+    const { accessToken } = await tokenA()
+    const png = hugePng()
+    const results = await Promise.all([
+      ...Array.from({ length: 5 }, (_, i) => uploadFile(api, accessToken, JPEG_BUF, `burst-${i}.jpg`)),
+      ...Array.from({ length: 4 }, (_, i) => uploadFile(api, accessToken, png, `burst-huge-${i}.png`)),
+    ])
+    expect(results.slice(0, 5).map((r) => r.status)).toEqual([201, 201, 201, 201, 201])
+    expect(results.slice(5).map((r) => r.status)).toEqual([400, 400, 400, 400])
+    for (const r of results.slice(0, 5)) {
+      const b = r.body as unknown as UploadResponse
+      createdFileIds.push(b.photo.id, b.thumb.id)
+    }
+    // Slots were released by the failures too: a further upload still goes through.
+    const after = await uploadFile(api, accessToken, JPEG_BUF, 'after-burst.jpg')
+    expect(after.status).toBe(201)
+    const ab = after.body as unknown as UploadResponse
+    createdFileIds.push(ab.photo.id, ab.thumb.id)
+  })
+
+  it('refuses an image with an absurd pixel count that is tiny on disk: 400, nothing written, server still healthy', async () => {
+    const png = hugePng()
+    expect(png.length).toBeLessThan(1024 * 1024)
+
+    const { accessToken } = await tokenA()
+    const rowsBefore = await fileCountForShop(fx.shopA)
+    const diskBefore = await diskFileCountForShop(fx.shopA)
+    const rssBefore = process.memoryUsage().rss
+
+    const up = await uploadFile(api, accessToken, png, 'huge.png')
+    expect(up.status).toBe(400)
+    expect(up.body).toEqual({ error: 'unsupported_file_type' })
+    expect(JSON.stringify(up.body)).not.toMatch(/pixel|limit|sharp|at /i)
+    expect(await fileCountForShop(fx.shopA)).toBe(rowsBefore)
+    expect(await diskFileCountForShop(fx.shopA)).toBe(diskBefore)
+    // No decode happened: the process did not balloon (hundreds of MB would).
+    expect(process.memoryUsage().rss - rssBefore).toBeLessThan(200 * 1024 * 1024)
+
+    // And the server carries on serving.
+    const ok = await uploadFile(api, accessToken, JPEG_BUF, 'after-huge.jpg')
+    expect(ok.status).toBe(201)
+    const okBody = ok.body as unknown as UploadResponse
+    createdFileIds.push(okBody.photo.id, okBody.thumb.id)
   })
 
   it('answers 404, not 403, when the file belongs to a different shop', async () => {
@@ -248,7 +375,8 @@ describe.skipIf(!hasDatabase)(tier2('check-in photo files'), () => {
     // Fetching it back still works normally.
     const got = await getFile(api, access, body.photo.id)
     expect(got.status).toBe(200)
-    expect(got.buf.equals(JPEG_BUF)).toBe(true)
+    await expectDecodesAsTinyJpeg(got.buf)
+    expect(got.buf.length).toBe(body.photo.bytes)
   })
 
   // ===========================================================================
@@ -317,7 +445,8 @@ describe.skipIf(!hasDatabase)(tier2('check-in photo files'), () => {
 
       const got = await getFile(api, technician, body.photo.id)
       expect(got.status).toBe(200)
-      expect(got.buf.equals(JPEG_BUF)).toBe(true)
+      await expectDecodesAsTinyJpeg(got.buf)
+    expect(got.buf.length).toBe(body.photo.bytes)
     })
   })
 

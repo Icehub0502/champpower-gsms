@@ -85,11 +85,64 @@ export function sniffImageType(buf: Buffer): SniffResult | null {
  */
 export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 
+/**
+ * The most pixels sharp will agree to decode from an upload.
+ *
+ * File size does not bound decode cost: a single-colour PNG of a few hundred
+ * KB can declare 16000x16000 and expand to hundreds of MB of raw pixels in
+ * memory (sharp's own default ceiling is about 268 MP, i.e. roughly 800 MB for
+ * RGB), and every upload is decoded. So the cap is on PIXELS, checked from the
+ * header before anything is allocated. 100 MP is well above any phone camera
+ * (48 MP and 50 MP sensors pass with room to spare) and about a third of the
+ * default. An image over it makes sharp throw, which the route reports as the
+ * ordinary 400 unsupported_file_type.
+ */
+export const MAX_INPUT_PIXELS = 100_000_000
+
+/**
+ * At most this many upload decodes run at once, in this process.
+ *
+ * The pixel cap bounds ONE decode; it does not bound how many run together, and
+ * the intake limiter allows 120 uploads a minute. Measured: a 758 KB, 256 MP
+ * PNG costs roughly 290 MB of RSS and 3 s, so a burst of them in parallel is a
+ * memory-exhaustion request even with every single one under the cap. Two
+ * slots keep the worst case to a couple of images' worth of RAM while a normal
+ * phone photo (tens of ms) never notices the queue. A request that has to wait
+ * simply waits; there is no new error code.
+ */
+export const DECODE_SLOTS = 2
+let decodeActive = 0
+const decodeWaiters: Array<() => void> = []
+
+export async function withDecodeSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (decodeActive >= DECODE_SLOTS) {
+    // The slot is handed over directly by the releaser, so `decodeActive`
+    // never dips below the true count between release and wake-up.
+    await new Promise<void>((resolve) => { decodeWaiters.push(resolve) })
+  } else {
+    decodeActive++
+  }
+  try {
+    return await fn()
+  } finally {
+    // Released on success AND on throw, or one bad upload would leak a slot
+    // and a few of them would wedge uploads for the whole process.
+    const next = decodeWaiters.shift()
+    if (next) next()
+    else decodeActive--
+  }
+}
+
 const THUMB_MAX_DIMENSION = 320
 // Server-side JPEG re-encode quality for thumbnails. Thumbnails are for list
-// views, not proof of condition, so a lossy re-encode is fine here even
-// though the original photo is kept byte-for-byte.
+// views, not proof of condition, so a lossy re-encode is fine here.
 const THUMB_JPEG_QUALITY = 70
+
+// The stored ORIGINAL is re-encoded too (see reencodeOriginal), at a quality
+// high enough to stay usable as evidence of the car's condition, and capped at
+// a long edge that still shows plate and scratches on any phone screen.
+const ORIGINAL_QUALITY = 90
+const ORIGINAL_MAX_DIMENSION = 4096
 
 export interface StoredFile {
   relativePath: string
@@ -173,7 +226,8 @@ export interface ThumbnailResult {
  * format fidelity.
  */
 export async function makeThumbnail(source: Buffer): Promise<ThumbnailResult> {
-  const image = sharp(source).rotate() // honour EXIF orientation before resizing
+  // honour EXIF orientation before resizing
+  const image = sharp(source, { limitInputPixels: MAX_INPUT_PIXELS }).rotate()
   const resized = image.resize({
     width: THUMB_MAX_DIMENSION,
     height: THUMB_MAX_DIMENSION,
@@ -191,10 +245,54 @@ export async function makeThumbnail(source: Buffer): Promise<ThumbnailResult> {
   }
 }
 
-/** Read image dimensions without re-encoding — used for the original photo. */
+export interface ReencodedOriginal {
+  buffer: Buffer
+  width: number
+  height: number
+}
+
+/**
+ * The bytes we store as the "original" photo: decoded and encoded again, in
+ * the same format, with every piece of metadata dropped.
+ *
+ * WHY. A direct API caller (the web app re-encodes through a canvas, which
+ * strips metadata as a side effect, but nothing forces a client to) can upload
+ * a phone JPEG carrying EXIF GPS — the customer's home, the moment and place a
+ * car was photographed. Storing those bytes verbatim would keep that location
+ * in every file ever served back. sharp drops EXIF, XMP, IPTC and ICC unless
+ * asked to keep them (we do not call withMetadata), so re-encoding is the
+ * strip; `rotate()` runs first and bakes the EXIF orientation into the pixels,
+ * because once the tag is gone an unrotated sideways photo would stay sideways.
+ * Dimensions returned are the ones AFTER rotation, i.e. what a viewer sees.
+ *
+ * The cost is one lossy generation for JPEG/WebP (quality ${ORIGINAL_QUALITY}) and a size
+ * cap on the long edge; PNG stays lossless. Throws if the bytes do not decode,
+ * which the route reports as unsupported_file_type.
+ */
+export async function reencodeOriginal(
+  source: Buffer,
+  type: SniffedImageType,
+): Promise<ReencodedOriginal> {
+  const pipeline = sharp(source, { limitInputPixels: MAX_INPUT_PIXELS })
+    .rotate()
+    .resize({
+      width: ORIGINAL_MAX_DIMENSION,
+      height: ORIGINAL_MAX_DIMENSION,
+      fit: 'inside',
+      withoutEnlargement: true,
+    })
+  const encoded =
+    type === 'jpeg' ? pipeline.jpeg({ quality: ORIGINAL_QUALITY })
+    : type === 'webp' ? pipeline.webp({ quality: ORIGINAL_QUALITY })
+    : pipeline.png()
+  const { data, info } = await encoded.toBuffer({ resolveWithObject: true })
+  return { buffer: data, width: info.width, height: info.height }
+}
+
+/** Read image dimensions without re-encoding. */
 export async function readImageDimensions(
   buf: Buffer,
 ): Promise<{ width: number; height: number }> {
-  const meta = await sharp(buf).metadata()
+  const meta = await sharp(buf, { limitInputPixels: MAX_INPUT_PIXELS }).metadata()
   return { width: meta.width ?? 0, height: meta.height ?? 0 }
 }

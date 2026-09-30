@@ -16,8 +16,9 @@
  */
 import jwt from 'jsonwebtoken'
 import { sql } from 'kysely'
-import { withShop } from '@gsms/db/client.js'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { unscoped, withShop } from '@gsms/db/client.js'
+import { revokeSessionChain } from '../services/sessions.js'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { db } from '../lib/db.js'
 import { hasDatabase, tier2 } from '../test/env.js'
 import {
@@ -550,6 +551,43 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
       const after = typeof rows[0]!.after === 'string' ? JSON.parse(rows[0]!.after) : rows[0]!.after
       expect(after).toMatchObject({ presented_was_rotated: true })
       expect(await auditFor(fx.shopA, 'refresh_reuse_detected', await idOf(x.jti))).toHaveLength(0)
+    })
+
+    it('logs a structured, ids-only warning when the convergence cap is reached, and still revokes what it reached', async () => {
+      // X -> Y -> Z, then walk with a cap of ONE pass: that pass revokes rows,
+      // so convergence cannot be confirmed and the warning must fire.
+      const x = await session(fx.shopA)
+      const r1 = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', x.refreshToken)
+      const r2 = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', r1.cookies.gsms_rt!)
+      expect([r1.status, r2.status]).toEqual([200, 200])
+      const zJti = jtiOf(r2.cookies.gsms_rt!)
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        const out = await unscoped(db, (trx) => revokeSessionChain(trx, x.jti, fx.userId, 1))
+        expect(out.revokedIds.length).toBeGreaterThan(0)
+        const calls = warn.mock.calls.map((c) => String(c[0]))
+        const line = calls.find((c) => c.includes('revoke_session_chain_cap_reached'))
+        expect(line, 'no cap warning was logged').toBeDefined()
+        const parsed = JSON.parse(line!)
+        expect(parsed).toMatchObject({ level: 'warn', event: 'revoke_session_chain_cap_reached', maxPasses: 1 })
+        // Ids only: no user id, jti, name or login id anywhere in the line.
+        expect(line).not.toContain(fx.userId)
+        expect(line).not.toContain(x.jti)
+        expect(line).not.toContain(fx.loginId)
+      } finally {
+        warn.mockRestore()
+      }
+      expect(await revokedAt(zJti)).not.toBeNull()
+
+      // And the normal cap (8) on a settled chain logs nothing.
+      const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        await unscoped(db, (trx) => revokeSessionChain(trx, x.jti, fx.userId))
+        expect(quiet).not.toHaveBeenCalled()
+      } finally {
+        quiet.mockRestore()
+      }
     })
 
     it('writes revoked_at from the database clock (a back-dated DB interval, not a JS Date, drives the window)', async () => {

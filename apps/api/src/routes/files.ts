@@ -25,7 +25,8 @@ import {
   MAX_UPLOAD_BYTES,
   deleteFile,
   makeThumbnail,
-  readImageDimensions,
+  reencodeOriginal,
+  withDecodeSlot,
   resolveStoredPath,
   sniffImageType,
   writeImageFile,
@@ -159,24 +160,31 @@ filesRouter.post(
       return
     }
 
-    const original = await writeImageFile(auth.shop, sniffed.ext, file.buffer)
-
     // Sniffing only inspects a handful of leading bytes, so a file that
     // passes it can still fail to decode — truncated mid-transfer, or a
     // polyglot that merely starts with valid JPEG/PNG/WebP magic bytes.
     // That is the same "not actually a usable photo" case sniffing exists
     // to catch, so it gets the same 400 rather than surfacing as a bare 500
-    // from whatever sharp call happens to hit it first.
-    let dims: Awaited<ReturnType<typeof readImageDimensions>>
+    // from whatever sharp call happens to hit it first. Decoding happens
+    // BEFORE anything is written, so a bad file leaves nothing on disk.
+    //
+    // The stored original is a re-encode, not the uploaded bytes: that is what
+    // strips EXIF/GPS from a direct API upload (fileStorage.reencodeOriginal).
+    let reencoded: Awaited<ReturnType<typeof reencodeOriginal>>
     let thumbnail: Awaited<ReturnType<typeof makeThumbnail>>
     try {
-      dims = await readImageDimensions(file.buffer)
-      thumbnail = await makeThumbnail(file.buffer)
+      // Bounded concurrency: see DECODE_SLOTS. Waiting here costs a request
+      // some latency; it never fails one.
+      ;[reencoded, thumbnail] = await withDecodeSlot(async () => {
+        const original = await reencodeOriginal(file.buffer, sniffed.type)
+        return [original, await makeThumbnail(original.buffer)] as const
+      })
     } catch {
-      await deleteFile(original.relativePath)
       res.status(400).json({ error: 'unsupported_file_type' })
       return
     }
+    const dims = { width: reencoded.width, height: reencoded.height }
+    const original = await writeImageFile(auth.shop, sniffed.ext, reencoded.buffer)
 
     let thumb: Awaited<ReturnType<typeof writeImageFile>> | null = null
     let thumbMeta: { width: number; height: number; mime: string } | null = null

@@ -179,11 +179,23 @@ export function tokensForExistingSession(
  * repeats down the chain (a middle session may rotate while we walk), so the
  * walk is repeated until a pass revokes nothing: a revoked row can no longer
  * gain a successor, and any successor that appeared is found on the next pass.
+ *
+ * IF THE CAP IS HIT (the last allowed pass was still revoking rows, so we could
+ * not confirm nothing is left): a structured warning with ids only is logged
+ * and the function returns what it revoked. What happens next: sessions we did
+ * revoke are dead; a live tail we never reached, if there is one, stays valid
+ * until its holder next refreshes (it is rotated normally, and every rotation
+ * is a fresh chain end) or the user is signed out by another path
+ * (revokeAllSessionsForUser on disable/theft, or the next logout). It is not
+ * retried here because a chain that long means something is looping, and a
+ * human should look at the warning rather than have the request spin on it.
+ * `maxPasses` is a parameter only so a test can reach that branch.
  */
 export async function revokeSessionChain(
   trx: IdentityTx,
   jti: string,
   expectedUserId?: string,
+  maxPasses = 8,
 ): Promise<{ revokedIds: string[]; presentedWasRotated: boolean }> {
   const locked = await sql<{ id: string; replaced_by: string | null }>`
     SELECT id, replaced_by FROM sessions
@@ -194,7 +206,8 @@ export async function revokeSessionChain(
   if (!presented) return { revokedIds: [], presentedWasRotated: false }
 
   const revokedIds: string[] = []
-  for (let pass = 0; pass < 8; pass++) {
+  let lastPassRevoked = 0
+  for (let pass = 0; pass < maxPasses; pass++) {
     const result = await sql<{ id: string }>`
       WITH RECURSIVE chain AS (
         SELECT id, user_id, replaced_by FROM sessions WHERE id = ${presented.id}
@@ -205,8 +218,20 @@ export async function revokeSessionChain(
       UPDATE sessions SET revoked_at = now()
        WHERE id IN (SELECT id FROM chain) AND revoked_at IS NULL
       RETURNING id`.execute(trx)
-    if (result.rows.length === 0) break
+    lastPassRevoked = result.rows.length
+    if (lastPassRevoked === 0) break
     revokedIds.push(...result.rows.map((r) => r.id))
+  }
+  if (lastPassRevoked > 0) {
+    // Ids only: no jti, no user data, nothing that identifies a person.
+    console.warn(JSON.stringify({
+      level: 'warn',
+      event: 'revoke_session_chain_cap_reached',
+      maxPasses,
+      presentedSessionId: presented.id,
+      revokedSessionIds: revokedIds,
+      note: 'convergence not confirmed; a live tail may remain until its next refresh or a user-wide revoke',
+    }))
   }
   return { revokedIds, presentedWasRotated: presented.replaced_by !== null }
 }
