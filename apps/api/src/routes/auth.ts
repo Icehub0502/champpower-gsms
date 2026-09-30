@@ -12,15 +12,22 @@ import { sql } from 'kysely'
 import { unscoped, withShop } from '@gsms/db/client.js'
 import { randomUUID } from 'node:crypto'
 import { db } from '../lib/db.js'
-import { refreshExpiresAt, verifyRefresh, type Role } from '../lib/jwt.js'
+import { refreshExpiresAt, verifyAccess, verifyRefresh, type Role } from '../lib/jwt.js'
 import { requireAuth, type AuthedRequest } from '../middleware/requireAuth.js'
 import { asyncRouter } from '../middleware/asyncHandler.js'
 import {
   issueSession, revokeAllSessionsForUser, revokeSession, touchSession,
+  REFRESH_GRACE_SECONDS, revokeSessionChain, rotateSession, tokensForExistingSession, type IssuedTokens,
 } from '../services/sessions.js'
 
 // Every handler on this router is wrapped; see middleware/asyncHandler.ts.
 export const authRouter = asyncRouter()
+
+// Login/refresh/logout answers carry access tokens and cookies: never cacheable.
+authRouter.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store')
+  next()
+})
 
 const loginSchema = z.object({
   loginId: z.string().trim().min(1).max(200),
@@ -237,52 +244,23 @@ authRouter.post('/refresh', async (req, res) => {
   // The signature alone is not enough. The session row is what makes a token
   // revocable: revoke it and the next refresh fails, whatever the holder still
   // has in their browser.
-  const session = await db
-    .selectFrom('sessions as s')
-    .innerJoin('users as u', 'u.id', 's.user_id')
-    .select([
-      's.id as session_id', 's.user_id', 's.revoked_at', 's.expires_at',
-      's.replaced_by', 's.device', 'u.is_active',
-    ])
-    .where('s.jti', '=', payload.jti)
-    .executeTakeFirst()
-
+  const session = await loadRefreshSession(payload.jti)
   if (!session) {
     res.status(401).json({ error: 'session_revoked' })
     return
   }
 
-  /**
-   * A token that was already rotated away, presented again. The legitimate
-   * holder got a new one and would never send this; someone else has a copy.
-   * Which of the two is the thief is unknowable, so the whole chain goes.
-   *
-   * MODEL NOTE — `replaced_by` is doing two jobs here and it should not be.
-   * It means both "this session was superseded" and "treat a replay of this as
-   * theft", and those are not the same thing: /switch-shop supersedes a session
-   * deliberately and must therefore pass no successor (see that handler), which
-   * is a workaround, not the model. The intended model is a
-   * `sessions.revoked_reason` column ('logout' | 'rotated' | 'switched_shop' |
-   * 'admin' | 'reuse') with this check keying on 'rotated' alone. It is
-   * deferred on purpose: migration 0012 is being repaired for the cross-tenant
-   * DELETE hole and must not grow more surface meanwhile.
-   */
+  // MODEL NOTE — `replaced_by` is doing two jobs here and it should not be.
+  // It means both "this session was superseded" and "treat a replay of this as
+  // theft", and those are not the same thing: /switch-shop supersedes a session
+  // deliberately and must therefore pass no successor (see that handler), which
+  // is a workaround, not the model. The intended model is a
+  // `sessions.revoked_reason` column ('logout' | 'rotated' | 'switched_shop' |
+  // 'admin' | 'reuse') with this check keying on 'rotated' alone. It is
+  // deferred on purpose: migration 0012 is being repaired for the cross-tenant
+  // DELETE hole and must not grow more surface meanwhile.
   if (session.revoked_at !== null && session.replaced_by !== null) {
-    // audit_logs carries a shop_id and therefore RLS; the row has to be written
-    // inside a transaction that has declared its shop.
-    await withShop(db, payload.shop, async (trx) => {
-      await revokeAllSessionsForUser(trx, session.user_id)
-      await trx.insertInto('audit_logs').values({
-        shop_id: payload.shop,
-        actor_id: session.user_id,
-        action: 'refresh_reuse_detected',
-        entity_type: 'sessions',
-        entity_id: session.session_id,
-        before: null,
-        after: JSON.stringify({ device: session.device }),
-      }).execute()
-    })
-    res.status(401).json({ error: 'session_revoked' })
+    await answerRotatedTokenReplay(res, payload, session, parsed.data.shopId)
     return
   }
 
@@ -312,13 +290,32 @@ authRouter.post('/refresh', async (req, res) => {
     return
   }
 
-  const tokens = await unscoped(db, async (trx) => {
-    const issued = await issueSession(
-      trx, session.user_id, current, session.device,
-    )
-    await revokeSession(trx, payload.jti, issued.sessionId)
-    return issued
-  })
+  // ATOMIC ROTATION. The successor row is inserted and the parent is retired
+  // with `UPDATE ... WHERE revoked_at IS NULL` in one transaction. If another
+  // request rotated the parent between our SELECT above and here, that UPDATE
+  // matches 0 rows: we throw, the transaction rolls back (our successor row
+  // never becomes visible) and we fall through to the same grace/theft
+  // decision a late arrival gets. A parent never has two children.
+  let tokens: IssuedTokens
+  try {
+    tokens = await unscoped(db, async (trx) => {
+      const issued = await issueSession(trx, session.user_id, current, session.device)
+      if (!(await rotateSession(trx, session.session_id, issued.sessionId))) {
+        throw new RotationLost()
+      }
+      return issued
+    })
+  } catch (err) {
+    if (!(err instanceof RotationLost)) throw err
+    const fresh = await loadRefreshSession(payload.jti)
+    if (fresh && fresh.revoked_at !== null && fresh.replaced_by !== null) {
+      await answerRotatedTokenReplay(res, payload, fresh, parsed.data.shopId)
+    } else {
+      // Revoked by something other than rotation (logout, admin) in the gap.
+      res.status(401).json({ error: 'session_revoked' })
+    }
+    return
+  }
 
   setRefreshCookie(res, tokens.refreshToken)
   res.json({
@@ -331,6 +328,159 @@ authRouter.post('/refresh', async (req, res) => {
     },
   })
 })
+
+class RotationLost extends Error {}
+
+/** The session behind a refresh token, plus the state of its successor. */
+async function loadRefreshSession(jti: string) {
+  return db
+    .selectFrom('sessions as s')
+    .innerJoin('users as u', 'u.id', 's.user_id')
+    .leftJoin('sessions as n', 'n.id', 's.replaced_by')
+    .select([
+      's.id as session_id', 's.user_id', 's.revoked_at', 's.expires_at',
+      's.replaced_by', 's.device', 'u.is_active',
+      'n.jti as next_jti', 'n.revoked_at as next_revoked_at', 'n.replaced_by as next_replaced_by',
+      'n.expires_at as next_expires_at', 'n.user_id as next_user_id',
+      // Measured by the database clock, and `revoked_at` is WRITTEN with the
+      // database's now() too (services/sessions.ts), so both sides of the
+      // subtraction come from one clock and the API host's clock never enters.
+      // sql.lit: the constant is ours, and make_interval needs a number, not a
+      // bound text.
+      sql<boolean>`(s.revoked_at IS NOT NULL
+        AND now() - s.revoked_at <= make_interval(secs => ${sql.lit(REFRESH_GRACE_SECONDS)}))`
+        .as('within_grace'),
+    ])
+    .where('s.jti', '=', jti)
+    .executeTakeFirst()
+}
+
+type RefreshSession = NonNullable<Awaited<ReturnType<typeof loadRefreshSession>>>
+
+/**
+ * A refresh token that was already rotated away, presented again. Either the
+ * benign tab race (GRACE) or a replay of a stolen token (THEFT).
+ *
+ * THEFT — the legitimate holder got a new one and would never send this;
+ * someone else has a copy. Which of the two is the thief is unknowable, so the
+ * whole chain goes.
+ *
+ * GRACE — several tabs share one cookie but each de-duplicates refreshes only
+ * within itself. Two tabs waking together present the same token; the loser
+ * arrives a few milliseconds after the winner rotated it. Treating that as
+ * theft signed every tab out and lost half-filled forms, routinely. So a
+ * replay is forgiven when ALL of these hold, and otherwise it is theft exactly
+ * as before:
+ *   1. the token's session was rotated (revoked_at + replaced_by both set) —
+ *      logout / admin revoke / switch-shop set no successor and never qualify;
+ *   2. within REFRESH_GRACE_SECONDS of that rotation (database clock);
+ *   3. ONE HOP ONLY: the successor row is the immediate `replaced_by` and is
+ *      itself still live — not revoked, not rotated, not expired. A token two
+ *      rotations back therefore fails (its successor is revoked), and so does
+ *      the previous token once the successor has been used or ended;
+ *   4. same user, and the account is still active.
+ *
+ * HOW THE GRACE RESPONSE IS PRODUCED — we do NOT rotate the successor and we
+ * do NOT insert a session. We re-sign tokens for the SAME successor session
+ * (same jti): a fresh access token and a fresh refresh JWT, both naming the
+ * successor. Consequences, deliberately:
+ *   - no sibling chain: there is still exactly one child of the parent, and
+ *     the tab that lost the race ends up with a cookie for that very session,
+ *     which is what the winning tab's cookie already points at;
+ *   - whichever Set-Cookie the browser applies last, the cookie is valid, and
+ *     the next refresh by either tab rotates the successor normally;
+ *   - rotating the successor instead (parent -> child -> grandchild) would
+ *     invalidate the cookie the winning tab just received and push it into
+ *     the grace path again, chaining forgiveness with no bound;
+ *   - the parent stays revoked, so once the window closes the old token is
+ *     theft as before. A thief who replays inside 10 seconds gets the
+ *     successor's session, but the real holder's next rotation of the
+ *     successor turns any copy of it into a detectable replay.
+ * Every use is audited (refresh_grace_used) so the trade is visible.
+ */
+async function answerRotatedTokenReplay(
+  res: import('express').Response,
+  payload: { jti: string; shop: string },
+  session: RefreshSession,
+  requestedShopId: string | undefined,
+): Promise<void> {
+  const graceable =
+    session.is_active &&
+    session.within_grace &&
+    session.next_jti !== null &&
+    session.next_revoked_at === null &&
+    session.next_expires_at !== null && session.next_expires_at > new Date() &&
+    session.next_user_id === session.user_id
+
+  // A straggler: the token is inside the window, and its successor was ended on
+  // purpose (logout, switch-shop, admin) rather than rotated onwards. That is a
+  // tab whose refresh was still in flight when the user signed out, not a
+  // thief. Answering it as theft would revoke every OTHER device of the user.
+  // Plain 401, nothing else touched, no accusation in the audit log. A
+  // successor that WAS rotated onwards (next_replaced_by set) means the token
+  // is two hops back, and stays theft. Outside the window nothing changes.
+  if (
+    !graceable && session.within_grace &&
+    session.next_jti !== null && session.next_revoked_at !== null &&
+    session.next_replaced_by === null && session.next_user_id === session.user_id
+  ) {
+    res.status(401).json({ error: 'session_revoked' })
+    return
+  }
+
+  if (!graceable) {
+    // audit_logs carries a shop_id and therefore RLS; the row has to be written
+    // inside a transaction that has declared its shop.
+    await withShop(db, payload.shop, async (trx) => {
+      await revokeAllSessionsForUser(trx, session.user_id)
+      await trx.insertInto('audit_logs').values({
+        shop_id: payload.shop,
+        actor_id: session.user_id,
+        action: 'refresh_reuse_detected',
+        entity_type: 'sessions',
+        entity_id: session.session_id,
+        before: null,
+        after: JSON.stringify({ device: session.device }),
+      }).execute()
+    })
+    res.status(401).json({ error: 'session_revoked' })
+    return
+  }
+
+  const memberships = await membershipsOf(session.user_id)
+  const current = memberships.find((m) => m.shop_id === (requestedShopId ?? payload.shop))
+  if (!current) {
+    await unscoped(db, (trx) => revokeSession(trx, session.next_jti!, null))
+    res.status(403).json({ error: 'no_shop_membership' })
+    return
+  }
+
+  await withShop(db, payload.shop, async (trx) => {
+    await trx.insertInto('audit_logs').values({
+      shop_id: payload.shop,
+      actor_id: session.user_id,
+      action: 'refresh_grace_used',
+      entity_type: 'sessions',
+      entity_id: session.session_id,
+      before: null,
+      // Ids only: no device string, no personal data.
+      after: JSON.stringify({
+        presented_jti: payload.jti,
+        successor_session_id: session.replaced_by,
+        successor_jti: session.next_jti,
+      }),
+    }).execute()
+  })
+
+  const tokens = tokensForExistingSession(session.user_id, session.next_jti!, current)
+  setRefreshCookie(res, tokens.refreshToken)
+  res.json({
+    accessToken: tokens.accessToken,
+    shop: {
+      id: current.shop_id, name: current.shop_name, slug: current.shop_slug, role: current.role,
+    },
+  })
+}
 
 /**
  * Switch branch.
@@ -421,13 +571,73 @@ authRouter.get('/me', requireAuth, async (req: AuthedRequest, res) => {
   })
 })
 
-authRouter.post('/logout', requireAuth, async (req: AuthedRequest, res) => {
-  // No successor: a logout ends the chain rather than continuing it, and
-  // revokeSession leaves any `replaced_by` already on the row intact.
-  await unscoped(db, (trx) => revokeSession(trx, req.auth!.jti, null))
-  // The session row is already dead, so the cookie is inert either way — but
-  // an inert cookie still sitting in the jar is one more thing to explain
-  // during an incident, and clearing it is one line.
+/**
+ * Sign out. Deliberately NOT behind `requireAuth`.
+ *
+ * Behind it, an expired or already-rotated access token got a 401 before the
+ * handler ran: the refresh session stayed alive and the httpOnly cookie stayed
+ * in the browser, so a "signed out" tab could be revived by the next refresh —
+ * and the next person at the counter could inherit it. Logout is exactly the
+ * request that must work when the access token is no good.
+ *
+ * Authority comes from possession of a token this server signed, verified
+ * here, for the session it names:
+ *   - the refresh cookie (the credential that outlives everything else); and
+ *   - the access token, if one was sent AND is still valid — an expired one
+ *     proves nothing and is ignored, it is never decoded unverified.
+ * Each session named is revoked together with its successors (revokeSessionChain),
+ * so a session rotated X -> Y an instant before logout is dead too. Only the
+ * session's own user is touched; another device stays signed in.
+ *
+ * The answer never varies: the cookie is always cleared and the body is always
+ * 200 { ok: true }, for a missing, unknown, forged, expired or already-revoked
+ * token alike, so this endpoint cannot be used to ask whether a session exists.
+ * The cookie is cleared before any await, so it goes out even if a later step
+ * fails. Rate limited by the /api/auth limiter in app.ts.
+ */
+authRouter.post('/logout', async (req, res) => {
   clearRefreshCookie(res)
+
+  const targets = new Map<string, { jti: string; userId: string; shop: string }>()
+  const cookieToken = readRefreshToken(req)
+  if (cookieToken) {
+    try {
+      const p = verifyRefresh(cookieToken)
+      targets.set(p.jti, { jti: p.jti, userId: p.sub, shop: p.shop })
+    } catch { /* unknown, forged or expired: nothing to revoke, same answer */ }
+  }
+  const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')
+  if (bearer) {
+    try {
+      const p = verifyAccess(bearer[1]!)
+      if (!targets.has(p.jti)) targets.set(p.jti, { jti: p.jti, userId: p.sub, shop: p.shop })
+    } catch { /* expired or invalid access token: ignored */ }
+  }
+
+  for (const t of targets.values()) {
+    // audit_logs carries RLS, so the revoke and its audit row share one
+    // transaction that has declared the session's shop. Ids only, no personal data.
+    await withShop(db, t.shop, async (trx) => {
+      const { revokedIds: revoked, presentedWasRotated } =
+        await revokeSessionChain(trx, t.jti, t.userId)
+      if (revoked.length === 0) return
+      await trx.insertInto('audit_logs').values({
+        shop_id: t.shop,
+        actor_id: t.userId,
+        action: 'logout',
+        entity_type: 'sessions',
+        entity_id: revoked[0]!,
+        before: null,
+        // presented_was_rotated: the token was already superseded (a tab that
+        // lost a refresh race, logging out). Recorded, deliberately not an alarm.
+        after: JSON.stringify({
+          presented_jti: t.jti,
+          revoked_session_ids: revoked,
+          ...(presentedWasRotated ? { presented_was_rotated: true } : {}),
+        }),
+      }).execute()
+    })
+  }
+
   res.json({ ok: true })
 })

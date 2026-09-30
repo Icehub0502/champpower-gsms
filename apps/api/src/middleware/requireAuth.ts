@@ -33,6 +33,13 @@ export const requireAuth = asyncHandler(async (
   res: Response,
   next: NextFunction,
 ) => {
+  // Defence in depth: nothing behind authentication may be stored by the
+  // browser or an intermediary, so a signed-out screen can never be replayed
+  // from cache for the next person. Set before any answer, 401s included. A
+  // route that needs different caching (files.ts serves private photos with its
+  // own header) sets it later and wins; the public board is not behind this.
+  res.setHeader('Cache-Control', 'no-store')
+
   const m = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')
   if (!m) {
     res.status(401).json({ error: 'missing_token' })

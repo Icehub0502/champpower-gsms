@@ -14,6 +14,9 @@
  * `issueTokensFor`, which goes through the same services/sessions.ts the
  * endpoint uses. See the comment on that helper.
  */
+import jwt from 'jsonwebtoken'
+import { sql } from 'kysely'
+import { withShop } from '@gsms/db/client.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { db } from '../lib/db.js'
 import { hasDatabase, tier2 } from '../test/env.js'
@@ -237,6 +240,16 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
       const rotated = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s.refreshToken)
       expect(rotated.status).toBe(200)
 
+      // An immediate replay is now the tab race and is forgiven (see the
+      // grace tests below). Theft is a replay AFTER the window, so move the
+      // rotation into the past instead of sleeping.
+      await db.updateTable('sessions')
+        // Back-dated on the DATABASE clock: the grace check compares against
+        // the database's now(), so a JS Date here would test the app host's
+        // clock against the database's instead.
+        .set({ revoked_at: sql<Date>`now() - interval '60 seconds'` })
+        .where('jti', '=', s.jti).execute()
+
       const replay = await postWithRefreshCookie(api, '/api/auth/refresh', s.refreshToken)
       expect(replay.status).toBe(401)
 
@@ -268,6 +281,333 @@ describe.skipIf(!hasDatabase)(tier2('auth endpoints'), () => {
       // both are set in the same breath, as the migration's note requires.
       expect(old.revoked_at).not.toBeNull()
       expect(old.replaced_by).toBe(next.id)
+    })
+  })
+
+  // ===========================================================================
+  // Item 9, tab race — atomic rotation + one-hop grace window
+  // ===========================================================================
+  describe('item 9: concurrent refresh from two tabs (atomic rotation + grace)', () => {
+    const rowOf = (jti: string) => db.selectFrom('sessions')
+      .select(['id', 'jti', 'revoked_at', 'replaced_by']).where('jti', '=', jti).executeTakeFirstOrThrow()
+    const isRevoked = async (jti: string) => (await rowOf(jti)).revoked_at !== null
+    /** Pretend the rotation happened `seconds` ago, so no test has to sleep. */
+    const ageRotation = (jti: string, seconds: number) =>
+      db.updateTable('sessions')
+        .set({ revoked_at: sql<Date>`now() - make_interval(secs => ${seconds})` })
+        .where('jti', '=', jti).execute()
+
+    it('answers both of two simultaneous refreshes with the same cookie, on ONE chain, audited once', async () => {
+      const s = await session(fx.shopA)
+      const oldRow = await rowOf(s.jti)
+
+      const [a, b] = await Promise.all([
+        postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s.refreshToken),
+        postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s.refreshToken),
+      ])
+      expect([a.status, b.status], JSON.stringify([a.body, b.body])).toEqual([200, 200])
+
+      // One successor, not two: both tabs hold a cookie for the same session,
+      // and it is the one the parent points at.
+      const jtiA = jtiOf(a.cookies.gsms_rt!)
+      const jtiB = jtiOf(b.cookies.gsms_rt!)
+      expect(jtiA).toBe(jtiB)
+      const parent = await rowOf(s.jti)
+      const child = await rowOf(jtiA)
+      expect(parent.replaced_by).toBe(child.id)
+      expect(child.revoked_at).toBeNull()
+      expect(jtiOf(a.body.accessToken)).toBe(jtiA)
+      expect(jtiOf(b.body.accessToken)).toBe(jtiA)
+
+      // Nobody was signed out, nobody was accused, and the grace was recorded once.
+      expect((await auditFor(fx.shopA, 'refresh_grace_used', oldRow.id))).toHaveLength(1)
+      expect((await auditFor(fx.shopA, 'refresh_reuse_detected', oldRow.id))).toHaveLength(0)
+      expect((await get(api, '/api/auth/me', b.body.accessToken)).status).toBe(200)
+      // And the cookie either tab ends up with keeps working.
+      const next = await postWithRefreshCookie(api, '/api/auth/refresh', b.cookies.gsms_rt!)
+      expect(next.status).toBe(200)
+    })
+
+    it('treats the previous token as theft once the grace window has passed', async () => {
+      const s = await session(fx.shopA)
+      const rotated = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s.refreshToken)
+      expect(rotated.status).toBe(200)
+      await ageRotation(s.jti, 30)
+
+      const replay = await postWithRefreshCookie(api, '/api/auth/refresh', s.refreshToken)
+      expect(replay.status).toBe(401)
+      expect(await isRevoked(jtiOf(rotated.cookies.gsms_rt!)), 'chain survived a late replay').toBe(true)
+      const oldRow = await rowOf(s.jti)
+      expect(await auditFor(fx.shopA, 'refresh_reuse_detected', oldRow.id)).toHaveLength(1)
+      expect(await auditFor(fx.shopA, 'refresh_grace_used', oldRow.id)).toHaveLength(0)
+    })
+
+    it('treats a token two rotations back as theft even inside the window', async () => {
+      const s = await session(fx.shopA)
+      const r1 = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s.refreshToken)
+      const r2 = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', r1.cookies.gsms_rt!)
+      expect([r1.status, r2.status]).toEqual([200, 200])
+
+      const replay = await postWithRefreshCookie(api, '/api/auth/refresh', s.refreshToken)
+      expect(replay.status).toBe(401)
+      expect(await isRevoked(jtiOf(r2.cookies.gsms_rt!)), 'grace hopped two rotations').toBe(true)
+      const oldRow = await rowOf(s.jti)
+      expect(await auditFor(fx.shopA, 'refresh_reuse_detected', oldRow.id)).toHaveLength(1)
+      expect(await auditFor(fx.shopA, 'refresh_grace_used', oldRow.id)).toHaveLength(0)
+    })
+
+    it('answers a plain 401 (no theft alarm, other devices untouched) when the successor was ended on purpose, inside the window', async () => {
+      const bystander = await session(fx.shopA)
+      const s0 = await session(fx.shopA)
+      const r1 = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s0.refreshToken)
+      expect(r1.status).toBe(200)
+      // The successor ends for a reason other than rotation (logout/admin).
+      await db.updateTable('sessions').set({ revoked_at: sql<Date>`now()` })
+        .where('jti', '=', jtiOf(r1.cookies.gsms_rt!)).execute()
+
+      const replay = await postWithRefreshCookie(api, '/api/auth/refresh', s0.refreshToken)
+      expect(replay.status).toBe(401)
+      expect(replay.body).toMatchObject({ error: 'session_revoked' })
+      const oldRow = await rowOf(s0.jti)
+      expect(await auditFor(fx.shopA, 'refresh_reuse_detected', oldRow.id)).toHaveLength(0)
+      expect(await auditFor(fx.shopA, 'refresh_grace_used', oldRow.id)).toHaveLength(0)
+      expect(await isRevoked(bystander.jti), 'a straggler signed out another device').toBe(false)
+    })
+
+    it('the same case OUTSIDE the window is still theft and revokes the chain', async () => {
+      const bystander = await session(fx.shopA)
+      const s0 = await session(fx.shopA)
+      const r1 = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s0.refreshToken)
+      expect(r1.status).toBe(200)
+      await db.updateTable('sessions').set({ revoked_at: sql<Date>`now()` })
+        .where('jti', '=', jtiOf(r1.cookies.gsms_rt!)).execute()
+      await ageRotation(s0.jti, 30)
+
+      const replay = await postWithRefreshCookie(api, '/api/auth/refresh', s0.refreshToken)
+      expect(replay.status).toBe(401)
+      const oldRow = await rowOf(s0.jti)
+      expect(await auditFor(fx.shopA, 'refresh_reuse_detected', oldRow.id)).toHaveLength(1)
+      expect(await isRevoked(bystander.jti)).toBe(true)
+    })
+
+    it('never resurrects a session that was logged out or admin-revoked, inside the window', async () => {
+      // Logged out: no successor was ever recorded.
+      const s1 = await session(fx.shopA)
+      expect((await post(api, '/api/auth/logout', {}, s1.accessToken)).status).toBe(200)
+      const afterLogout = await postWithRefreshCookie(api, '/api/auth/refresh', s1.refreshToken)
+      expect(afterLogout.status).toBe(401)
+      expect(afterLogout.cookies.gsms_rt ?? '').not.toMatch(/\./)
+      const row1 = await rowOf(s1.jti)
+      expect(await auditFor(fx.shopA, 'refresh_grace_used', row1.id)).toHaveLength(0)
+
+      // Admin-revoked.
+      const s2 = await session(fx.shopA)
+      await db.updateTable('sessions').set({ revoked_at: new Date() })
+        .where('jti', '=', s2.jti).execute()
+      expect((await postWithRefreshCookie(api, '/api/auth/refresh', s2.refreshToken)).status).toBe(401)
+
+      // Rotated, then the successor deliberately logged out: the parent's
+      // token must not bring it back.
+      const s3 = await session(fx.shopA)
+      const r = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', s3.refreshToken)
+      expect(r.status).toBe(200)
+      expect((await post(api, '/api/auth/logout', {}, r.body.accessToken)).status).toBe(200)
+      const revived = await postWithRefreshCookie(api, '/api/auth/refresh', s3.refreshToken)
+      expect(revived.status).toBe(401)
+      expect(revived.cookies.gsms_rt ?? '').not.toMatch(/\./)
+      const row3 = await rowOf(s3.jti)
+      expect(await auditFor(fx.shopA, 'refresh_grace_used', row3.id)).toHaveLength(0)
+      expect((await get(api, '/api/auth/me', r.body.accessToken)).status).toBe(401)
+    })
+  })
+
+  // ===========================================================================
+  // Logout works without a good access token; authed responses are no-store
+  // ===========================================================================
+  describe('logout by refresh cookie', () => {
+    /** Logout the way a browser does: optional bearer, optional cookie. */
+    async function logout(opts: { access?: string; cookie?: string }) {
+      const res = await fetch(`${api.url}/api/auth/logout`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(opts.access ? { authorization: `Bearer ${opts.access}` } : {}),
+          ...(opts.cookie ? { cookie: `gsms_rt=${opts.cookie}` } : {}),
+        },
+        body: '{}',
+      })
+      const cleared = res.headers.getSetCookie().find((c) => c.startsWith('gsms_rt='))
+      return { status: res.status, body: await res.json().catch(() => ({})), cleared }
+    }
+    const revokedAt = async (jti: string) =>
+      (await db.selectFrom('sessions').select(['revoked_at']).where('jti', '=', jti)
+        .executeTakeFirstOrThrow()).revoked_at
+    const idOf = async (jti: string) =>
+      (await db.selectFrom('sessions').select(['id']).where('jti', '=', jti)
+        .executeTakeFirstOrThrow()).id
+
+    it('revokes the session, clears the cookie with matching attributes, and the old cookie can no longer refresh', async () => {
+      const s = await session(fx.shopA)
+      const out = await logout({ access: s.accessToken, cookie: s.refreshToken })
+      expect(out.status).toBe(200)
+      expect(out.body).toEqual({ ok: true })
+      // Same attributes the cookie was set with, or the browser keeps the old one.
+      expect(out.cleared).toMatch(/^gsms_rt=;/)
+      expect(out.cleared).toMatch(/Path=\/api\/auth/)
+      expect(out.cleared).toMatch(/HttpOnly/i)
+      expect(out.cleared).toMatch(/Secure/i)
+      expect(out.cleared).toMatch(/SameSite=Strict/i)
+      expect(await revokedAt(s.jti)).not.toBeNull()
+      expect((await postWithRefreshCookie(api, '/api/auth/refresh', s.refreshToken)).status).toBe(401)
+      expect(await auditFor(fx.shopA, 'logout', await idOf(s.jti))).toHaveLength(1)
+    })
+
+    it('still revokes and clears when the access token is expired', async () => {
+      const s = await session(fx.shopA)
+      const expired = jwt.sign(
+        { sub: fx.userId, shop: fx.shopA, role: 'owner', jti: s.jti },
+        process.env.JWT_SECRET!, { algorithm: 'HS256', expiresIn: -60 },
+      )
+      expect((await get(api, '/api/auth/me', expired)).status).toBe(401)
+      const out = await logout({ access: expired, cookie: s.refreshToken })
+      expect(out.status).toBe(200)
+      expect(out.cleared).toMatch(/^gsms_rt=;/)
+      expect(await revokedAt(s.jti)).not.toBeNull()
+      expect((await postWithRefreshCookie(api, '/api/auth/refresh', s.refreshToken)).status).toBe(401)
+    })
+
+    it('answers 200 and clears the cookie for a missing, forged or unknown token, without revoking anyone', async () => {
+      const bystander = await session(fx.shopA)
+      for (const opts of [{}, { cookie: 'not-a-jwt' }, { access: 'nope', cookie: 'nope' }]) {
+        const out = await logout(opts)
+        expect(out.status).toBe(200)
+        expect(out.body).toEqual({ ok: true })
+        expect(out.cleared).toMatch(/^gsms_rt=;/)
+      }
+      expect(await revokedAt(bystander.jti)).toBeNull()
+    })
+
+    it('presenting X after X was rotated to Y also revokes Y', async () => {
+      const x = await session(fx.shopA)
+      const rotated = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', x.refreshToken)
+      expect(rotated.status).toBe(200)
+      const yJti = jtiOf(rotated.cookies.gsms_rt!)
+
+      const out = await logout({ cookie: x.refreshToken })
+      expect(out.status).toBe(200)
+      expect(await revokedAt(yJti), 'the rotated successor survived logout').not.toBeNull()
+      expect((await get(api, '/api/auth/me', rotated.body.accessToken)).status).toBe(401)
+    })
+
+    it('does not touch another device of the same user', async () => {
+      const mine = await session(fx.shopA)
+      const other = await session(fx.shopA)
+      await logout({ cookie: mine.refreshToken })
+      expect(await revokedAt(other.jti)).toBeNull()
+    })
+
+    it('a refresh still in flight when the user logs out (X inside the window) is refused without signing out other devices', async () => {
+      const other = await session(fx.shopA)
+      const x = await session(fx.shopA)
+      const r = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', x.refreshToken)
+      expect(r.status).toBe(200)
+      expect((await logout({ cookie: r.cookies.gsms_rt! })).status).toBe(200)
+
+      const straggler = await postWithRefreshCookie(api, '/api/auth/refresh', x.refreshToken)
+      expect(straggler.status).toBe(401)
+      const xId = await idOf(x.jti)
+      expect(await auditFor(fx.shopA, 'refresh_grace_used', xId)).toHaveLength(0)
+      expect(await auditFor(fx.shopA, 'refresh_reuse_detected', xId)).toHaveLength(0)
+      expect(await revokedAt(other.jti), 'the straggler signed out another device').toBeNull()
+      expect((await get(api, '/api/auth/me', other.accessToken)).status).toBe(200)
+    })
+
+    it('the same straggler AFTER the window is theft: the user\'s sessions are revoked and it is audited', async () => {
+      const other = await session(fx.shopA)
+      const x = await session(fx.shopA)
+      const r = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', x.refreshToken)
+      expect((await logout({ cookie: r.cookies.gsms_rt! })).status).toBe(200)
+      await db.updateTable('sessions')
+        .set({ revoked_at: sql<Date>`now() - interval '60 seconds'` })
+        .where('jti', '=', x.jti).execute()
+
+      expect((await postWithRefreshCookie(api, '/api/auth/refresh', x.refreshToken)).status).toBe(401)
+      expect(await auditFor(fx.shopA, 'refresh_reuse_detected', await idOf(x.jti))).toHaveLength(1)
+      expect(await revokedAt(other.jti)).not.toBeNull()
+    })
+
+    it('logout presenting an already-rotated token records presented_was_rotated, without a theft alarm', async () => {
+      const x = await session(fx.shopA)
+      const r = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', x.refreshToken)
+      expect(r.status).toBe(200)
+      const yId = await idOf(jtiOf(r.cookies.gsms_rt!))
+
+      expect((await logout({ cookie: x.refreshToken })).status).toBe(200)
+      const rows = await withShop(db, fx.shopA, (trx) =>
+        trx.selectFrom('audit_logs').select(['after']).where('action', '=', 'logout')
+          .where('entity_id', '=', yId).execute())
+      expect(rows).toHaveLength(1)
+      const after = typeof rows[0]!.after === 'string' ? JSON.parse(rows[0]!.after) : rows[0]!.after
+      expect(after).toMatchObject({ presented_was_rotated: true })
+      expect(await auditFor(fx.shopA, 'refresh_reuse_detected', await idOf(x.jti))).toHaveLength(0)
+    })
+
+    it('writes revoked_at from the database clock (a back-dated DB interval, not a JS Date, drives the window)', async () => {
+      const x = await session(fx.shopA)
+      const r = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', x.refreshToken)
+      expect(r.status).toBe(200)
+      // Written by rotateSession with now(): within a second of the database's own now().
+      const skew = await sql<{ skew: number }>`
+        SELECT abs(extract(epoch from (now() - revoked_at)))::float8 AS skew
+          FROM sessions WHERE jti = ${x.jti}`.execute(db)
+      expect(skew.rows[0]!.skew).toBeLessThan(5)
+    })
+
+    it('logging in as B while A\'s cookie exists hands back B\'s cookie, and refresh yields B only', async () => {
+      const a = await session(fx.shopA)
+      const res = await fetch(`${api.url}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: `gsms_rt=${a.refreshToken}` },
+        body: JSON.stringify({ loginId: fx.outsiderLoginId, password: PASSWORD }),
+      })
+      expect(res.status).toBe(200)
+      const newCookie = res.headers.getSetCookie().find((c) => c.startsWith('gsms_rt='))!
+      const token = newCookie.split(';', 1)[0]!.slice('gsms_rt='.length)
+      expect(jtiOf(token)).not.toBe(a.jti)
+
+      const refreshed = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', token)
+      expect(refreshed.status).toBe(200)
+      const me = await get<{ user: { id: string } }>(api, '/api/auth/me', refreshed.body.accessToken)
+      expect(me.body.user.id).toBe(fx.outsiderId)
+    })
+
+    it('refuses grace when the successor belongs to a different user', async () => {
+      const x = await session(fx.shopA)
+      const rotated = await postWithRefreshCookie<AuthBody>(api, '/api/auth/refresh', x.refreshToken)
+      expect(rotated.status).toBe(200)
+      // Corrupt the link: point X's successor at somebody else's live session.
+      const stranger = await advisorSession()
+      const strangerRow = await db.selectFrom('sessions').select(['id'])
+        .where('jti', '=', stranger.jti).executeTakeFirstOrThrow()
+      await db.updateTable('sessions').set({ replaced_by: strangerRow.id })
+        .where('jti', '=', x.jti).execute()
+
+      const replay = await postWithRefreshCookie(api, '/api/auth/refresh', x.refreshToken)
+      expect(replay.status).toBe(401)
+      expect(replay.cookies.gsms_rt ?? '').not.toMatch(/\./)
+      expect(await auditFor(fx.shopA, 'refresh_grace_used', await idOf(x.jti))).toHaveLength(0)
+    })
+
+    it('marks authenticated responses Cache-Control: no-store', async () => {
+      const s = await session(fx.shopA)
+      const res = await fetch(`${api.url}/api/auth/me`, {
+        headers: { authorization: `Bearer ${s.accessToken}` },
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('cache-control')).toBe('no-store')
+      // Also on a refusal: an error page must not be cached either.
+      const denied = await fetch(`${api.url}/api/jobs/today`)
+      expect(denied.headers.get('cache-control')).toBe('no-store')
     })
   })
 
