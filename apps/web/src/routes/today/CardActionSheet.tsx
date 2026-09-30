@@ -22,12 +22,19 @@ interface CardActionSheetProps {
 /** What a closing move means, in the words staff would use to the customer. */
 const CLOSING_EXPLANATION: Partial<Record<StatusKey, string>> = {
   rejected: 'ลูกค้าไม่อนุมัติใบเสนอราคา',
-  carout: 'ลูกค้าเอารถกลับก่อนซ่อมเสร็จ',
+  carout: 'ลูกค้าเปลี่ยนใจก่อนเสนอราคา',
+};
+
+/** Under a closing button: when it is the right one (DECISION-carout.md §1). */
+const CLOSING_HELPER: Partial<Record<StatusKey, string>> = {
+  carout: 'ลูกค้าเปลี่ยนใจก่อนเสนอราคา',
 };
 
 /** A plain word for the one move whose label alone would hide what it skips. */
 function moveLabel(from: StatusKey, to: StatusKey): string {
   if (from === 'repairing' && to === 'ready') return `${statusOf(to).label} (ไม่ต้องตั้งศูนย์)`;
+  // The ellipsis says a question follows (TodayPage asks before ส่งแล้ว).
+  if (to === 'delivered') return `${statusOf(to).label}…`;
   return statusOf(to).label;
 }
 
@@ -92,15 +99,22 @@ export function CardActionSheet({ job, busy, errorText, onClose, onMoveStatus, o
                 <h4>ปิดงาน</h4>
                 <div className="kb-sheet-grid">
                   {closingMoves.map((to) => (
-                    <button
-                      key={to}
-                      type="button"
-                      className="btn danger"
-                      disabled={busy}
-                      onClick={() => setConfirmTo(to)}
-                    >
-                      {statusOf(to).label}…
-                    </button>
+                    <div key={to} className="kb-sheet-action">
+                      <button
+                        type="button"
+                        className="btn danger"
+                        disabled={busy}
+                        aria-describedby={CLOSING_HELPER[to] ? `kb-helper-${to}` : undefined}
+                        onClick={() => setConfirmTo(to)}
+                      >
+                        {statusOf(to).label}…
+                      </button>
+                      {CLOSING_HELPER[to] && (
+                        <small id={`kb-helper-${to}`} className="kb-sheet-helper">
+                          {CLOSING_HELPER[to]}
+                        </small>
+                      )}
+                    </div>
                   ))}
                 </div>
               </section>

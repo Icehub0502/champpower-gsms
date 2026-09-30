@@ -41,7 +41,6 @@ export function KanbanCard({ job, busy, dragging, onOpen, onPointerDown, swallow
         `tone-${job.label.tone}`,
         busy ? 'is-busy' : '',
         dragging ? 'is-dragging' : '',
-        job.status === 'delivered' ? 'is-delivered' : '',
         highlighted ? 'is-highlighted' : '',
       ]
         .filter(Boolean)

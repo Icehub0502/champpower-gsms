@@ -1,4 +1,5 @@
 import type { useCheckInPhotos } from './useCheckInPhotos';
+import { Icon } from '../../components/ui/Icon';
 import { MAX_PHOTOS } from './useCheckInPhotos';
 
 type Photos = ReturnType<typeof useCheckInPhotos>;
@@ -23,12 +24,12 @@ export function CheckInPhotos({ photos, disabled }: { photos: Photos; disabled: 
       <p className="ci-card-sub">ถ่ายรอบคันให้เห็นสภาพรถตอนรับ — รูปแรกเป็นรูปปก ({photos.photos.length}/{MAX_PHOTOS})</p>
       <div className="ci-photo-pickers">
         <label className={`btn secondary ci-photo-btn${off ? ' is-disabled' : ''}`}>
-          📷 ถ่ายรูป
+          <Icon name="camera" size={18} /> ถ่ายรูป
           <input className="sr-only" type="file" accept="image/*" capture="environment" disabled={off}
             onChange={(e) => { photos.add(e.target.files); e.target.value = ''; }} />
         </label>
         <label className={`btn secondary ci-photo-btn${off ? ' is-disabled' : ''}`}>
-          🖼️ เลือกรูป
+          <Icon name="image" size={18} /> เลือกรูป
           <input className="sr-only" type="file" accept="image/*" multiple disabled={off}
             onChange={(e) => { photos.add(e.target.files); e.target.value = ''; }} />
         </label>
@@ -36,7 +37,7 @@ export function CheckInPhotos({ photos, disabled }: { photos: Photos; disabled: 
 
       {photos.sessionExpired && (
         <div className="ci-photo-session" role="alert">
-          <p>⚠ หมดเวลาการเข้าสู่ระบบ — รูปที่ยังไม่ขึ้นยังเก็บไว้ในหน้านี้ เข้าสู่ระบบใหม่ (เช่นในแท็บอื่น) แล้วกดส่งรูปอีกครั้ง</p>
+          <p><Icon name="alert" size={15} /> หมดเวลาการเข้าสู่ระบบ — รูปที่ยังไม่ขึ้นยังเก็บไว้ในหน้านี้ เข้าสู่ระบบใหม่ (เช่นในแท็บอื่น) แล้วกดส่งรูปอีกครั้ง</p>
           <button type="button" className="btn secondary small" disabled={disabled} onClick={photos.retryAuth}>
             ส่งรูปที่ค้างอีกครั้ง
           </button>
@@ -51,7 +52,8 @@ export function CheckInPhotos({ photos, disabled }: { photos: Photos; disabled: 
               <span className="ci-photo-tags">
                 {i === 0 && <span className="ci-photo-cover">รูปปก</span>}
                 <span className="ci-photo-status" role={p.status === 'failed' ? 'alert' : undefined}>
-                  {p.status === 'failed' && '⚠ '}
+                  {p.status === 'failed' && <Icon name="alert" size={12} />}
+                  {p.status === 'failed' && ' '}
                   {STATUS_TEXT[p.status]}
                 </span>
               </span>

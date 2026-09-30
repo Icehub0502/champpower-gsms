@@ -713,7 +713,7 @@ button:focus-visible, a:focus-visible {
    the canonical tiers (BREAKPOINTS block), not ad hoc ones.
 
    Never colour alone: a bay says ว่าง or shows its plate; a car's status is
-   always its words; a delivered car says ส่งแล้ว as well as being dimmed. */
+   always its words. */
 .board-page {
   min-height: 100vh; color: var(--on-dark);
   padding: calc(20 * var(--board-u)) calc(24 * var(--board-u));
@@ -764,10 +764,6 @@ button:focus-visible, a:focus-visible {
   display: flex; align-items: center; gap: calc(20 * var(--board-u)); flex-wrap: wrap;
   transition: opacity .6s var(--ease);
 }
-/* Handed back today: de-emphasised but still readable (a customer may still
-   be looking for it), and the chip says ส่งแล้ว. Gone tomorrow — the API owns
-   the day boundary; the page filters nothing by date. */
-.board-row.is-delivered { opacity: .5; }
 
 /* Queue number is the left bookend; the status chip is the right bookend. */
 .board-row-queue { display: flex; align-items: center; flex-shrink: 0; min-width: calc(60 * var(--board-u)); }
@@ -1509,7 +1505,6 @@ button:focus-visible, a:focus-visible {
 .kb-card:hover { box-shadow: var(--shadow-md); opacity: 1; }
 .kb-card:disabled, .kb-card.is-busy { opacity: .6; cursor: wait; }
 .kb-card.is-dragging { opacity: .35; }
-.kb-card.is-delivered { opacity: .6; }
 /* The card check-in just created (TodayPage's highlightJobId) — an outline
    that fades out, not a colour swap, so it reads under any tone and for
    colour-blind staff too (never colour as the only signal). */
@@ -1566,6 +1561,71 @@ button:focus-visible, a:focus-visible {
 }
 .kb-sheet-confirm h4 { margin: 0; font-size: 15px; color: var(--red); }
 .kb-sheet-confirm p { margin: 0; font-size: 14px; line-height: 1.6; }
+.kb-sheet-action { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.kb-sheet-helper { font-size: 12px; color: var(--text-2); }
+.kb-sheet-hint { color: var(--text-2); }
+.kb-sheet-confirm p.kb-sheet-hint { font-size: 12.5px; }
+/* The ส่งแล้ว ask sits in a Modal body (a wrapping flex row), so it must claim the row. */
+.kb-deliver-confirm { width: 100%; }
+
+/* ---- "ส่งแล้ววันนี้" panel: list, job, history, undo ---- */
+.kb-dl-root { width: 100%; }
+.kb-dl { display: flex; flex-direction: column; gap: 14px; width: 100%; }
+.kb-dl-count { margin: 0; font-size: 12.5px; color: var(--text-2); font-weight: 600; }
+.kb-dl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.kb-dl-item {
+  display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left; min-height: var(--touch-min);
+  background: var(--card-bg); border: 1px solid var(--border); border-left: 5px solid var(--success);
+  border-radius: var(--radius); padding: 10px 12px; font: inherit; color: var(--text); cursor: pointer;
+}
+.kb-dl-item:hover { box-shadow: var(--shadow-md); opacity: 1; }
+.kb-dl-item:focus-visible { outline: 2px solid var(--navy); outline-offset: 2px; }
+.kb-dl-item-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.kb-dl-plate { font-size: 15px; font-weight: 800; }
+.kb-dl-time { font-size: 12px; color: var(--text-2); font-weight: 600; }
+.kb-dl-item-car { font-size: 13.5px; font-weight: 600; text-transform: uppercase; }
+.kb-dl-item-meta { font-size: 12px; color: var(--text-2); }
+.kb-dl-pager { display: flex; justify-content: space-between; gap: 8px; }
+.kb-dl-pager .btn { flex: 1 1 0; justify-content: center; min-height: var(--touch-min); }
+.kb-dl-summary { border: 1px solid var(--border); border-radius: var(--radius); background: var(--paper); padding: 12px 14px; }
+.kb-dl-summary-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--text-2); }
+.kb-dl-title { font-size: 16px; font-weight: 800; text-transform: uppercase; margin: 4px 0 8px; }
+.kb-dl-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 13.5px; }
+.kb-dl-facts dt { color: var(--text-2); }
+.kb-dl-facts dd { margin: 0; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.kb-dl-h { margin: 0 0 8px; font-size: 13px; font-weight: 700; }
+.kb-dl-h-sub { color: var(--text-2); font-weight: 600; font-size: 12px; }
+.kb-hist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.kb-hist-item { border-left: 3px solid var(--border); padding: 2px 0 2px 10px; display: flex; flex-direction: column; gap: 2px; }
+.kb-hist-item.is-undo { border-left: 3px solid var(--warning); }
+.kb-hist-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 14px; }
+.kb-hist-tag {
+  font-size: 11.5px; font-weight: 700; padding: 2px 9px; border-radius: 999px;
+  background: var(--paper); color: var(--text); border: 1px solid var(--border);
+}
+.kb-hist-item.is-undo .kb-hist-tag { background: var(--col-inspect-bg); border-color: var(--warning); }
+.kb-hist-meta { font-size: 12px; color: var(--text-2); }
+.kb-hist-reason { font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.kb-hist-reason-label { font-weight: 700; }
+.kb-undo { display: flex; flex-direction: column; gap: 10px; border: 2px solid var(--red); border-radius: var(--radius); background: var(--red-bg); padding: 12px 14px; }
+.kb-undo h4 { margin: 0; font-size: 15px; color: var(--red); }
+.kb-undo-note { margin: 0; font-size: 13px; color: var(--text-2); line-height: 1.5; }
+.kb-undo-field { display: flex; flex-direction: column; gap: 4px; }
+.kb-undo-field label { font-size: 13px; font-weight: 700; }
+.kb-undo-required { font-weight: 600; color: var(--text-2); font-size: 12px; }
+.kb-undo-field textarea {
+  width: 100%; resize: vertical; min-height: 84px; padding: 10px 12px; font: inherit; font-size: 14px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--card-bg);
+}
+/* Words and a thicker border, not only red. */
+.kb-undo-field.has-error textarea { border: 2px solid var(--red); }
+.kb-undo-foot { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+.kb-undo-error { font-size: 12.5px; font-weight: 700; color: var(--red); }
+.kb-undo-count { font-size: 12px; color: var(--text-2); margin-left: auto; }
+.kb-undo-count.is-over { color: var(--red); font-weight: 700; }
+@media (pointer: coarse) {
+  .kb-undo .btn, .kb-dl .btn { min-height: var(--touch-min); }
+}
 
 /* ---- Pulse panel ---- */
 .kb-pulse h3 { margin: 0 0 14px; font-size: 15px; font-weight: 700; }
@@ -1628,14 +1688,15 @@ button:focus-visible, a:focus-visible {
 .ci-field-hint { font-size: 12px; font-weight: 400; color: var(--text-2); }
 /* The error is words with a ⚠, and the border thickens — not colour alone. */
 .ci-field.has-error input, .ci-field.has-error select { border: 2px solid var(--red); }
-.ci-field-error { font-size: 12.5px; font-weight: 600; color: var(--red); }
+.ci-field-error { font-size: 12.5px; font-weight: 600; color: var(--red); display: flex; align-items: flex-start; gap: 5px; }
+.ci-field-error .ic, .ci-form-error .ic { flex-shrink: 0; margin-top: 2px; }
 .ci-lead { max-width: 420px; }
 .ci-match { margin: 0 0 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--navy); background: var(--paper); color: var(--navy); font-size: 14px; }
 .ci-symptom-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0 16px; }
 .ci-queue { flex: 0 1 241px; margin-bottom: 8px; }
 .ci-page .complaint-chips .chip { color: var(--chip-ink); border-color: var(--chip-line); }
 .ci-page .complaint-chips .chip.active { color: var(--on-dark); border-color: var(--navy); }
-.ci-form-error { margin: 0 0 12px; padding: 11px 13px; border-radius: 8px; background: var(--red-bg); color: var(--red); font-weight: 600; font-size: 14px; }
+.ci-form-error { margin: 0 0 12px; padding: 11px 13px; border-radius: 8px; background: var(--red-bg); color: var(--red); font-weight: 600; font-size: 14px; display: flex; align-items: flex-start; gap: 6px; }
 /* Phone: the one action is full-width at the bottom, in thumb reach. */
 .ci-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
 .ci-submit { width: 100%; justify-content: center; min-height: 48px; background: var(--red); border-color: var(--red); border-radius: var(--radius-btn); font-size: 15.5px; }

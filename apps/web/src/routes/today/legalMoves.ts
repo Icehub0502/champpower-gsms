@@ -7,13 +7,16 @@ import { isTerminal, kanbanColumnOf, type StatusKey } from '@champpower/domain';
 // already allowed.
 
 /**
- * A move that closes the job AND takes the card off the board — today exactly
- * ไม่อนุมัติ (rejected) and เอารถลง (carout). These get a confirmation step.
+ * A move that closes the job for good AND takes the card off the board — today
+ * exactly ไม่อนุมัติ (rejected) and เอารถลง (carout). These get the sheet's own
+ * confirmation step, which says they cannot be undone.
  *
- * Terminal alone is not enough: `delivered` is terminal too, but it stays on
- * the board (column 4, dimmed for the day), so ส่งแล้ว — the most ordinary
- * move on the board — must not ask "are you sure this car is leaving?".
- * Terminal with no kanban column is the exact set.
+ * `delivered` is NOT here, and the reason is not "it stays on the board" (it
+ * does not: since DECISION-carout.md it leaves at once, and kanbanColumnOf is
+ * null for it too). It is not TERMINAL — a mistaken ส่งแล้ว can be undone from
+ * the "ส่งแล้ววันนี้" panel — so it does not get the "cannot be undone" wording.
+ * It has its own confirmation (DeliverConfirmDialog, "ยืนยันว่ารถออกจากอู่แล้ว").
+ * Terminal with no kanban column is the exact set here.
  */
 export function leavesBoard(to: StatusKey): boolean {
   return isTerminal(to) && kanbanColumnOf(to) === null;

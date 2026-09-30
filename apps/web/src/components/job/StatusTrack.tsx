@@ -71,9 +71,11 @@ export function StatusStepper({ status }: StatusTrackProps) {
       {STEPPER_GROUPS.map((g, i) => {
         // A job that ended off the path (rejected/carout) is drawn as having left
         // right after the "เสนอราคา" decision point: the first 3 stages done, the
-        // remaining two never reached. That is exact for rejected. For carout it
-        // is an approximation — since DECISION-7 a car can be taken away from any
-        // open status up to aligning (CAROUT_SOURCES), so it may have got further.
+        // remaining two never reached. That is exact for rejected (it leaves from
+        // quoted). For carout it is an approximation in the OTHER direction: since
+        // DECISION-carout.md a car is only taken away from received or inspecting
+        // (CAROUT_SOURCES), i.e. BEFORE any quote exists, so it never got as far
+        // as "เสนอราคา" — the track overstates how far it went.
         const state: 'done' | 'current' | 'pending' = branchLabel
           ? i < 3
             ? 'done'

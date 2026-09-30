@@ -8,6 +8,7 @@ import {
   type SubState,
 } from '@champpower/domain';
 import type {
+  JobDetail,
   TodayJob,
   UpdateJobStatusInput,
   UpdateJobStatusResult,
@@ -21,6 +22,8 @@ import { useCardDrag } from './useCardDrag';
 import { KanbanColumnView } from './KanbanColumnView';
 import { KanbanCard } from './KanbanCard';
 import { CardActionSheet } from './CardActionSheet';
+import { DeliverConfirmDialog } from './DeliverConfirmDialog';
+import { DeliveredPanel } from './DeliveredPanel';
 import { useMinute } from './clock';
 import { KpiRow } from './KpiRow';
 import { PulsePanel } from './PulsePanel';
@@ -106,6 +109,12 @@ export function TodayPage() {
   // sheet shows the current status and sub-state after an edit, and closes by
   // itself if the job leaves the board (another user closed it, or a poll).
   const openJob = (openJobId && data?.jobs.find((j) => j.jobId === openJobId)) || null;
+  // ส่งแล้ว always asks first (DECISION-carout.md §2). Held by id and looked up
+  // on the live board, like openJob, so the dialog closes by itself if the job
+  // leaves the board underneath it.
+  const [pendingDeliverId, setPendingDeliverId] = useState<string | null>(null);
+  const pendingDeliver = (pendingDeliverId && data?.jobs.find((j) => j.jobId === pendingDeliverId)) || null;
+  const [deliveredOpen, setDeliveredOpen] = useState(false);
   const [busyJobId, setBusyJobId] = useState<string | null>(null);
   const [sheetError, setSheetError] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
@@ -160,19 +169,44 @@ export function TodayPage() {
       const result = await api.patch<UpdateJobStatusResult>(`/api/jobs/${job.jobId}/status`, body);
       applyMove(result);
       setOpenJobId(null);
+      setPendingDeliverId(null);
       void reload();
     } catch (err) {
       if (isSessionCancelled(err)) return; // logged out / switched user: no toast
       const text = moveErrorText(err, job.status, to);
-      if (openJobId === job.jobId) setSheetError(text);
-      else showToast(text, 'error');
+      const stale = isStaleBoard(err);
+      if (openJobId === job.jobId || pendingDeliverId === job.jobId) setSheetError(text);
+      // A stale refusal reloads the board, and the job the dialog was about may
+      // be gone by then — so the words also go where they cannot vanish.
+      if (!(openJobId === job.jobId || pendingDeliverId === job.jobId) || stale) showToast(text, 'error');
       // The server is the rule — never keep a move the request was refused
       // for. Reloading also recovers from `status_changed` by showing
       // whatever another user actually did.
-      if (isStaleBoard(err)) void reload();
+      if (stale) void reload();
     } finally {
       setBusyJobId(null);
     }
+  }
+
+  // The single door for every status move a person starts (tap menu or drop).
+  // ส่งแล้ว goes through the confirm dialog; nothing else is asked.
+  function requestMove(job: TodayJob, to: StatusKey) {
+    if (to === 'delivered') {
+      setSheetError(null);
+      setOpenJobId(null);
+      setPendingDeliverId(job.jobId);
+      return;
+    }
+    void moveJob(job, to);
+  }
+
+  function handleUndone(detail: JobDetail) {
+    setDeliveredOpen(false);
+    // Back on the board after the reload below; outline it once it lands.
+    scrolledToRef.current = null;
+    setHighlightJobId(detail.jobId);
+    showToast(`ย้อนกลับแล้ว — ${detail.plate ?? detail.jobNumber} กลับมาที่ “พร้อมส่ง”`, 'info');
+    void reload();
   }
 
   async function setSubState(job: TodayJob, subState: SubState | null) {
@@ -203,7 +237,7 @@ export function TodayPage() {
       showToast('วางการ์ดในคอลัมน์เดิม หรือย้ายไปคอลัมน์ที่ทำต่อไม่ได้', 'info');
       return;
     }
-    void moveJob(job, to);
+    requestMove(job, to);
   });
 
   return (
@@ -259,6 +293,9 @@ export function TodayPage() {
               </div>
             )}
           </div>
+          <button type="button" className="btn secondary" onClick={() => setDeliveredOpen(true)}>
+            <Icon name="checkCircle" size={15} /> ส่งแล้ววันนี้
+          </button>
           <Link className="btn kb-header-cta" to="/checkin">
             <Icon name="plus" size={15} /> รับรถ
           </Link>
@@ -332,10 +369,25 @@ export function TodayPage() {
           busy={busyJobId === openJob.jobId}
           errorText={sheetError}
           onClose={() => setOpenJobId(null)}
-          onMoveStatus={(to) => void moveJob(openJob, to)}
+          onMoveStatus={(to) => requestMove(openJob, to)}
           onSetSubState={(s) => void setSubState(openJob, s)}
         />
       )}
+
+      {pendingDeliver && (
+        <DeliverConfirmDialog
+          job={pendingDeliver}
+          busy={busyJobId === pendingDeliver.jobId}
+          errorText={sheetError}
+          onConfirm={() => void moveJob(pendingDeliver, 'delivered')}
+          onCancel={() => {
+            setSheetError(null);
+            setPendingDeliverId(null);
+          }}
+        />
+      )}
+
+      {deliveredOpen && <DeliveredPanel onClose={() => setDeliveredOpen(false)} onUndone={handleUndone} />}
 
       {toast && (
         // A refusal is announced (role="alert") and says so in words — the red

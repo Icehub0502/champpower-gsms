@@ -259,7 +259,7 @@ describe('other refusals keep everything typed', () => {
     );
     await submit();
     const errs = Array.from(container.querySelectorAll('.ci-field-error')).map((e) => e.textContent);
-    expect(errs).toEqual(['⚠ กรอกรุ่นรถ เช่น VIOS']);
+    expect(errs).toEqual(['กรอกรุ่นรถ เช่น VIOS']);
     expect(field('ชื่อลูกค้า').value).toBe('สมชาย');
   });
 
@@ -381,7 +381,7 @@ describe('photos', () => {
     apiUpload.mockResolvedValueOnce(uploaded(ID1)).mockRejectedValueOnce(new ApiError(413, 'file_too_large'));
     await act(async () => { pick(['ok.jpg', 'big.jpg']); await new Promise((r) => setTimeout(r, 0)); });
 
-    expect(container.textContent).toContain('⚠ อัปโหลดไม่สำเร็จ');
+    expect(container.textContent).toContain('อัปโหลดไม่สำเร็จ');
     expect(container.querySelectorAll('.ci-photo')).toHaveLength(2);
     expect(field('เลขไมล์').value).toBe('86240');
 
@@ -469,7 +469,7 @@ describe('every refusal code has its own instruction', () => {
     await fillMatched();
     apiPost.mockImplementationOnce(() => refused({ error: 'vehicle_required', message: 'x' }));
     await submit();
-    expect(Array.from(container.querySelectorAll('.ci-field-error')).map((e) => e.textContent)).toEqual(['⚠ กรอกทะเบียนรถ']);
+    expect(Array.from(container.querySelectorAll('.ci-field-error')).map((e) => e.textContent)).toEqual(['กรอกทะเบียนรถ']);
   });
 });
 
@@ -486,8 +486,8 @@ describe('400 invalid_request', () => {
     );
     await submit();
     const errs = Array.from(container.querySelectorAll('.ci-field-error')).map((e) => e.textContent);
-    expect(errs).toContain('⚠ เบอร์โทรไม่ถูกต้อง — ตัวเลข 9–10 หลัก');
-    expect(errs).toContain('⚠ กรอกเลขไมล์เป็นตัวเลข เช่น 86240');
+    expect(errs).toContain('เบอร์โทรไม่ถูกต้อง — ตัวเลข 9–10 หลัก');
+    expect(errs).toContain('กรอกเลขไมล์เป็นตัวเลข เช่น 86240');
     const general = container.querySelector('.ci-form-error')?.textContent ?? '';
     expect(general).toContain('วันที่รับรถ'); // no input on screen — named, not dropped
     // Neither the server's field text nor the typed value comes back into the page's messages.
@@ -579,7 +579,7 @@ describe('province picker and vehicle_ambiguous', () => {
       refused({ error: 'intake_details_required', message: 'x', fields: { province: ['required'] } }),
     );
     await submit();
-    expect(container.textContent).toContain('⚠ รถคันนี้ยังไม่เคยเข้าร้าน กรุณาเลือกจังหวัด');
+    expect(container.textContent).toContain('รถคันนี้ยังไม่เคยเข้าร้าน กรุณาเลือกจังหวัด');
     expect(field('จังหวัด').getAttribute('aria-invalid')).toBe('true');
     expect(document.activeElement).toBe(field('จังหวัด'));
   });

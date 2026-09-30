@@ -10,7 +10,7 @@ describe('leavesBoard — which moves need the confirmation step', () => {
     expect(leavesBoard('carout')).toBe(true);
   });
 
-  it('ส่งแล้ว is terminal but stays on the board for the day — no "are you sure" on every handover', () => {
+  it('ส่งแล้ว is undoable, so it is not in the "cannot be undone" set — it has its own dialog', () => {
     expect(leavesBoard('delivered')).toBe(false);
   });
 

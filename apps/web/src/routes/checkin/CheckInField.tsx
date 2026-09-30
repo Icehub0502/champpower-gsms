@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
+import { Icon } from '../../components/ui/Icon';
 
 /**
- * A labelled form field with its own error line. The error is words with a ⚠
+ * A labelled form field with its own error line. The error is words with a warning icon
  * mark, not only a red border — never colour as the only signal
  * (DECISION-7-today.md §4). The input inside should set aria-invalid itself;
  * `errorId` is provided so it can point aria-describedby at the message.
@@ -33,7 +34,8 @@ export function CheckInField({
       {hint && !error && <span className="ci-field-hint">{hint}</span>}
       {error && (
         <span className="ci-field-error" id={errorId} role="alert">
-          ⚠ {error}
+          <Icon name="alert" size={13} />
+          <span>{error}</span>
         </span>
       )}
     </label>

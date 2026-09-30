@@ -34,9 +34,9 @@ const SAMPLE: PublicBoardResponse = {
       statusChangedAt: '2026-09-25T03:00:00.000Z',
     },
     {
-      queueNo: 2, plate: '3ขค 9876', province: null, brand: 'Honda', model: 'Jazz', color: null,
-      bayName: null, status: 'delivered', statusLabel: 'ส่งแล้ว', estLabel: '', estMinutes: 0,
-      repairStartedAt: null, repairEndedAt: null, deliveredToday: true,
+      queueNo: 6, plate: '3ขค 9876', province: null, brand: 'Honda', model: 'Jazz', color: null,
+      bayName: null, status: 'received', statusLabel: 'รับรถ', estLabel: '', estMinutes: 0,
+      repairStartedAt: null, repairEndedAt: null, deliveredToday: false,
       statusChangedAt: '2026-09-25T02:00:00.000Z',
     },
   ],
@@ -105,16 +105,15 @@ describe('/board/:token', () => {
     expect(container.querySelector('.board-bay-plate')?.textContent).toBe('1กข 1234');
   });
 
-  it("today's delivered car is dimmed but still readable, and says ส่งแล้ว in words", async () => {
+  it('lists cars in queue order, each with its status in words', async () => {
     fetchMock.mockResolvedValue(json(SAMPLE));
     await renderAt(`/board/${TOKEN}`);
-    const delivered = container.querySelector('.board-row.is-delivered');
-    expect(delivered).not.toBeNull();
-    expect(delivered!.textContent).toContain('3ขค 9876');
-    expect(delivered!.textContent).toContain('ส่งแล้ว');
-    // Still in the workshop sorts first; the delivered car is last.
     const rows = [...container.querySelectorAll('.board-row')];
-    expect(rows.at(-1)).toBe(delivered);
+    expect(rows.map((r) => r.querySelector('.board-row-queue-n')?.textContent)).toEqual(['4', '6']);
+    expect(rows[0]!.textContent).toContain('กำลังซ่อม');
+    expect(rows[1]!.textContent).toContain('รับรถ');
+    // Nothing on the board is drawn as "handed back": that state no longer exists.
+    expect(container.querySelector('.is-delivered')).toBeNull();
   });
 
   it('has nowhere to show a photo', async () => {

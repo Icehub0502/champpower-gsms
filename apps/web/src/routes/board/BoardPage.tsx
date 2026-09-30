@@ -17,9 +17,10 @@ import { PlateBadge } from '../../components/ui/PlateBadge';
  *     Authorization even when a staff token sits in memory in the same browser.
  *   - Guess a shop. The shop is named only by the unguessable token in the
  *     URL; plain /board says it needs the owner's link and requests nothing.
- *   - Filter by date. Today's delivered cars arrive flagged `deliveredToday`
- *     and are dimmed; the API drops them the next day. The client does not
- *     decide what "today" is.
+ *   - Filter by date, or by status. A delivered car is off the board the moment
+ *     it is delivered (DECISION-carout.md, migration 0018), so the API never
+ *     sends one and this page has no "handed back" state to draw. (The
+ *     contract still carries `deliveredToday`; the API owner removes it.)
  *
  * Updates are by polling only: the public socket room is joined by shop slug,
  * which this page does not have and must not be given.
@@ -39,9 +40,8 @@ function statusCls(status: string): string {
   return STATUS_FLOW.find((s) => s.key === status)?.cls ?? '';
 }
 
-/** Queue order, cars without a number after, today's delivered cars last. */
+/** Queue order, cars without a number after. */
 function byBoardOrder(a: PublicBoardCar, b: PublicBoardCar): number {
-  if (a.deliveredToday !== b.deliveredToday) return a.deliveredToday ? 1 : -1;
   const qa = a.queueNo ?? Number.POSITIVE_INFINITY;
   const qb = b.queueNo ?? Number.POSITIVE_INFINITY;
   if (qa !== qb) return qa - qb;
@@ -50,13 +50,12 @@ function byBoardOrder(a: PublicBoardCar, b: PublicBoardCar): number {
 
 function Board({ data }: { data: PublicBoardResponse }) {
   const cars = [...data.cars].sort(byBoardOrder);
-  const inWorkshop = cars.filter((c) => !c.deliveredToday);
 
   return (
     <>
       <div className="board-bays">
         {data.bays.map((bay) => {
-          const occupant = inWorkshop.find((c) => c.bayName === bay.name);
+          const occupant = cars.find((c) => c.bayName === bay.name);
           const occupied = bay.inUse || Boolean(occupant);
           return (
             <div className={`board-bay${occupied ? ' occupied' : ''}`} key={bay.name}>
@@ -77,8 +76,8 @@ function Board({ data }: { data: PublicBoardResponse }) {
         <div className="board-rows">
           {cars.map((c) => (
             <div
-              className={`board-row${c.deliveredToday ? ' is-delivered' : ''}`}
-              key={`${c.plate}|${c.queueNo ?? ''}|${c.deliveredToday ? 'd' : 'o'}`}
+              className="board-row"
+              key={`${c.plate}|${c.queueNo ?? ''}`}
             >
               <div className="board-row-queue">
                 {c.queueNo !== null ? (
@@ -92,8 +91,8 @@ function Board({ data }: { data: PublicBoardResponse }) {
                 {c.brand} {c.model}
                 {c.color && ` · ${c.color}`}
               </div>
-              {c.bayName && !c.deliveredToday && <div className="board-row-bay">ช่อง {c.bayName}</div>}
-              {c.estLabel && !c.deliveredToday && <div className="board-row-est">ใช้เวลาประมาณ {c.estLabel}</div>}
+              {c.bayName && <div className="board-row-bay">ช่อง {c.bayName}</div>}
+              {c.estLabel && <div className="board-row-est">ใช้เวลาประมาณ {c.estLabel}</div>}
               {/* The status is always its words — the chip colour only repeats it. */}
               <span className={`status-chip ${statusCls(c.status)}`}>{c.statusLabel}</span>
             </div>

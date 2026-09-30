@@ -15,6 +15,14 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TodayResponse } from '@gsms/contracts/index.js';
 import { BREAKPOINTS } from '../../lib/breakpoints';
+// Imported statically, AFTER the vi.mock calls below (vitest hoists those above
+// every import). These used to be `await import()` inside the test body, which
+// put the cold transform of the whole page graph (AppShell, TodayPage, the
+// domain package source) inside the test's own 5 s budget. Alone that is
+// ~1 s; in the full suite, with every worker transforming at once, it is not.
+// The slow part was never the test's work — it was compiling the code under it.
+import { AppShell } from '../../components/AppShell';
+import { TodayPage } from './TodayPage';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -108,19 +116,10 @@ afterEach(() => {
   container.remove();
 });
 
-// Loaded lazily, after the client/socket mocks above are registered.
-async function loadShellAndPage() {
-  const { AppShell } = await import('../../components/AppShell');
-  const { TodayPage } = await import('./TodayPage');
-  return { AppShell, TodayPage };
-}
-
 const user = { id: '00000000-0000-4000-8000-000000000002', loginId: 'ice', name: 'Ice' };
 
 describe('/today survives resize/rotation without remounting', () => {
   it('keeps the search input, its typed text, and one board fetch across every tier', async () => {
-    const { AppShell, TodayPage } = await loadShellAndPage();
-
     await act(async () => {
       root.render(
         <MemoryRouter initialEntries={['/today']}>

@@ -14,6 +14,7 @@ import { CheckInField } from './CheckInField';
 import { CheckInPhotos } from './CheckInPhotos';
 import { useCheckInPhotos } from './useCheckInPhotos';
 import { LEAD_SOURCE_LABEL, LEAD_SOURCE_ORDER } from './leadSource';
+import { Icon } from '../../components/ui/Icon';
 import { ProvincePicker } from '../../components/ui/ProvincePicker';
 import { OwnerChangeDialog, PickCustomerDialog, VehicleAmbiguousDialog } from './RefusalDialogs';
 import { OFF_SCREEN_FIELD_LABEL, REFUSAL_TEXT, readSubmitFailure } from './refusal';
@@ -214,7 +215,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
     }
     setErrors(next);
     if (Object.values(next).some(Boolean) || !parsed.success) {
-      setFormError('กรุณาแก้ช่องที่มีเครื่องหมาย ⚠ ก่อนบันทึก');
+      setFormError('กรุณาแก้ช่องที่มีข้อความแจ้งเตือนใต้ช่องก่อนบันทึก');
       return null;
     }
     return parsed.data;
@@ -262,7 +263,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
           for (const key of Object.keys(r.fields) as (keyof typeof r.fields)[]) marked[key] = REQUIRED_TEXT[key];
           setErrors((e) => ({ ...e, ...marked }));
           if (marked.province) setFocusProvince((n) => n + 1);
-          setFormError('รถคันนี้ยังไม่เคยเข้าร้าน — กรอกช่องที่มีเครื่องหมาย ⚠ แล้วบันทึกอีกครั้ง');
+          setFormError('รถคันนี้ยังไม่เคยเข้าร้าน — กรอกช่องที่มีข้อความแจ้งเตือนใต้ช่อง แล้วบันทึกอีกครั้ง');
           break;
         }
         case 'vehicle_ambiguous':
@@ -327,7 +328,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
     }
     setErrors((e) => ({ ...e, ...marked }));
     const parts: string[] = [];
-    if (Object.keys(marked).length > 0) parts.push('แก้ช่องที่มีเครื่องหมาย ⚠');
+    if (Object.keys(marked).length > 0) parts.push('แก้ช่องที่มีข้อความแจ้งเตือนใต้ช่อง');
     if (offScreen.length > 0) parts.push(`ตรวจสอบ: ${offScreen.join(', ')}`);
     setFormError(`ข้อมูลบางส่วนไม่ถูกต้อง — ${parts.join(' และ')} แล้วบันทึกอีกครั้ง`);
   }
@@ -489,7 +490,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
                 <button key={c} type="button" className={`chip${on ? ' active' : ''}`} aria-pressed={on}
                   disabled={submitting}
                   onClick={() => setChips((p) => (on ? p.filter((x) => x !== c) : [...p, c]))}>
-                  {on && '✓ '}{c}
+                  {on && <><Icon name="check" size={13} />{' '}</>}{c}
                 </button>
               );
             })}
@@ -498,7 +499,7 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
 
         <CheckInPhotos photos={photos} disabled={submitting} />
 
-        {formError && <p className="ci-form-error" role="alert">⚠ {formError}</p>}
+        {formError && <p className="ci-form-error" role="alert"><Icon name="alert" size={15} /><span>{formError}</span></p>}
 
         <div className="ci-actions">
           <button type="submit" className="btn ci-submit" disabled={submitting || photos.pending}>

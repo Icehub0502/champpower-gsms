@@ -103,6 +103,29 @@ describe('CardActionSheet — closing moves', () => {
     expect(document.querySelector('[role="alertdialog"]')).toBeNull();
   });
 
+  it('เอารถลง says when it is the right button: the customer changed their mind before a quote', () => {
+    render(JOB);
+    const carout = button('เอารถลง');
+    const helper = document.getElementById(carout.getAttribute('aria-describedby')!);
+    expect(helper?.textContent).toBe('ลูกค้าเปลี่ยนใจก่อนเสนอราคา');
+    // ไม่อนุมัติ is a different button with no such line.
+    expect(button('ไม่อนุมัติ').getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('its own confirmation repeats the same words, not the old "before the repair finished"', () => {
+    render(JOB);
+    act(() => button('เอารถลง').click());
+    const confirm = document.querySelector('[role="alertdialog"]')!.textContent!;
+    expect(confirm).toContain('ลูกค้าเปลี่ยนใจก่อนเสนอราคา');
+    expect(confirm).not.toContain('ก่อนซ่อมเสร็จ');
+  });
+
+  it('ส่งแล้ว is marked with an ellipsis (a question follows) and hands the move to the page, which asks', () => {
+    render({ ...JOB, status: 'ready', statusLabel: 'พร้อมส่ง', column: 4, allowedMoves: ['delivered'] });
+    act(() => button('ส่งแล้ว…').click());
+    expect(onMoveStatus).toHaveBeenCalledWith('delivered');
+  });
+
   it('an ordinary move is one tap', () => {
     render(JOB);
     act(() => button('อนุมัติ').click());

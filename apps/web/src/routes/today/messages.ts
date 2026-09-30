@@ -25,6 +25,41 @@ export function moveErrorText(err: unknown, from: string, to: string): string {
   }
 }
 
+/**
+ * Thai text for a refused undo of "ส่งแล้ว" (delivered -> ready).
+ *
+ * Not moveErrorText: its 403 wording is about the customer's quote decision,
+ * which is the wrong sentence for this action.
+ */
+export function undoErrorText(err: unknown): string {
+  const code = err instanceof ApiError ? err.message : '';
+  switch (code) {
+    case 'status_changed':
+      return 'มีคนเปลี่ยนสถานะงานนี้ไปแล้ว — โหลดข้อมูลใหม่ให้แล้ว กรุณาตรวจสอบอีกครั้ง';
+    case 'illegal_status_move':
+      return 'ย้อนกลับงานนี้ไม่ได้ — งานไม่ได้อยู่ในสถานะ “ส่งแล้ว” หรือถูกดำเนินการต่อไปแล้ว';
+    case 'forbidden':
+      return 'คุณไม่มีสิทธิ์ย้อนกลับรายการนี้';
+    default:
+      return commonErrorText(err);
+  }
+}
+
+/** Words for one server-side field code on the reason box (400 `fields.reason`). */
+export function reasonFieldText(code: string | undefined): string {
+  switch (code) {
+    case 'required':
+    case 'too_small':
+      return 'กรุณากรอกเหตุผลที่ย้อนกลับ';
+    case 'too_big':
+      return 'เหตุผลยาวเกินไป (ไม่เกิน 500 ตัวอักษร)';
+    case 'not_allowed':
+      return 'การย้อนกลับครั้งนี้ไม่รับเหตุผล — โหลดข้อมูลงานใหม่แล้วลองอีกครั้ง';
+    default:
+      return 'เหตุผลไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง';
+  }
+}
+
 export function subStateErrorText(err: unknown, subState: SubState | null, status: string): string {
   const code = err instanceof ApiError ? err.message : '';
   switch (code) {
@@ -49,4 +84,9 @@ function commonErrorText(err: unknown): string {
 /** Did the server refuse because the board the user was looking at is stale? */
 export function isStaleBoard(err: unknown): boolean {
   return err instanceof ApiError && (err.message === 'status_changed' || err.message === 'job_not_found');
+}
+
+/** Refusals that mean the job is no longer what the panel showed. */
+export function isStaleJob(err: unknown): boolean {
+  return isStaleBoard(err) || (err instanceof ApiError && err.message === 'illegal_status_move');
 }
