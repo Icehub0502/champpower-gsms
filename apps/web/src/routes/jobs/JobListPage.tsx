@@ -114,14 +114,6 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
     await api.patch<Job>(`/api/jobs/${jobId}`, { status, ...bayExtra });
   }
 
-  // "นัดวันมาทำ" always carries the appointment date — setting the status without one
-  // loses any record of when the customer is coming back.
-  async function scheduleJob(jobId: string, appointmentDate: string) {
-    const job = jobs.rows.find((j) => j.id === jobId);
-    if (!job || !appointmentDate) return;
-    await api.patch<Job>(`/api/jobs/${jobId}`, { status: 'scheduled' as StatusKey, appointmentDate });
-  }
-
   async function assignBay(jobId: string, bay: string) {
     const job = jobs.rows.find((j) => j.id === jobId);
     if (!job) return;
@@ -376,7 +368,6 @@ export function JobListPage({ onOpenJob }: { onOpenJob: (jobId: string) => void 
                 onOpen={onOpenJob}
                 onToggleSelect={toggleSelected}
                 onSetStatus={setStatus}
-                onSchedule={scheduleJob}
                 onAssignBay={assignBay}
                 onAssignTechnician={assignTechnician}
                 onDelete={deleteJob}

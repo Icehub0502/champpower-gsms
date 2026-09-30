@@ -38,7 +38,6 @@ interface JobCardProps {
   onOpen: (jobId: string) => void;
   onToggleSelect: (jobId: string) => void;
   onSetStatus: (jobId: string, status: StatusKey) => void;
-  onSchedule: (jobId: string, appointmentDate: string) => void;
   onAssignBay: (jobId: string, bay: string) => void;
   onAssignTechnician: (jobId: string, name: string) => void;
   onDelete: (jobId: string) => void;
@@ -71,7 +70,6 @@ export function JobCard({
   onOpen,
   onToggleSelect,
   onSetStatus,
-  onSchedule,
   onAssignBay,
   onAssignTechnician,
   onDelete,
@@ -79,8 +77,6 @@ export function JobCard({
 }: JobCardProps) {
   const [picker, setPicker] = useState<Picker>(null);
   const [techInput, setTechInput] = useState('');
-  // null = the status modal is not currently asking for an appointment date.
-  const [schedulingDate, setSchedulingDate] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({
     plate: '',
     province: '',
@@ -140,13 +136,6 @@ export function JobCard({
 
   function closeStatusPicker() {
     setPicker(null);
-    setSchedulingDate(null);
-  }
-
-  function confirmSchedule() {
-    if (!schedulingDate) return;
-    onSchedule(job.id, schedulingDate);
-    closeStatusPicker();
   }
 
   return (
@@ -336,12 +325,6 @@ export function JobCard({
               key={s.key}
               className={`chip ${job.status === s.key ? 'active' : ''}`}
               onClick={() => {
-                // "นัดวันมาทำ" must never be set without an appointment date — this is the
-                // same two-step confirm the job-detail decision row already uses.
-                if (s.key === 'scheduled') {
-                  setSchedulingDate(job.appointmentDate || todayKey());
-                  return;
-                }
                 onSetStatus(job.id, s.key);
                 closeStatusPicker();
               }}
@@ -349,19 +332,6 @@ export function JobCard({
               {s.label}
             </button>
           ))}
-          {schedulingDate !== null && (
-            <div className="row-flex" style={{ width: '100%', marginTop: 8 }}>
-              <input
-                type="date"
-                value={schedulingDate}
-                onChange={(e) => setSchedulingDate(e.target.value)}
-                style={{ flex: '1 1 140px' }}
-              />
-              <button className="btn small" onClick={confirmSchedule} disabled={!schedulingDate}>
-                ยืนยันวันนัด
-              </button>
-            </div>
-          )}
         </Modal>
       )}
 
@@ -436,11 +406,6 @@ export function JobCard({
                   className={`btn small decide ${d.cls}`}
                   onClick={(e) => {
                     stop(e);
-                    if (key === 'scheduled') {
-                      setSchedulingDate(job.appointmentDate || todayKey());
-                      setPicker('status');
-                      return;
-                    }
                     onSetStatus(job.id, key);
                   }}
                 >
@@ -457,7 +422,7 @@ export function JobCard({
 
 function StatusSegs({ job }: { job: Job }) {
   let path: string[];
-  if (job.status === 'scheduled' || job.status === 'rejected') {
+  if (job.status === 'rejected') {
     path = ['received', 'inspecting', 'quoted', job.status, 'carout'];
   } else if (job.status === 'carout') {
     path = ['received', 'inspecting', 'quoted', '—', 'carout'];

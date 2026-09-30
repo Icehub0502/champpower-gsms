@@ -1,5 +1,19 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+
+// `@champpower/domain`'s package.json points `main` at `./dist/index.js`, which
+// nothing here rebuilds first — `vite dev` and `vite build` (and therefore this
+// app's production bundle) would otherwise read whatever was last built by hand,
+// silently stale the moment someone edits packages/domain/src without also
+// running its build. Aliased straight to source instead, same fix and the same
+// reasoning as apps/web/vitest.config.ts (see its comment) — this app bundles
+// @champpower/domain into its own output regardless, so resolving it from source
+// changes nothing about what other packages see at runtime; apps/api's own dev
+// server has the equivalent problem and is being fixed separately by whoever
+// owns that app. `fileURLToPath` rather than `.pathname`: on Windows the latter
+// yields `/C:/...`, which is not a path Node/esbuild accepts.
+const domainSrc = fileURLToPath(new URL('../../packages/domain/src/index.ts', import.meta.url))
 
 // The API's real port. `.env` at the repo root says PORT=3000, and that is
 // what this proxy — and now everything else in this repo — treats as
@@ -13,6 +27,9 @@ const API_TARGET = 'http://localhost:3000'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: { '@champpower/domain': domainSrc },
+  },
   server: {
     // Lets Vite's dev server accept requests through an ngrok tunnel (or any
     // other host) instead of only localhost — needed for temporary

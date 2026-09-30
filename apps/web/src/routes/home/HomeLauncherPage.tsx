@@ -22,7 +22,7 @@ export function HomeLauncherPage() {
             <span className="launcher-chip">STAFF APP</span>
             <h2>แอปสำหรับพนักงาน</h2>
             <p>รับรถ • ใบงาน • อะไหล่ • รายได้ • ตั้งค่า</p>
-            <button type="button" className="btn" onClick={() => navigate('/jobs')}>
+            <button type="button" className="btn" onClick={() => navigate('/today')}>
               เข้าสู่ระบบงาน
             </button>
           </div>

@@ -5,14 +5,13 @@ interface StatusTrackProps {
 }
 
 const BRANCH_LABELS: Partial<Record<StatusKey, string>> = {
-  scheduled: 'นัดวันมาทำ',
   rejected: 'ไม่อนุมัติ',
   carout: 'เอารถลง',
 };
 
 /**
  * The straight-through track for jobs still on MAIN_PATH (or sitting at the quoted
- * decision point). A job that branched off (scheduled/rejected/carout) gets its own
+ * decision point). A job that ended off the path (rejected/carout) gets its own
  * small badge instead — rendering it as "3 of 8 done, 5 to go" on MAIN_PATH would lie,
  * since it's never coming back to that path.
  */
@@ -70,9 +69,11 @@ export function StatusStepper({ status }: StatusTrackProps) {
   return (
     <div className="status-stepper">
       {STEPPER_GROUPS.map((g, i) => {
-        // A branched job (scheduled/rejected/carout) diverged right after the
-        // "เสนอราคา" decision point, so the first 3 stages are done and it never
-        // reaches the remaining two on this path.
+        // A job that ended off the path (rejected/carout) is drawn as having left
+        // right after the "เสนอราคา" decision point: the first 3 stages done, the
+        // remaining two never reached. That is exact for rejected. For carout it
+        // is an approximation — since DECISION-7 a car can be taken away from any
+        // open status up to aligning (CAROUT_SOURCES), so it may have got further.
         const state: 'done' | 'current' | 'pending' = branchLabel
           ? i < 3
             ? 'done'

@@ -18,7 +18,6 @@ import {
   prevStatusOf,
   repairCycle,
   statusOf,
-  todayKey,
   WARRANTY_OPTIONS,
   warrantyOptionLabel,
   warrantyStatus,
@@ -63,7 +62,6 @@ export function JobDetailPage() {
   const config = useDocument<ShopConfig>('/api/config');
   const technicians = config.data?.technicians || [];
 
-  const [schedulingDate, setSchedulingDate] = useState<string | null>(null);
   const [techInput, setTechInput] = useState('');
   const [showTechInput, setShowTechInput] = useState(false);
   const [warrantyDays, setWarrantyDays] = useState<number>(0);
@@ -116,12 +114,6 @@ export function JobDetailPage() {
     } finally {
       setBusy(false);
     }
-  }
-
-  async function confirmSchedule() {
-    if (!schedulingDate) return;
-    await pushStatus('scheduled', { appointmentDate: schedulingDate });
-    setSchedulingDate(null);
   }
 
   async function assignTechnician(name: string) {
@@ -383,20 +375,12 @@ export function JobDetailPage() {
                   key={key}
                   className={`btn decide st-${key}`}
                   disabled={busy}
-                  onClick={() => (key === 'scheduled' ? setSchedulingDate(todayKey()) : pushStatus(key))}
+                  onClick={() => pushStatus(key)}
                 >
                   {statusOf(key).label}
                 </button>
               ))}
             </div>
-            {schedulingDate !== null && (
-              <div className="row-flex" style={{ marginTop: 10 }}>
-                <input type="date" value={schedulingDate} onChange={(e) => setSchedulingDate(e.target.value)} />
-                <button className="btn" onClick={confirmSchedule} disabled={busy}>
-                  ยืนยันวันนัด
-                </button>
-              </div>
-            )}
           </div>
         ) : (
           <div className="row-flex">

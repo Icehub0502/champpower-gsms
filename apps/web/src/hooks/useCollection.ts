@@ -1,11 +1,18 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api/client';
 import { getSocket } from '../lib/api/socket';
+import { isSessionCancelled } from '../lib/api/sessionCancelled';
 
 export interface CollectionState<T> {
   loading: boolean;
   rows: T[];
   fromCache: boolean;
+  /**
+   * Set when the LAST load failed, null after a successful one. `rows: []`
+   * with `error: null` means "there is nothing"; `error` set means "we could
+   * not find out" — never render the second as the first.
+   */
+  error: Error | null;
 }
 
 /** '/api/master-parts' -> 'master-part', '/api/jobs' -> 'job', '/api/models?x=1' -> 'model' */
@@ -33,7 +40,7 @@ function toCamel(kebab: string): string {
  * guessing — safer than silently corrupting local state.
  */
 export function useCollection<T extends { id: string }>(path: string, socketEvent?: string): CollectionState<T> {
-  const [state, setState] = useState<CollectionState<T>>({ loading: true, rows: [], fromCache: false });
+  const [state, setState] = useState<CollectionState<T>>({ loading: true, rows: [], fromCache: false, error: null });
 
   useEffect(() => {
     let cancelled = false;
@@ -43,10 +50,22 @@ export function useCollection<T extends { id: string }>(path: string, socketEven
       api
         .get<T[]>(path)
         .then((rows) => {
-          if (!cancelled) setState({ loading: false, rows, fromCache: false });
+          if (!cancelled) setState({ loading: false, rows, fromCache: false, error: null });
         })
-        .catch(() => {
-          if (!cancelled) setState({ loading: false, rows: [], fromCache: false });
+        .catch((err: unknown) => {
+          // A failed request is NOT an empty collection. This used to set
+          // `rows: []` and nothing else, so a 404 from an unmounted endpoint
+          // rendered as "no jobs" while the workshop was full of cars. `error`
+          // now says so; the rows already on screen are kept rather than
+          // blanked, so a dropped refetch does not wipe a list that was right.
+          // A request cancelled by logout / a change of user is not a failure.
+          if (!cancelled && !isSessionCancelled(err)) {
+            setState((s) => ({
+              ...s,
+              loading: false,
+              error: err instanceof Error ? err : new Error(String(err)),
+            }));
+          }
         });
     }
 

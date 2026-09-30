@@ -2,11 +2,21 @@
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
     "target": "es2023",
-    "lib": ["ES2023", "DOM"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "esnext",
     "types": ["vite/client"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
+
+    // Mirrors vite.config.ts's resolve.alias (see its comment): `tsc -b` (the
+    // type-check half of `npm run build`) does not read vite's config at all,
+    // so without this it keeps resolving @champpower/domain to its package.json
+    // `main`/`types` — the possibly-stale packages/domain/dist — even after the
+    // vite alias was added to fix the bundling half. Both must point at source
+    // or a stale dist can still pass the build while lying about types.
+    "paths": {
+      "@champpower/domain": ["../../packages/domain/src/index.ts"]
+    },
 
     /* Bundler mode */
     "moduleResolution": "bundler",

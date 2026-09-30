@@ -4,7 +4,7 @@ import { ApiError } from '../../lib/api/client';
 import { BoltIcon } from '../../components/ui/BoltIcon';
 
 export function LoginPage() {
-  const { login } = useAuth();
+  const { login, logoutError } = useAuth();
   // "loginId": the API accepts either an email (office staff) or a bare
   // username (technicians with no email — CLAUDE.md §8 "users.login_id" is
   // "อีเมล หรือ username สำหรับช่างที่ไม่มีอีเมล"), so this is not necessarily
@@ -64,6 +64,7 @@ export function LoginPage() {
             <BoltIcon size={20} /> เข้าสู่ระบบ
           </h1>
           <p className="login-sub">ระบบจัดการอู่บริการ (GSMS)</p>
+          {logoutError && <div className="login-error" role="alert">{logoutError}</div>}
           {error && <div className="login-error">{error}</div>}
           <label>
             ชื่อผู้ใช้งาน

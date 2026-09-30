@@ -1,9 +1,7 @@
-import { Navigate, Outlet, Route, Routes, useNavigate } from 'react-router-dom';
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth, type AuthUser, type Role } from './hooks/useAuth';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { LoginPage } from './routes/auth/LoginPage';
-import { JobListPage } from './routes/jobs/JobListPage';
-import { JobDetailPage } from './routes/jobs/JobDetailPage';
 import { CheckInPage } from './routes/checkin/CheckInPage';
 import { BlankFormPage } from './routes/print/BlankFormPage';
 import { BoardPage } from './routes/board/BoardPage';
@@ -11,13 +9,19 @@ import { LookupPage } from './routes/lookup/LookupPage';
 import { AppShell } from './components/AppShell';
 import { HomeLauncherPage } from './routes/home/HomeLauncherPage';
 import { NotYetAvailable } from './components/ui/NotYetAvailable';
+import { TodayPage } from './routes/today/TodayPage';
 
 // /board (waiting-room display) and /lookup (customer "find my car" page, reached via
 // QR code) are both public and must never require login — matched before the authed
 // catch-all below, so neither ever touches useAuth at all.
+//
+// The board is named by the shop's unguessable token (/board/:token, CLAUDE.md §8
+// rule 7). Plain /board stays public too, and only says the TV needs the owner's
+// link — it never lists shops and never guesses one.
 export function App() {
   return (
     <Routes>
+      <Route path="/board/:token" element={<BoardPage />} />
       <Route path="/board" element={<BoardPage />} />
       <Route path="/lookup" element={<LookupPage />} />
       <Route path="/*" element={<AuthedApp />} />
@@ -27,6 +31,7 @@ export function App() {
 
 function AuthedApp() {
   const auth = useAuth();
+  const location = useLocation();
   const online = useOnlineStatus();
 
   // WO-004/T6 condition 7: an explicit "checking" state. `auth.loading` is
@@ -39,6 +44,13 @@ function AuthedApp() {
   }
 
   if (!auth.user || !auth.shop) {
+    // The URL must not outlive the identity: without this, logging out on
+    // /checkin and signing in as someone else lands that person on /checkin.
+    // Signed-out always means "/", so the next login always starts at the
+    // launcher and the person chooses where to go. (Replace, no return-to.)
+    // Deliberate trade-off: a deep link the person was on is lost after a
+    // re-login. Restoring it would hand one person's location to the next.
+    if (location.pathname !== '/') return <Navigate to="/" replace />;
     return <LoginPage />;
   }
 
@@ -55,7 +67,9 @@ function AuthedApp() {
     // route matcher builds its own elements independently of any `key` prop
     // placed on a `<Route>` in JSX, so the key has to live here, on the
     // actual rendered component.
-    <Routes key={auth.shop.id}>
+    // Keyed on user AND shop: a different person signing in to the same shop
+    // must not inherit any mounted state either.
+    <Routes key={`${auth.user.id}:${auth.shop.id}`}>
       {/* Home Launcher is its own full-screen surface (post-login app picker),
           shown without the sidebar/top-bar shell — that shell is for the staff
           console itself, not for choosing which surface to enter. */}
@@ -65,8 +79,7 @@ function AuthedApp() {
           <ShellLayout user={auth.user} role={auth.role} online={online} onLogout={auth.logout} />
         )}
       >
-        <Route path="/jobs" element={<JobListRoute />} />
-        <Route path="/jobs/:jobId" element={<JobDetailPage />} />
+        <Route path="/today" element={<TodayPage />} />
         <Route path="/checkin" element={<CheckInRoute />} />
         <Route path="/print/blank-checkin" element={<BlankFormPage />} />
 
@@ -75,6 +88,15 @@ function AuthedApp() {
             apps/api/src/app.ts does not mount (finance/catalog/settings/etc.
             are all MySQL-era routes), and each page file is kept on disk,
             unported, for a later phase to pick up against @gsms/contracts. */}
+        {/* /jobs and /jobs/:jobId joined this list on 25 Sep 2026: both called
+            GET /api/jobs (and friends) with nothing mounted at that path, so
+            useCollection quietly reported an empty/missing job as "there is
+            nothing" — an empty job list with cars in the workshop, or "ไม่พบ
+            งานนี้" right after a successful check-in. /today is the only
+            place jobs are read or moved now; JobListPage.tsx/JobDetailPage.tsx
+            stay on disk, unported, same as every other row in this list. */}
+        <Route path="/jobs" element={<NotYetAvailable title="รายการงาน (เดิม)" />} />
+        <Route path="/jobs/:jobId" element={<NotYetAvailable title="รายละเอียดงาน (เดิม)" />} />
         <Route path="/finance" element={<NotYetAvailable title="รายได้" />} />
         <Route path="/models" element={<NotYetAvailable title="รุ่นรถ / อะไหล่" />} />
         <Route path="/models/:modelId" element={<NotYetAvailable title="รุ่นรถ / อะไหล่" />} />
@@ -93,7 +115,7 @@ function AuthedApp() {
         <Route path="/settings/technicians" element={<NotYetAvailable title="ช่าง" />} />
         <Route path="/settings/trash" element={<NotYetAvailable title="ถังขยะ" />} />
 
-        <Route path="*" element={<Navigate to="/jobs" replace />} />
+        <Route path="*" element={<Navigate to="/today" replace />} />
       </Route>
     </Routes>
   );
@@ -117,12 +139,16 @@ function ShellLayout({
   );
 }
 
-function JobListRoute() {
-  const navigate = useNavigate();
-  return <JobListPage onOpenJob={(jobId) => navigate(`/jobs/${jobId}`)} />;
-}
-
 function CheckInRoute() {
   const navigate = useNavigate();
-  return <CheckInPage onCreated={(jobId) => navigate(`/jobs/${jobId}`)} />;
+  // /jobs/:jobId is closed (see the route list above) and there is no
+  // job-detail page to land on. Staff must see the car they just received —
+  // "ไม่พบงานนี้" right after a successful save would tell them their work
+  // was lost — so this goes to /today instead, carrying the new job's id so
+  // the board can find and highlight its card (TodayPage's highlightJobId).
+  return (
+    <CheckInPage
+      onCreated={(jobId) => navigate('/today', { state: { highlightJobId: jobId } })}
+    />
+  );
 }

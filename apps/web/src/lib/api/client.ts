@@ -12,6 +12,8 @@
 // apps/web/vite.config.ts for why same-origin is what makes SameSite=Strict
 // work at all in dev, and CORS unnecessary.
 
+import { SessionCancelledError, isSessionCancelled } from './sessionCancelled';
+
 let accessToken: string | null = null;
 
 /** Only useAuth.ts (login/refresh/switch-shop/logout) may call this. Every
@@ -60,12 +62,20 @@ interface RequestOptions {
    * with NO Content-Type header so the browser writes the multipart boundary.
    * A FormData can be sent twice, so the one retry after a refresh resends it. */
   formData?: FormData;
+  /** Internal: aborts the fetch (used for the refresh call only). */
+  signal?: AbortSignal;
+  /** Internal: epoch of the original call, carried onto the post-refresh retry. */
+  _epoch?: number;
+  /** Internal: bearer to send instead of the in-memory token (logout captures
+   * the token, clears memory, and still sends it once). */
+  _bearer?: string | null;
 }
 
 async function rawFetch(method: string, path: string, opts: RequestOptions): Promise<Response> {
-  const { body, auth = true, formData } = opts;
+  const { body, auth = true, formData, signal } = opts;
   const headers: Record<string, string> = formData ? {} : { 'Content-Type': 'application/json' };
-  if (auth && accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  const bearer = opts._bearer !== undefined ? opts._bearer : auth ? accessToken : null;
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
 
   return fetch(path, {
     method,
@@ -75,6 +85,7 @@ async function rawFetch(method: string, path: string, opts: RequestOptions): Pro
     // credentials: 'include' or the browser withholds ALL cookies, auth ones
     // included, on a same-origin fetch that doesn't ask for them explicitly.
     credentials: 'include',
+    signal,
     body: formData ?? (body === undefined ? undefined : JSON.stringify(body)),
   });
 }
@@ -104,28 +115,92 @@ export function setRefreshResultHandler(handler: typeof onRefreshResult): void {
   onRefreshResult = handler;
 }
 
-async function refreshOnce(): Promise<boolean> {
+/**
+ * Session epoch. Bumped whenever the identity behind the in-memory token
+ * changes (login, logout, switch-shop, forced sign-out). Every authenticated
+ * request and every refresh remembers the epoch it started under; once that no
+ * longer matches, its outcome belongs to a session that no longer exists and
+ * it must not install a token, sign anyone out, retry, or hand data back.
+ * Without this, a 401 that user A's request got just before logout could
+ * refresh, retry (under user B's token) or sign B out after B logged in.
+ */
+let sessionEpoch = 0;
+let refreshAbort: AbortController | null = null;
+
+export function getSessionEpoch(): number {
+  return sessionEpoch;
+}
+
+export { SessionCancelledError, isSessionCancelled };
+
+/** Ends the current session generation: bumps the epoch, aborts any refresh
+ * still on the wire and forgets it so nobody can join it. Only useAuth.ts calls
+ * this (login / logout / switch-shop / forced sign-out). */
+export function invalidateSession(): void {
+  sessionEpoch += 1;
+  refreshAbort?.abort();
+  refreshAbort = null;
+  refreshInFlight = null;
+}
+
+/** True from the moment logout starts until it has finished. While set, every
+ * identity-scoped request and every refresh fails locally and never reaches the
+ * network: a poll that fired now would carry a token about to be revoked, could
+ * get a 401 and start a refresh with a cookie that is being revoked. */
+let logoutInFlight = false;
+
+/** Starts a logout: blocks scoped traffic, ends the session generation, takes the
+ * token OUT of memory and returns it so the logout POST alone can still send it.
+ * Pair with endLogout() in a finally. Only useAuth.ts calls this. */
+export function beginLogout(): string | null {
+  logoutInFlight = true;
+  const held = accessToken;
+  invalidateSession();
+  accessToken = null;
+  return held;
+}
+
+export function endLogout(): void {
+  logoutInFlight = false;
+}
+
+async function refreshOnce(epoch: number, signal: AbortSignal): Promise<boolean> {
   try {
-    const res = await rawFetch('POST', '/api/auth/refresh', { body: {}, auth: false });
+    const res = await rawFetch('POST', '/api/auth/refresh', { body: {}, auth: false, signal });
+    if (epoch !== sessionEpoch) return false;
     if (!res.ok) {
       onRefreshResult?.(false);
       return false;
     }
     const data = (await res.json()) as { accessToken: string };
+    if (epoch !== sessionEpoch) return false;
     setAccessToken(data.accessToken);
     onRefreshResult?.(true, data.accessToken);
     return true;
   } catch {
+    // An aborted or stale refresh says nothing about the CURRENT session, so
+    // it must not sign it out.
+    if (epoch !== sessionEpoch) return false;
     onRefreshResult?.(false);
     return false;
   }
 }
 
 function refresh(): Promise<boolean> {
+  if (logoutInFlight) return Promise.resolve(false);
   if (!refreshInFlight) {
-    refreshInFlight = refreshOnce().finally(() => {
-      refreshInFlight = null;
+    const epoch = sessionEpoch;
+    const controller = new AbortController();
+    refreshAbort = controller;
+    const p: Promise<boolean> = refreshOnce(epoch, controller.signal).finally(() => {
+      // Identity check: invalidateSession() may already have replaced this
+      // slot with a newer refresh that must not be cleared from under it.
+      if (refreshInFlight === p) {
+        refreshInFlight = null;
+        refreshAbort = null;
+      }
     });
+    refreshInFlight = p;
   }
   return refreshInFlight;
 }
@@ -144,21 +219,39 @@ async function parseError(res: Response): Promise<never> {
 }
 
 async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
-  const res = await rawFetch(method, path, opts);
+  // Public calls (auth:false) carry no identity, so they are never cancelled.
+  const scoped = opts.auth !== false;
+  const epoch = opts._epoch ?? sessionEpoch;
+  const stale = () => scoped && epoch !== sessionEpoch;
 
-  if (res.status === 401 && opts.auth !== false && !opts._isRetry) {
+  // Nothing tied to an identity goes out while that identity is being revoked.
+  if (scoped && logoutInFlight) throw new SessionCancelledError();
+
+  let res: Response;
+  try {
+    res = await rawFetch(method, path, opts);
+  } catch (err) {
+    if (stale()) throw new SessionCancelledError();
+    throw err;
+  }
+  if (stale()) throw new SessionCancelledError();
+
+  if (res.status === 401 && scoped && !opts._isRetry) {
     // Expired access token, not necessarily a dead session — try once to
     // recover it through the shared single-flight refresh, then replay this
     // one request exactly once. A second 401 after that is a real
-    // "sign in again", not retried further.
+    // "sign in again", not retried further. If the session changed while we
+    // waited, the replay would go out under the NEW user's token — never do that.
     const ok = await refresh();
-    if (ok) return request<T>(method, path, { ...opts, _isRetry: true });
+    if (stale()) throw new SessionCancelledError();
+    if (ok) return request<T>(method, path, { ...opts, _isRetry: true, _epoch: epoch });
   }
 
   if (!res.ok) return parseError(res);
 
   if (res.status === 204) return undefined as T;
   const text = await res.text();
+  if (stale()) throw new SessionCancelledError();
   return (text ? JSON.parse(text) : undefined) as T;
 }
 

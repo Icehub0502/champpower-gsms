@@ -1,3 +1,26 @@
+/* =========================================================================
+   BREAKPOINTS — the only width breakpoints for layout (docs/UI-SPEC-FIGMA.md §4)
+   -------------------------------------------------------------------------
+   Custom properties cannot be used inside a media query, so these are written
+   out literally wherever needed. Copy the query text below EXACTLY; do not
+   invent a new width. Mirror in JS: src/lib/breakpoints.ts. The test
+   src/lib/breakpoints.test.ts fails on any width query not listed here
+   (pre-existing ad hoc queries on unrelated pages are allow-listed there by
+   name until those pages are ported).
+
+     phone        < 768     base styles (mobile-first), no query
+     tablet       ≥ 768     @media (min-width: 768px)    icon rail 72px
+     tablet-wide  ≥ 1024    @media (min-width: 1024px)   icon rail, kanban 4 cols
+     desktop      ≥ 1280    @media (min-width: 1280px)   full sidebar 232px
+     tv (/board)  ≥ 1600    @media (min-width: 1600px)   public board only
+
+   If a rule truly has to target "below X" write max-width as X minus .02px,
+   e.g. @media (max-width: 767.98px), so the tiers never overlap by a pixel.
+
+   Touch-target size is NOT a width concern: it is tied to
+   @media (pointer: coarse) — an iPad landscape is 1180 wide AND a touchscreen.
+   ========================================================================= */
+
 /* Tokens ported 1:1 from the original app's :root (index_35.html) — see the
    "DATABASE SCHEMA" sibling doc's companion, the actual shop-built single-file app.
    --ink/--line/--paper/--accent are kept as aliases so existing component code that
@@ -42,11 +65,73 @@
   --shadow-lg: 0 8px 16px rgba(34, 40, 49, .10), 0 20px 44px rgba(34, 40, 49, .14);
   --ease: cubic-bezier(.2, .7, .3, 1);
 
+  /* ---- Figma 80 (REDESIGN V3) tokens — exact values read off the frame.
+     Only what the design needs that no existing token covers: the four
+     column tints and two pulse-metric colours. Everything else on /today
+     maps onto the tokens above (DECISION-7-today.md §4). ---- */
+  --col-intake-bg: #ffe8eb;
+  --col-inspect-bg: #fff5e0;
+  --col-repair-bg: #e8f2ff;
+  --col-ready-bg: #e3faed;
+  --pulse-wait: #e0730d;
+  --pulse-parts: #8c52c7;
+
+  /* ---- Figma 03 (รับรถ) tokens — exact hex off the frame, no existing
+     token matches. Flagged to the owner: the first two are near --text /
+     --text-2 and may be export drift rather than intent. ---- */
+  --text-strong: #14171c;   /* card headings, typed values */
+  --text-label: #636b78;    /* field labels */
+  --chip-ink: #1a3333;      /* symptom quick-pick chip text */
+  --chip-line: #e6e6e6;     /* symptom quick-pick chip border */
+
+  /* ---- Shell layout (Figma 80: 1440 = sidebar 232 + content 1208) ---- */
+  --sidebar-w: 232px;
+  --rail-w: 72px;
+  --topbar-h: 72px;
+  --content-pad-x: 26px;
+  --content-pad-x-phone: 16px;
+  --sidebar-text: #ADB2BD;      /* inactive nav label on the dark sidebar/dock */
+  --sidebar-muted: #8A8F98;     /* brand subtitle */
+  --sidebar-faint: #767b85;     /* footer */
+  --on-dark: #ffffff;
+
+  /* Bottom command dock (phones). 760 is the Figma width; on a phone it
+     shrinks to the viewport minus --dock-gap on each side. */
+  --dock-max-w: 760px;
+  --dock-h: 56px;
+  --dock-gap: 12px;
+  --dock-bg: rgba(11, 13, 15, .97);
+  --dock-radius: 18px;
+  --dock-shadow: 0 6px 18px rgba(0, 0, 0, .22);
+  --dock-btn-h: 40px;
+  --dock-btn-radius: 11px;
+  /* Space the page must leave free at the bottom so the fixed dock never
+     covers the last row of content. */
+  --dock-clearance: calc(var(--dock-h) + var(--dock-gap) * 2 + env(safe-area-inset-bottom, 0px));
+
+  /* Minimum touch target. Applied under @media (pointer: coarse) only. */
+  --touch-min: 44px;
+
+  /* ---- Public /board scale. ONE unit, --board-u, and every size on the
+     board is a multiple of it (calc(N * var(--board-u))), so the TV tier
+     below scales type, plates, cards and spacing together, in proportion —
+     not just more whitespace around desktop-sized text. 1px below 1600. ---- */
+  --board-u: 1px;
+
   /* Kanit — geometric, technical, full Thai+Latin coverage; fits the workshop/
      signage identity (hazard stripe, bolt mark) better than a generic UI font,
      and unlike the old declaration this one is actually linked in index.html. */
   font-family: 'Kanit', -apple-system, 'Segoe UI', sans-serif;
   color-scheme: light;
+}
+
+/* TV tier: /board is read from 3–4 m away. Past 1600 the unit grows with the
+   panel: 100vw / 1100 is ~1.75px on a 1920-wide TV, which puts the plate
+   (20u) at ~35px — about 2 cm tall on a 55" 1080p set, the size that stays
+   readable from the back of a waiting room. The jump at 1600 is the tier
+   itself; a wall TV does not resize across it. */
+@media (min-width: 1600px) {
+  :root { --board-u: calc(100vw / 1100); }
 }
 
 * { box-sizing: border-box; }
@@ -621,128 +706,126 @@ button:focus-visible, a:focus-visible {
   width: 100%;
 }
 
-/* ---- Customer board (public, no-login waiting-room display) ----
-   Tiered responsive, not one continuous formula: fixed, comfortable px/rem sizing
-   for phones/tablets/desktop monitors below, and only past ~1600px (wall-mounted
-   TVs, large panels) does it switch to vw-based fluid scaling — a TV should keep
-   growing with the screen, but a phone must not shrink text into vw dust just
-   because vw also scales linearly on a 390px viewport. */
+/* ---- Customer board (public, no-login waiting-room display, /board/:token) ----
+   Every size is a multiple of --board-u (see :root): 1px up to 1599px, then
+   growing with the panel on the TV tier, so type, plates and cards all scale
+   up together for a screen read from 3–4 m. The two width queries below are
+   the canonical tiers (BREAKPOINTS block), not ad hoc ones.
+
+   Never colour alone: a bay says ว่าง or shows its plate; a car's status is
+   always its words; a delivered car says ส่งแล้ว as well as being dimmed. */
 .board-page {
-  min-height: 100vh; color: #fff; padding: 20px 24px;
+  min-height: 100vh; color: var(--on-dark);
+  padding: calc(20 * var(--board-u)) calc(24 * var(--board-u));
   background:
     radial-gradient(1100px 500px at 15% -10%, rgba(232, 187, 45, .08), transparent 60%),
     radial-gradient(900px 500px at 100% 0%, rgba(48, 71, 94, .35), transparent 55%),
     var(--dark);
-  font-size: 16px;
+  font-size: calc(16 * var(--board-u));
 }
-.board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-.board-title { font-size: 26px; font-weight: 800; letter-spacing: 0.06em; display: flex; align-items: center; gap: 8px; }
-.board-title::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: var(--hazard); box-shadow: 0 0 0 5px rgba(232, 187, 45, .25); }
-.board-clock { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
+.board-header {
+  display: flex; justify-content: space-between; align-items: center; gap: calc(16 * var(--board-u));
+  margin-bottom: calc(20 * var(--board-u));
+}
+.board-title {
+  font-size: calc(26 * var(--board-u)); font-weight: 800; letter-spacing: 0.04em;
+  display: flex; align-items: center; gap: calc(10 * var(--board-u)); min-width: 0;
+}
+.board-title::before {
+  content: ''; flex-shrink: 0; width: calc(9 * var(--board-u)); height: calc(9 * var(--board-u)); border-radius: 50%;
+  background: var(--hazard); box-shadow: 0 0 0 calc(5 * var(--board-u)) rgba(232, 187, 45, .25);
+}
+.board-clock {
+  font-size: calc(26 * var(--board-u)); font-weight: 600; flex-shrink: 0;
+  font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace;
+}
 
-.board-bays { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; margin-bottom: 22px; }
+.board-bays {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(110 * var(--board-u)), 1fr));
+  gap: calc(10 * var(--board-u)); margin-bottom: calc(22 * var(--board-u));
+}
 .board-bay {
   background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px; padding: 12px 10px; text-align: center; transition: background-color .2s var(--ease);
+  border-radius: calc(12 * var(--board-u)); padding: calc(12 * var(--board-u)) calc(10 * var(--board-u));
+  text-align: center;
 }
 .board-bay.occupied { background: var(--navy); border-color: rgba(255, 255, 255, 0.18); box-shadow: var(--shadow-md); }
-.board-bay-label { font-size: 13px; opacity: 0.65; font-weight: 600; letter-spacing: .3px; }
-.board-bay-plate { font-weight: 700; margin-top: 4px; font-family: ui-monospace, monospace; font-size: 16px; }
-.board-bay-empty { font-size: 13px; opacity: 0.35; margin-top: 4px; }
+.board-bay-label { font-size: calc(13 * var(--board-u)); opacity: 0.75; font-weight: 600; letter-spacing: .3px; }
+.board-bay-plate {
+  font-weight: 700; margin-top: calc(4 * var(--board-u)); font-size: calc(16 * var(--board-u));
+  font-family: ui-monospace, monospace;
+}
+.board-bay-empty { font-size: calc(13 * var(--board-u)); opacity: 0.55; margin-top: calc(4 * var(--board-u)); }
 
-.board-rows { display: flex; flex-direction: column; gap: 10px; }
+.board-rows { display: flex; flex-direction: column; gap: calc(10 * var(--board-u)); }
 .board-row {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 14px;
-  padding: 16px 20px;
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  flex-wrap: wrap;
-  transition: background-color .2s var(--ease);
+  background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: calc(14 * var(--board-u)); padding: calc(16 * var(--board-u)) calc(20 * var(--board-u));
+  display: flex; align-items: center; gap: calc(20 * var(--board-u)); flex-wrap: wrap;
+  transition: opacity .6s var(--ease);
 }
-.board-row:hover { background: rgba(255, 255, 255, 0.08); }
+/* Handed back today: de-emphasised but still readable (a customer may still
+   be looking for it), and the chip says ส่งแล้ว. Gone tomorrow — the API owns
+   the day boundary; the page filters nothing by date. */
+.board-row.is-delivered { opacity: .5; }
 
-/* Finished job (status flips to "delivered"): fade the row out instead of having
-   it vanish instantly when the next Firestore snapshot drops it from the list —
-   BoardPage.tsx keeps a just-finished row mounted with this class for the
-   animation's duration before actually removing it. */
-@keyframes boardRowFade {
-  from { opacity: 1; transform: scale(1); }
-  to { opacity: 0; transform: scale(.97); }
+/* Queue number is the left bookend; the status chip is the right bookend. */
+.board-row-queue { display: flex; align-items: center; flex-shrink: 0; min-width: calc(60 * var(--board-u)); }
+.board-row-queue-n {
+  font-size: calc(44 * var(--board-u)); font-weight: 800; line-height: 1;
+  font-family: ui-monospace, monospace; color: var(--hazard);
 }
-.board-row-fading { animation: boardRowFade .9s ease forwards; pointer-events: none; }
+.board-row-queue-dash { font-size: calc(32 * var(--board-u)); font-weight: 800; opacity: .3; }
 
-/* Queue number is the left bookend, no "คิว" label; the status badge is the right
-   bookend, pinned via margin-left:auto at its normal (small, in-app-matching) size. */
-.board-row-queue { display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-width: 60px; }
-.board-row-queue-n { font-size: 44px; font-weight: 800; line-height: 1; font-family: ui-monospace, monospace; color: var(--hazard); }
-.board-row-queue-dash { font-size: 32px; font-weight: 800; opacity: .3; }
+.board-row-model { font-size: calc(19 * var(--board-u)); font-weight: 600; }
+.board-row-bay {
+  background: rgba(255, 255, 255, 0.12); border-radius: 999px; font-weight: 600;
+  padding: calc(6 * var(--board-u)) calc(14 * var(--board-u)); font-size: calc(14 * var(--board-u));
+}
+.board-row-est { font-size: calc(14 * var(--board-u)); opacity: 0.8; }
 
-.board-row-model { font-size: 19px; font-weight: 600; }
-.board-row-bay { background: rgba(255, 255, 255, 0.12); padding: 6px 14px; border-radius: 999px; font-size: 14px; font-weight: 600; }
-.board-row-est { font-size: 14px; opacity: 0.75; }
+/* .plate-tag / .status-chip are the in-app components; scaled here because
+   this page is never viewed up close. */
+.board-row .plate-tag { padding: calc(4 * var(--board-u)) calc(12 * var(--board-u)); border-radius: calc(6 * var(--board-u)); }
+.board-row .plate-tag .pt-no { font-size: calc(20 * var(--board-u)); }
+.board-row .plate-tag .pt-prov { font-size: calc(11 * var(--board-u)); }
+.board-row .status-chip {
+  font-size: calc(13 * var(--board-u)); padding: calc(4 * var(--board-u)) calc(12 * var(--board-u));
+  margin-left: auto; background: var(--st-color, var(--navy));
+}
 
-/* .plate-tag / .status-chip sit inside a board row too — scale them up to match
-   instead of the small in-app defaults, since this page is never viewed up close. */
-.board-row .plate-tag { padding: 4px 12px; }
-.board-row .plate-tag .pt-no { font-size: 20px; }
-.board-row .plate-tag .pt-prov { font-size: 11px; }
-.board-row .status-chip { font-size: 13px; padding: 4px 12px; margin-left: auto; }
+/* Full-screen states: no link, bad link, server trouble, empty day. Big,
+   plain words — this is still read from across the room. */
+.board-message {
+  margin: calc(60 * var(--board-u)) auto 0; max-width: calc(720 * var(--board-u)); text-align: center;
+  font-size: calc(22 * var(--board-u)); line-height: 1.6;
+}
+.board-message small { display: block; margin-top: calc(10 * var(--board-u)); font-size: calc(15 * var(--board-u)); opacity: .7; }
+.board-stale {
+  margin: 0 0 calc(14 * var(--board-u)); font-size: calc(14 * var(--board-u));
+  background: rgba(255, 255, 255, 0.1); border-radius: calc(8 * var(--board-u));
+  padding: calc(8 * var(--board-u)) calc(12 * var(--board-u));
+}
 
-/* Tablet: same layout, slightly denser */
-@media (max-width: 1024px) {
+/* below tablet-wide: slightly denser */
+@media (max-width: 1023.98px) {
   .board-bays { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); }
   .board-row-queue-n { font-size: 38px; }
   .board-row-model { font-size: 17px; }
 }
 
-/* Phone: stack each row instead of wrapping inline, shrink the bay grid to 3 columns */
-@media (max-width: 600px) {
+/* phone: stack each row, 3-column bay grid */
+@media (max-width: 767.98px) {
   .board-page { padding: 14px 16px; }
   .board-header { margin-bottom: 14px; }
   .board-title, .board-clock { font-size: 20px; }
   .board-bays { grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
   .board-bay { padding: 8px 6px; border-radius: 10px; }
-  .board-bay-label { font-size: 11px; }
+  .board-bay-label, .board-bay-empty { font-size: 11px; }
   .board-bay-plate { font-size: 13px; }
-  .board-bay-empty { font-size: 11px; }
-
   .board-row { flex-direction: column; align-items: flex-start; gap: 8px; padding: 14px 16px; }
   .board-row-queue { min-width: 0; }
-  .board-row-queue-n { font-size: 38px; }
-  .board-row-model { font-size: 17px; }
   .board-row .status-chip { align-self: flex-end; margin-left: 0; }
-}
-
-/* Large monitors and wall-mounted TVs (1600px+): switch to vw-based fluid scaling
-   so a 4K panel viewed from across a waiting room keeps growing with the screen
-   instead of capping out at desktop sizes. */
-@media (min-width: 1600px) {
-  .board-page { padding: 2.2vw 2.6vw; font-size: 1.15vw; }
-  .board-header { margin-bottom: 2vw; }
-  .board-title, .board-clock { font-size: 2.6vw; }
-  .board-title::before { width: .6vw; height: .6vw; box-shadow: 0 0 0 .35vw rgba(232, 187, 45, .25); }
-
-  .board-bays { grid-template-columns: repeat(auto-fill, minmax(9vw, 1fr)); gap: .9vw; margin-bottom: 2.4vw; }
-  .board-bay { border-radius: .9vw; padding: 1vw .8vw; }
-  .board-bay-label { font-size: 1.1vw; }
-  .board-bay-plate { font-size: 1.35vw; margin-top: .4vw; }
-  .board-bay-empty { font-size: 1.1vw; margin-top: .4vw; }
-
-  .board-rows { gap: .9vw; }
-  .board-row { border-radius: 1.1vw; padding: 1.2vw 1.6vw; gap: 1.8vw; }
-  .board-row-queue { gap: .5vw; min-width: 5.5vw; }
-  .board-row-queue-n { font-size: 4.4vw; }
-  .board-row-queue-dash { font-size: 3vw; }
-  .board-row-model { font-size: 1.7vw; }
-  .board-row-bay { padding: .5vw 1.1vw; font-size: 1.2vw; }
-  .board-row-est { font-size: 1.2vw; }
-  .board-row .plate-tag { padding: .3vw 1vw; }
-  .board-row .plate-tag .pt-no { font-size: 1.8vw; }
-  .board-row .plate-tag .pt-prov { font-size: .95vw; }
-  .board-row .status-chip { font-size: 1.15vw; padding: .35vw 1vw; }
 }
 
 /* ---- Lookup page (public, no-login "find my car", reached via QR) ---- */
@@ -1007,71 +1090,169 @@ button:focus-visible, a:focus-visible {
    are untouched and still used inside these layouts (tokens cascade).
    ========================================================================= */
 
-/* ---- App shell v2: persistent dark sidebar + white top bar ---- */
-.shell-v2 { display: flex; min-height: 100vh; background: var(--paper); }
+/* ---- App shell v2: sidebar + top bar + phone dock --------------------------
+   SHELL TIERS (breakpoints: see the BREAKPOINTS block at the top of the file)
 
+     width        sidebar            dock
+     < 768        hidden             shown (Figma 80 command dock)
+     768–1279     icon rail 72px     hidden
+     ≥ 1280       full 232px         hidden
+
+   Written mobile-first: the unqualified rules are the phone layout, and each
+   min-width block only adds. Every element exists in the DOM at every width
+   (components/AppShell.tsx) — only CSS changes, so rotating a tablet across a
+   breakpoint never remounts the page inside the shell.
+   -------------------------------------------------------------------------- */
+.shell-v2 { display: flex; min-height: 100vh; min-height: 100dvh; background: var(--paper); }
+
+/* Sidebar — base rules describe the icon rail; hidden on phones below. */
 .sidebar {
-  width: 232px;
+  display: none;
+  width: var(--rail-w);
   flex-shrink: 0;
   background: var(--sidebar-bg);
-  color: #fff;
-  display: flex;
+  color: var(--on-dark);
   flex-direction: column;
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
   overflow-y: auto;
+  overflow-x: hidden;
 }
-.sidebar-brand { padding: 22px 20px 14px; }
+.sidebar-brand { padding: 22px 0 14px; display: flex; flex-direction: column; align-items: center; }
 .sidebar-brand-name { font-weight: 700; font-size: 18px; letter-spacing: .2px; display: flex; align-items: center; gap: 6px; }
 .sidebar-brand-name .accent { color: var(--gold); }
-.sidebar-brand-sub { font-size: 10.5px; color: #8A8F98; letter-spacing: .1em; text-transform: uppercase; margin-top: 4px; }
+.sidebar-brand-name .word-full, .sidebar-brand-sub, .sidebar-footer { display: none; }
+.sidebar-brand-sub { font-size: 10.5px; color: var(--sidebar-muted); letter-spacing: .1em; text-transform: uppercase; margin-top: 4px; }
 .sidebar-nav { flex: 1; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; }
 .sidebar-link {
-  display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 10px;
-  border-radius: 10px; color: #ADB2BD; text-decoration: none; font-size: 13.5px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center; gap: 10px; padding: 12px;
+  border-radius: var(--radius); color: var(--sidebar-text); text-decoration: none; font-size: 13.5px; font-weight: 600;
   border-left: 4px solid transparent; transition: background-color .15s var(--ease), color .15s var(--ease);
 }
-.sidebar-link:hover { background: rgba(255, 255, 255, .06); color: #fff; }
-.sidebar-link.active { background: var(--sidebar-active); color: #fff; border-left-color: var(--red); }
+.sidebar-link:hover { background: rgba(255, 255, 255, .06); color: var(--on-dark); }
+.sidebar-link.active { background: var(--sidebar-active); color: var(--on-dark); border-left-color: var(--red); }
 .sidebar-link svg { flex-shrink: 0; }
-.sidebar-footer { padding: 14px 20px 18px; border-top: 1px solid rgba(255, 255, 255, .08); font-size: 11px; color: #767b85; line-height: 1.7; }
+/* On the rail the label is clipped, not display:none, so the link keeps its
+   accessible name (same technique as .sr-only). */
+.sidebar-link .label {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.sidebar-footer { padding: 14px 20px 18px; border-top: 1px solid rgba(255, 255, 255, .08); font-size: 11px; color: var(--sidebar-faint); line-height: 1.7; }
 
 .shell-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
+/* Top bar — phone base: brand mark + QR + profile chip + logout. The search
+   and the รับรถ button are hidden (รับรถ lives in the dock, in thumb reach). */
 .topbar {
-  display: flex; align-items: center; gap: 14px; padding: 12px 24px;
-  background: #fff; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px; padding: 10px var(--content-pad-x-phone);
+  min-height: 60px;
+  background: var(--card-bg); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 15; flex-wrap: wrap;
 }
-.topbar-search { position: relative; flex: 1 1 220px; max-width: 360px; }
+.topbar-brand { display: flex; align-items: center; color: var(--hazard); flex-shrink: 0; }
+.topbar-search { display: none; position: relative; flex: 1 1 180px; max-width: 250px; min-width: 0; }
 .topbar-search .ic { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-2); pointer-events: none; }
 .topbar-search input {
-  width: 100%; padding: 10px 12px 10px 36px; border: 1px solid var(--border); border-radius: 999px;
+  width: 100%; height: 44px; padding: 0 12px 0 36px; border: 1px solid var(--border); border-radius: var(--radius);
   font: inherit; font-size: 13.5px; background: var(--paper);
 }
-.topbar-cta { flex-shrink: 0; border-radius: var(--radius-btn); background: var(--red); border-color: var(--red); }
-.topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.topbar-cta { display: none; flex-shrink: 0; border-radius: var(--radius); background: var(--red); border-color: var(--red); }
+.topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
 .topbar-actions .offline-badge { background: var(--red-bg); color: var(--red); }
 .topbar-actions .app-bar-qr-btn {
   border: 1px solid var(--border); background: var(--paper); color: var(--text-2);
 }
-.topbar-actions .app-bar-qr-btn:hover { background: #eef0f3; color: var(--text); }
+.topbar-actions .app-bar-qr-btn:hover { background: var(--paper-2); color: var(--text); }
 .topbar-profile { display: flex; align-items: center; gap: 8px; }
 .profile-chip {
-  width: 34px; height: 34px; border-radius: 50%; background: var(--dark); color: #fff;
+  width: 34px; height: 34px; border-radius: 50%; background: var(--dark); color: var(--on-dark);
   display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0;
 }
-.topbar-profile-meta { display: flex; flex-direction: column; font-size: 12px; line-height: 1.4; }
+.topbar-profile-meta { display: none; flex-direction: column; font-size: 12px; line-height: 1.4; }
 .topbar-profile-meta .role { color: var(--text-2); font-size: 11px; }
 .topbar-actions .btn.small { border-radius: var(--radius-btn); }
 
-@media (max-width: 1024px) {
-  .sidebar { width: 74px; }
-  .sidebar-link .label, .sidebar-brand-sub, .sidebar-footer, .sidebar-brand-name .word-full { display: none; }
-  .sidebar-link { justify-content: center; padding: 12px; }
-  .topbar-search { display: none; }
-  .topbar-profile-meta { display: none; }
+/* Content: on phones leave room at the bottom for the fixed dock. */
+.shell-v2 .app-main { padding: 16px var(--content-pad-x-phone) calc(16px + var(--dock-clearance)); }
+/* JobListPage's floating add button would sit on top of the dock — lift it. */
+.shell-v2 .fab { bottom: calc(var(--dock-clearance) + 6px); }
+
+/* Bottom command dock (Figma 80) — phone base. */
+.dock {
+  position: fixed; z-index: 30;
+  left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--dock-gap) + env(safe-area-inset-bottom, 0px));
+  width: max-content; max-width: min(var(--dock-max-w), calc(100% - var(--dock-gap) * 2));
+  min-height: var(--dock-h);
+  display: flex; align-items: center; gap: 6px; padding: 8px;
+  background: var(--dock-bg); border-radius: var(--dock-radius); box-shadow: var(--dock-shadow);
+}
+.dock-badge {
+  flex-shrink: 0; width: 40px; height: 40px; border-radius: var(--dock-btn-radius);
+  background: var(--hazard); color: var(--hazard-dark);
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;
+}
+.dock-btn {
+  flex: 1 1 auto; min-width: 0; height: var(--dock-btn-h);
+  display: inline-flex; align-items: center; justify-content: center; padding: 0 14px;
+  border-radius: var(--dock-btn-radius); background: var(--sidebar-active); color: var(--on-dark);
+  text-decoration: none; font-size: 13px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background-color .15s var(--ease);
+}
+.dock-btn:hover { background: rgba(255, 255, 255, .14); }
+/* Figma 80 shows no active state; this mirrors the sidebar's red active stripe. */
+.dock-btn.active { box-shadow: inset 0 -3px 0 var(--red); }
+
+/* tablet + tablet-wide: icon rail, no dock */
+@media (min-width: 768px) {
+  .sidebar { display: flex; }
+  .dock { display: none; }
+  .topbar { min-height: var(--topbar-h); padding: 12px var(--content-pad-x); gap: 14px; }
+  .topbar-brand { display: none; }
+  .topbar-search { display: block; }
+  .topbar-cta { display: inline-flex; }
+  .shell-v2 .app-main { padding: 20px var(--content-pad-x); }
+  .shell-v2 .fab { bottom: 22px; }
+}
+
+/* tablet-wide: room for the profile name beside the chip */
+@media (min-width: 1024px) {
+  .topbar-profile-meta { display: flex; }
+}
+
+/* desktop: the full 232px sidebar from Figma 80 */
+@media (min-width: 1280px) {
+  .sidebar { width: var(--sidebar-w); }
+  .sidebar-brand { padding: 22px 20px 14px; align-items: stretch; }
+  .sidebar-brand-name .word-full { display: inline; }
+  .sidebar-brand-sub, .sidebar-footer { display: block; }
+  .sidebar-link { justify-content: flex-start; padding: 10px 12px 10px 10px; }
+  .sidebar-link .label {
+    position: static; width: auto; height: auto; margin: 0;
+    overflow: visible; clip: auto; white-space: normal;
+  }
+}
+
+/* Touch screens at ANY width (phone, iPad landscape at 1180, wall touch panel,
+   touch laptop): every shell control is at least 44x44. Tied to the input
+   device, never to width — see the BREAKPOINTS block. */
+@media (pointer: coarse) {
+  .sidebar-link, .dock-btn, .dock-badge,
+  .topbar .btn, .topbar-actions .app-bar-qr-btn {
+    min-height: var(--touch-min);
+  }
+  .sidebar-link, .dock-badge { min-width: var(--touch-min); }
+  .dock-btn { height: var(--touch-min); }
+  .dock-badge { height: var(--touch-min); width: var(--touch-min); }
+}
+
+@media print {
+  .sidebar, .topbar, .dock { display: none !important; }
+  .shell-v2 .app-main { padding: 0; }
 }
 
 /* ---- Home launcher (post-login app picker, new root landing page) ---- */
@@ -1227,6 +1408,278 @@ button:focus-visible, a:focus-visible {
   .login-hero h1 { font-size: 22px; }
 }
 
+/* =========================================================================
+   /today — ศูนย์ควบคุมงานวันนี้ (Figma 80, REDESIGN V3)
+   Tiers: <768 one kanban column, swipe · 768–1023 two visible, scroll ·
+   ≥1024 all four, grid (no scroll) — see the BREAKPOINTS block up top.
+   ========================================================================= */
+.kb-page { display: flex; flex-direction: column; gap: 18px; }
+
+.kb-header {
+  display: flex; flex-direction: column; gap: 12px;
+}
+.kb-header h1 { margin: 0 0 4px; font-size: 22px; font-weight: 800; }
+.kb-header-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+/* Independent of .topbar-search on purpose — that class is display:none below
+   768px in the shell (AppShell's own header search), and this box must stay
+   visible on phones, where it is the only way to find a job without scrolling
+   four kanban columns. */
+.kb-header-search { position: relative; flex: 1 1 220px; max-width: 320px; min-width: 0; }
+.kb-header-search .ic { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-2); pointer-events: none; }
+.kb-header-search input {
+  width: 100%; height: 44px; padding: 0 12px 0 36px; border: 1px solid var(--border); border-radius: var(--radius);
+  font: inherit; font-size: 13.5px; background: var(--paper);
+}
+.kb-header-cta { border-radius: var(--radius); background: var(--red); border-color: var(--red); flex-shrink: 0; }
+
+.kb-filter-wrap { position: relative; }
+.kb-filter-pop {
+  position: absolute; z-index: 12; top: calc(100% + 6px); left: 0; min-width: 220px;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-md); padding: 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.kb-filter-item { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+
+/* ---- KPI row: 4-across ≥1024, 2x2 below ---- */
+.kb-kpi-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.kb-kpi {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  border-left: 5px solid var(--st-color, var(--dark)); padding: 12px 16px;
+  display: flex; flex-direction: column; gap: 4px; box-shadow: var(--shadow-sm);
+}
+.kb-kpi-value { font-size: 22px; font-weight: 800; line-height: 1.1; }
+.kb-kpi-label { font-size: 11.5px; color: var(--text-2); font-weight: 600; }
+.kb-kpi.tone-red { --st-color: var(--red); }
+.kb-kpi.tone-orange { --st-color: var(--hazard); }
+.kb-kpi.tone-blue { --st-color: var(--info); }
+.kb-kpi.tone-green { --st-color: var(--success); }
+
+/* ---- The board itself ----
+   Mobile-first: one full-width column, horizontal scroll-snap between them
+   (this is the one place horizontal scroll is intentional, per
+   docs/UI-SPEC-FIGMA.md §4 rule 3). */
+.kb-board {
+  display: flex; gap: 16px; overflow-x: auto; padding-bottom: 4px;
+  scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
+}
+.kb-column {
+  flex: 0 0 100%; scroll-snap-align: start;
+  display: flex; flex-direction: column; gap: 10px; min-width: 0;
+}
+.kb-column-head {
+  display: flex; align-items: center; gap: 8px; background: var(--card-bg);
+  border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 14px;
+}
+.kb-column-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--col-line, var(--dark)); flex-shrink: 0; }
+.kb-column-title { flex: 1; font-size: 13px; font-weight: 700; min-width: 0; }
+.kb-column-count {
+  background: var(--col-tint, var(--paper)); color: var(--col-ink, var(--text-2));
+  font-size: 11px; font-weight: 700; padding: 3px 11px; border-radius: 999px; flex-shrink: 0;
+}
+.kb-column-body {
+  display: flex; flex-direction: column; gap: 10px; padding: 10px;
+  background: var(--col-tint, var(--paper)); border-radius: 14px; min-height: 120px;
+  transition: box-shadow .15s var(--ease);
+}
+/* Dashed outline, not just a colour change — the drop target reads by shape too. */
+.kb-column.is-drop-target .kb-column-body { outline: 3px dashed var(--col-line, var(--navy)); outline-offset: -3px; }
+.kb-column-empty { margin: 0; padding: 20px 0; text-align: center; color: var(--text-2); font-size: 12.5px; }
+.kb-column-add {
+  align-self: flex-start; font-size: 11px; font-weight: 700; color: var(--col-ink, var(--navy));
+  text-decoration: none; padding: 4px 2px;
+}
+.kb-column-add:hover { text-decoration: underline; }
+
+/* DECISION-7-today.md §4. Amber is two tokens: --hazard for lines (dot,
+   stripe, drop outline) and --warning for text, because hazard-yellow text
+   on a pale tint cannot be read. Colour is never the only signal: every
+   column has its text heading and every pill its text. */
+.kb-column.col-intake { --col-tint: var(--col-intake-bg); --col-line: var(--red); --col-ink: var(--red); }
+.kb-column.col-inspect { --col-tint: var(--col-inspect-bg); --col-line: var(--hazard); --col-ink: var(--warning); }
+.kb-column.col-repair { --col-tint: var(--col-repair-bg); --col-line: var(--info); --col-ink: var(--info); }
+.kb-column.col-ready { --col-tint: var(--col-ready-bg); --col-line: var(--success); --col-ink: var(--success); }
+
+/* ---- The card ---- */
+.kb-card {
+  display: flex; flex-direction: column; gap: 6px; text-align: left; width: 100%;
+  background: var(--card-bg); border: 1px solid var(--border); border-left: 5px solid var(--card-line, var(--border));
+  border-radius: var(--radius); padding: 12px 14px; font: inherit; color: var(--text);
+  box-shadow: var(--shadow-sm); cursor: pointer; transition: box-shadow .15s var(--ease), opacity .15s var(--ease);
+}
+.kb-card:hover { box-shadow: var(--shadow-md); opacity: 1; }
+.kb-card:disabled, .kb-card.is-busy { opacity: .6; cursor: wait; }
+.kb-card.is-dragging { opacity: .35; }
+.kb-card.is-delivered { opacity: .6; }
+/* The card check-in just created (TodayPage's highlightJobId) — an outline
+   that fades out, not a colour swap, so it reads under any tone and for
+   colour-blind staff too (never colour as the only signal). */
+.kb-card.is-highlighted {
+  outline: 3px solid var(--hazard); outline-offset: 2px;
+  animation: kbCardHighlightFade 4s var(--ease) forwards;
+}
+@keyframes kbCardHighlightFade {
+  0%, 60% { outline-color: var(--hazard); box-shadow: 0 0 0 4px rgba(255, 189, 8, .25); }
+  100% { outline-color: transparent; box-shadow: none; }
+}
+/* Card tone = the label's meaning; same line / ink / tint split as the columns. */
+.kb-card.tone-red { --card-line: var(--red); --card-ink: var(--red); --card-tint: var(--col-intake-bg); }
+.kb-card.tone-orange { --card-line: var(--hazard); --card-ink: var(--warning); --card-tint: var(--col-inspect-bg); }
+.kb-card.tone-blue { --card-line: var(--info); --card-ink: var(--info); --card-tint: var(--col-repair-bg); }
+.kb-card.tone-green { --card-line: var(--success); --card-ink: var(--success); --card-tint: var(--col-ready-bg); }
+
+.kb-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kb-card-no { font-size: 10px; font-weight: 600; color: var(--text-2); }
+.kb-pill {
+  background: var(--card-tint, var(--paper)); color: var(--card-ink, var(--text-2));
+  font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 999px; white-space: nowrap;
+}
+.kb-card-title { font-size: 15px; font-weight: 700; text-transform: uppercase; line-height: 1.25; }
+.kb-card-who { font-size: 11px; color: var(--text-2); }
+.kb-card-divider { height: 1px; background: var(--border); margin: 2px 0; }
+.kb-card-detail {
+  font-size: 11.5px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.kb-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.kb-card-status { font-size: 10.5px; color: var(--text-2); font-weight: 600; }
+.kb-timer { font-size: 10px; font-weight: 700; color: var(--text-2); }
+.kb-timer.is-late { color: var(--red); }
+
+.kb-drag-ghost {
+  position: fixed; z-index: 60; pointer-events: none; width: 240px;
+  transform: translate(-50%, -50%) rotate(-2deg); opacity: .95;
+}
+.kb-drag-ghost .kb-card { box-shadow: var(--shadow-lg); cursor: grabbing; }
+
+/* ---- Tap-menu (action sheet) ---- */
+.kb-sheet { display: flex; flex-direction: column; gap: 16px; width: 100%; }
+.kb-sheet-section h4 { margin: 0 0 8px; font-size: 12.5px; color: var(--text-2); font-weight: 700; }
+.kb-sheet-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.kb-sheet-error {
+  margin: 0; background: var(--red-bg); color: var(--red); border-radius: 8px; padding: 10px 12px; font-size: 13px;
+}
+.kb-sheet-now { margin: 0; font-size: 13px; color: var(--text-2); }
+.kb-sheet-now strong { color: var(--text); }
+.kb-sheet-confirm {
+  display: flex; flex-direction: column; gap: 12px; padding: 14px;
+  border: 2px solid var(--red); border-radius: var(--radius); background: var(--red-bg);
+}
+.kb-sheet-confirm h4 { margin: 0; font-size: 15px; color: var(--red); }
+.kb-sheet-confirm p { margin: 0; font-size: 14px; line-height: 1.6; }
+
+/* ---- Pulse panel ---- */
+.kb-pulse h3 { margin: 0 0 14px; font-size: 15px; font-weight: 700; }
+.kb-pulse-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.kb-pulse-tile { background: var(--paper); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.kb-pulse-label { font-size: 11px; color: var(--text-2); }
+.kb-pulse-value { font-size: 15px; font-weight: 700; }
+.kb-pulse-value.tone-blue { color: var(--info); }
+.kb-pulse-value.tone-wait { color: var(--pulse-wait); }
+.kb-pulse-value.tone-parts { color: var(--pulse-parts); }
+.kb-pulse-value.tone-red { color: var(--red); }
+
+.kb-stale-banner {
+  margin: 0; background: var(--col-inspect-bg); color: var(--text); border-radius: 8px; padding: 8px 12px; font-size: 12.5px;
+}
+
+.kb-toast {
+  position: fixed; z-index: 70; left: 50%; bottom: calc(var(--dock-clearance, 22px) + 8px);
+  transform: translateX(-50%); max-width: min(420px, calc(100% - 32px));
+  background: var(--dark); color: var(--on-dark); padding: 12px 16px; border-radius: var(--radius);
+  font-size: 13.5px; box-shadow: var(--shadow-lg);
+}
+.kb-toast.tone-error { background: var(--red); }
+
+/* tablet: two columns visible, still scroll-snap */
+@media (min-width: 768px) {
+  .kb-header { flex-direction: row; align-items: flex-start; justify-content: space-between; }
+  .kb-column { flex-basis: calc(50% - 8px); }
+}
+
+/* tablet-wide / desktop: all four, no scroll */
+@media (min-width: 1024px) {
+  .kb-kpi-grid { grid-template-columns: repeat(4, 1fr); }
+  .kb-board { overflow-x: visible; scroll-snap-type: none; }
+  .kb-column { flex-basis: 0; flex-grow: 1; }
+  .kb-pulse-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+@media (pointer: coarse) {
+  .kb-card { min-height: var(--touch-min); }
+  .kb-sheet-grid .btn, .kb-sheet-grid .chip, .kb-filter-item {
+    min-height: var(--touch-min);
+  }
+}
+
+/* =========================================================================
+   /checkin — รับรถเข้าระบบ (Figma 03). Mobile-first on the shell tiers:
+   one column <768, two at 768–1023, the design's 3/2/4-across at ≥1024.
+   Field order is identical at every width.
+   ========================================================================= */
+.ci-page .ci-header { margin-bottom: 16px; }
+.ci-page .ci-header h1 { font-size: 22px; color: var(--text-strong); }
+.ci-card h3 { color: var(--text-strong); border-bottom: none; padding-bottom: 0; margin-bottom: 4px; }
+.ci-card-sub { margin: 0 0 14px; font-size: 12px; color: var(--text-label); }
+.ci-grid { display: grid; grid-template-columns: 1fr; gap: 0 16px; }
+.ci-field .ci-field-label { color: var(--text-label); }
+.ci-required { font-weight: 400; font-size: 11.5px; }
+.ci-field input, .ci-field select { min-height: 46px; }
+.ci-field input[readonly] { background: var(--paper); color: var(--text-2); }
+.ci-field-hint { font-size: 12px; font-weight: 400; color: var(--text-2); }
+/* The error is words with a ⚠, and the border thickens — not colour alone. */
+.ci-field.has-error input, .ci-field.has-error select { border: 2px solid var(--red); }
+.ci-field-error { font-size: 12.5px; font-weight: 600; color: var(--red); }
+.ci-lead { max-width: 420px; }
+.ci-match { margin: 0 0 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--navy); background: var(--paper); color: var(--navy); font-size: 14px; }
+.ci-symptom-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0 16px; }
+.ci-queue { flex: 0 1 241px; margin-bottom: 8px; }
+.ci-page .complaint-chips .chip { color: var(--chip-ink); border-color: var(--chip-line); }
+.ci-page .complaint-chips .chip.active { color: var(--on-dark); border-color: var(--navy); }
+.ci-form-error { margin: 0 0 12px; padding: 11px 13px; border-radius: 8px; background: var(--red-bg); color: var(--red); font-weight: 600; font-size: 14px; }
+/* Phone: the one action is full-width at the bottom, in thumb reach. */
+.ci-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
+.ci-submit { width: 100%; justify-content: center; min-height: 48px; background: var(--red); border-color: var(--red); border-radius: var(--radius-btn); font-size: 15.5px; }
+.ci-photo-pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.ci-photo-btn { justify-content: center; min-height: 56px; font-size: 15px; border-style: dashed; cursor: pointer; }
+.ci-photo-btn.is-disabled { opacity: .4; cursor: not-allowed; }
+.ci-photo-btn:focus-within { outline: 2px solid var(--navy); outline-offset: 2px; }
+.ci-photo-session {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px;
+  padding: 10px 12px; border: 2px solid var(--warning); border-radius: 8px; background: var(--col-inspect-bg);
+}
+.ci-photo-session p { margin: 0; flex: 1 1 240px; font-size: 13.5px; font-weight: 600; }
+.ci-photo.is-needs_auth img { opacity: .55; }
+.ci-photo-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.ci-photo { border: 1px solid var(--border); border-radius: var(--radius); background: var(--card-bg); overflow: hidden; display: flex; flex-direction: column; }
+.ci-photo img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--paper); }
+.ci-photo.is-uploading img { opacity: .55; }
+.ci-photo.is-failed { border: 2px solid var(--red); }
+.ci-photo-tags { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px 0; font-size: 11.5px; font-weight: 600; }
+.ci-photo-cover { background: var(--hazard); color: var(--hazard-dark); border-radius: 999px; padding: 1px 8px; }
+.ci-photo-status { color: var(--text-2); }
+.ci-photo.is-failed .ci-photo-status { color: var(--red); }
+.ci-photo-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px 8px; }
+.ci-photo-actions .btn { flex: 1 1 auto; justify-content: center; padding: 6px 8px; }
+.ci-dialog { display: flex; flex-direction: column; gap: 12px; width: 100%; }
+.ci-dialog p { margin: 0; font-size: 14px; line-height: 1.6; }
+.ci-dialog-list { display: flex; flex-direction: column; gap: 8px; }
+.ci-dialog-list .btn { justify-content: center; }
+.ci-owner-compare { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; font-size: 14px; }
+.ci-owner-compare dt { color: var(--text-2); }
+.ci-owner-compare dd { margin: 0; font-weight: 700; }
+
+@media (min-width: 768px) {
+  .ci-grid-2, .ci-grid-3, .ci-grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .ci-submit { width: auto; min-width: 236px; }
+}
+@media (min-width: 1024px) {
+  .ci-grid-3 { grid-template-columns: repeat(3, 1fr); }
+  .ci-grid-4 { grid-template-columns: 2fr 2fr 1fr 1fr; }
+}
+@media (pointer: coarse) {
+  .ci-page .complaint-chips .chip, .ci-dialog .btn, .ci-photo-actions .btn { min-height: var(--touch-min); }
+}
+
 /* ---- Blank printable check-in form (offline fallback) ---- */
 .blank-form-sheet { max-width: 780px; margin: 0 auto; }
 .blank-form-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid var(--dark); padding-bottom: 10px; margin-bottom: 16px; }
@@ -1249,3 +1702,25 @@ button:focus-visible, a:focus-visible {
   .bulk-print-sheet { display: block !important; break-inside: avoid; break-after: page; }
   .bulk-print-sheet:last-child { break-after: auto; }
 }
+
+/* ---- ProvincePicker (components/ui) — listbox over the 77 provinces ---- */
+.prov-picker { position: relative; }
+.prov-picker input { width: 100%; }
+.prov-list {
+  position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px);
+  margin: 0; padding: 4px; list-style: none; max-height: min(320px, 45vh); overflow-y: auto;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-md);
+}
+.prov-option { display: flex; align-items: center; min-height: var(--touch-min); padding: 0 12px; border-radius: 8px; font-size: 15px; font-weight: 500; color: var(--text); cursor: pointer; }
+.prov-option.is-active { background: var(--paper); outline: 2px solid var(--navy); outline-offset: -2px; }
+.prov-option.is-chosen { font-weight: 700; }
+.prov-empty { padding: 12px; font-size: 14px; color: var(--text-2); }
+.prov-hint { display: block; margin-top: 4px; font-size: 12.5px; font-weight: 600; color: var(--text-strong); }
+/* Vehicle candidates in the vehicle_ambiguous dialog: province is the headline. */
+.ci-vehicle-card { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card-bg); }
+.ci-vehicle-province { font-size: 17px; font-weight: 700; color: var(--text-strong); }
+.ci-vehicle-detail { font-size: 13.5px; color: var(--text-2); }
+.ci-dialog-picker { padding-top: 4px; }
+
+.prov-group { padding: 8px 12px 2px; font-size: 12px; font-weight: 700; color: var(--text-2); border-top: 1px solid var(--border); margin-top: 4px; }
+.prov-note { margin-left: 8px; font-size: 12.5px; font-weight: 400; color: var(--text-2); }

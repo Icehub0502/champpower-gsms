@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api/client';
 import { getSocket } from '../lib/api/socket';
+import { isSessionCancelled } from '../lib/api/sessionCancelled';
 
 export interface DocumentState<T> {
   loading: boolean;
@@ -32,8 +33,8 @@ export function useDocument<T>(path: string, socketEvent?: string): DocumentStat
         .then((data) => {
           if (!cancelled) setState({ loading: false, data });
         })
-        .catch(() => {
-          if (!cancelled) setState({ loading: false, data: null });
+        .catch((err: unknown) => {
+          if (!cancelled && !isSessionCancelled(err)) setState({ loading: false, data: null });
         });
     }
 
