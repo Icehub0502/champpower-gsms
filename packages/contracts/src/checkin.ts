@@ -5,9 +5,18 @@
 // ahead of them.
 
 import { z } from 'zod';
+import { PLATE_AREAS } from '@champpower/domain';
 import { blankAsAbsent, plate as plateSchema, thaiPhone } from './common.js';
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'invalid_date');
+
+// A plate area: one of the 77 provinces or เบตง, nothing else. Cars are matched
+// on (plate_key, province), so "กทม" and "กรุงเทพมหานคร" as free text would be
+// two different cars. The list is PLATE_AREAS in @champpower/domain
+// (rules/provinces.ts) — the one list; the screen offers it as a picker, and
+// the API refuses anything outside it.
+export const Province = z.enum(PLATE_AREAS);
+export type Province = z.infer<typeof Province>;
 
 // Same list as customers.lead_source in packages/db/migrations/0002_core.sql.
 // 'unknown' has to exist as a real option — without it staff pick at random
@@ -35,10 +44,13 @@ export const CheckInInput = z.object({
   model: z.string().trim().min(1).max(100),
   color: blankAsAbsent(z.string().trim().max(50)),
   year: blankAsAbsent(z.string().trim().max(10)),
-  // จังหวัด as staff type it. Stored on a NEW car only — a check-in never
-  // rewrites the province of a car already on file (see vehiclesRepo). NOT part
-  // of how a car is found: that is plate_key alone.
-  province: blankAsAbsent(z.string().trim().max(50)),
+  // จังหวัด, picked from the 78 plate areas. Part of how a car is found: the same plate in
+  // two provinces is two cars (owner decision, 29 Sep 2026). Optional in the
+  // schema because a car already on file can be found without it; REQUIRED for a
+  // new car — the server answers intake_details_required naming `province`.
+  // An existing car's province is never rewritten; an EMPTY one is filled, with
+  // an audit row (vehiclesRepo.choosePlateMatch).
+  province: blankAsAbsent(Province),
   mileageInKm: blankAsAbsent(z.number().int().min(0)),
   // Omitted = server allocates max(queue_no)+1 for (shop, jobDate) inside the
   // same transaction as the insert. Supplied = staff is fixing a collision or
@@ -65,6 +77,13 @@ export const CheckInInput = z.object({
   // request. Neither is ever defaulted on; both mean "I saw the warning".
   customerId: z.string().uuid().optional(),
   confirmOwnerChange: z.boolean().optional(),
+  // Both answer a 409 `vehicle_ambiguous`: the plate matches more than one car
+  // and the server will not guess. `vehicleId` = "it is this one" (one of the
+  // candidates). `confirmNewVehicle` = "none of those — a new car in the
+  // province I picked"; it only skips cars whose province is unknown, never a
+  // car already on file with the same plate AND province.
+  vehicleId: z.string().uuid().optional(),
+  confirmNewVehicle: z.boolean().optional(),
 
   // W4: held-deposit lookup by phone. The counter must be warned here if
   // customerPhone matches a deposit still `held`, per CLAUDE.md §5.4 item 3 —
@@ -86,9 +105,12 @@ export type CheckInResult = z.infer<typeof CheckInResult>;
 // The form looks up an existing car by plate to prefill brand/model/color.
 // The server matches on vehicles.plate_key, a generated STORED column that
 // strips spaces/dashes and upper-cases — so "กก 1234" and "กก1234" resolve
-// to the same car (packages/db/migrations/0002_core.sql).
+// to the same car (packages/db/migrations/0002_core.sql). With a province the
+// lookup is exact; without one it answers 409 `vehicle_ambiguous` when the plate
+// is on file in more than one province.
 export const VehicleLookupQuery = z.object({
   plate: plateSchema,
+  province: blankAsAbsent(Province),
 });
 export type VehicleLookupQuery = z.infer<typeof VehicleLookupQuery>;
 

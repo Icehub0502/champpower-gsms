@@ -92,10 +92,11 @@ function toSummary(r: bookingsRepo.BookingSummaryRow): BookingSummary {
  */
 async function unknownReference(
   trx: Parameters<typeof bookingsRepo.create>[0],
+  shopId: string,
   ids: { customerId?: string | undefined; vehicleId?: string | undefined; bayId?: string | null | undefined },
 ): Promise<string | null> {
   if (ids.customerId && !(await customersRepo.findById(trx, ids.customerId))) return 'unknown_customer'
-  if (ids.vehicleId && !(await vehiclesRepo.findById(trx, ids.vehicleId))) return 'unknown_vehicle'
+  if (ids.vehicleId && !(await vehiclesRepo.findById(trx, shopId, ids.vehicleId))) return 'unknown_vehicle'
   if (ids.bayId && !(await baysRepo.findById(trx, ids.bayId))) return 'unknown_bay'
   return null
 }
@@ -113,7 +114,14 @@ bookingsRouter.post(
   async (req: AuthedRequest, res) => {
     const parsed = CreateBookingInput.safeParse(req.body)
     if (!parsed.success) {
-      res.status(400).json({ error: 'invalid_request', fields: parsed.error.flatten().fieldErrors })
+      // Codes only: zod's default messages can quote the value that failed
+      // (lib/fieldErrors.ts), and a phone or a name is not ours to echo.
+      const body: InvalidRequestError = {
+        error: 'invalid_request',
+        message: 'ข้อมูลที่กรอกไม่ครบหรือไม่ถูกต้อง',
+        fields: fieldErrorsOf(parsed.error),
+      }
+      res.status(400).json(body)
       return
     }
     const auth = req.auth!
@@ -121,7 +129,7 @@ bookingsRouter.post(
 
     try {
       const outcome = await withShop(db, auth.shop, async (trx) => {
-        const bad = await unknownReference(trx, input)
+        const bad = await unknownReference(trx, auth.shop, input)
         if (bad) return { kind: 'bad_reference' as const, code: bad }
 
         // No overlap check in code. `ex_bookings_no_overlap` is a gist
@@ -225,7 +233,7 @@ bookingsRouter.patch(
         const before = await bookingsRepo.findSummary(trx, id)
         if (!before) return { kind: 'not_found' as const }
 
-        const bad = await unknownReference(trx, input)
+        const bad = await unknownReference(trx, auth.shop, input)
         if (bad) return { kind: 'bad_reference' as const, code: bad }
 
         const changed = await bookingsRepo.patch(trx, id, {
@@ -347,7 +355,13 @@ bookingsRouter.post(
             // The link. This is what makes the booking disappear from the
             // board and what makes a second arrival impossible.
             bookingId: booking.id,
+            // The booking's car, and separately the car the counter picked
+            // (only when answering vehicle_ambiguous). The pick wins, but is
+            // checked: visible to this shop, same plate as typed, and — when
+            // nothing else says who is here — owned by the booking's customer
+            // or confirmed as an owner change (services/intake.ts).
             vehicleId: booking.vehicle_id,
+            pickedVehicleId: input.vehicleId,
             plate: input.plate,
             customerName: input.customerName ?? booking.contact_name ?? undefined,
             customerPhone: input.customerPhone ?? booking.contact_phone ?? undefined,
@@ -365,6 +379,7 @@ bookingsRouter.post(
             photoFileIds: input.photoFileIds,
             customerId: input.customerId ?? booking.customer_id ?? undefined,
             confirmOwnerChange: input.confirmOwnerChange,
+            confirmNewVehicle: input.confirmNewVehicle,
           })
 
           // A refusal has to take the status change with it, or the booking

@@ -19,6 +19,8 @@ import { withShop } from '@gsms/db/client.js'
 import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
 import { asyncRouter } from '../middleware/asyncHandler.js'
+import { fieldErrorsOf } from '../lib/fieldErrors.js'
+import type { InvalidRequestError } from '@gsms/contracts/index.js'
 import {
   MAX_UPLOAD_BYTES,
   deleteFile,
@@ -130,7 +132,14 @@ filesRouter.post(
 
     const parsedBody = uploadBody.safeParse(req.body)
     if (!parsedBody.success) {
-      res.status(400).json({ error: 'invalid_request', fields: parsedBody.error.flatten() })
+      // Codes only, never zod's own messages — those can quote what the caller
+      // sent (lib/fieldErrors.ts) — and the house InvalidRequestError shape.
+      const body: InvalidRequestError = {
+        error: 'invalid_request',
+        message: 'ข้อมูลที่ส่งมาไม่ถูกต้อง',
+        fields: fieldErrorsOf(parsedBody.error),
+      }
+      res.status(400).json(body)
       return
     }
 

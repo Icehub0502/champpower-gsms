@@ -27,6 +27,7 @@ import {
   QueueNoTakenError,
   UnknownBayError,
   UnknownFileError,
+  VehicleAmbiguousError,
   VehicleOwnerMismatchError,
   VehicleRequiredError,
 } from '@gsms/contracts/index.js'
@@ -90,10 +91,24 @@ describe('the refusal schemas refuse fields they do not list (tier 1)', () => {
     expect(CustomerAmbiguousError.safeParse(one).success).toBe(false)
   })
 
+  it('a vehicle candidate carries vehicle facts only — an owner name or phone fails the parse', () => {
+    const cand = { id: ID, province: null, brand: 'Toyota', model: 'Vios', color: null }
+    const ok = { error: 'vehicle_ambiguous', message: 'x', candidates: [cand] }
+    expect(VehicleAmbiguousError.safeParse(ok).success).toBe(true)
+    expect(IntakeRefusal.safeParse(ok).success).toBe(true)
+    for (const extra of [{ ownerName: 'ก' }, { phone: '0811111111' }, { plate: 'กก 1' }]) {
+      const bad = { ...ok, candidates: [{ ...cand, ...extra }] }
+      expect(VehicleAmbiguousError.safeParse(bad).success, JSON.stringify(extra)).toBe(false)
+    }
+    // One candidate IS a choice here ("this car, or a new one"), unlike customers.
+    expect(VehicleAmbiguousError.safeParse({ ...ok, candidates: [] }).success).toBe(false)
+  })
+
   it('the union recognises every code, and nothing else', () => {
     for (const error of [
       'unknown_bay', 'unknown_file', 'booking_not_found', 'booking_already_arrived',
       'booking_not_open', 'job_number_series_missing', 'vehicle_required',
+      'unknown_vehicle', 'vehicle_plate_mismatch',
     ]) {
       expect(IntakeRefusal.safeParse({ error, message: 'x' }).success, error).toBe(true)
     }
@@ -109,9 +124,11 @@ describe('the intake_details_required message is true to what is missing (tier 1
   // the car IS on file and only the customer's name is missing. That case cannot
   // be reached through the API today (check-in requires a name; a booking always
   // carries a contact name), so its wording is pinned here directly.
-  it('calls the car new only when brand or model is missing', () => {
+  it('calls the car new only when brand, model or province is missing', () => {
     expect(detailsRequiredMessage(['brand', 'model'])).toMatch(/^รถคันนี้ยังไม่เคยเข้าร้าน/)
     expect(detailsRequiredMessage(['model'])).toMatch(/^รถคันนี้ยังไม่เคยเข้าร้าน/)
+    // Province is asked for only when a car is being created.
+    expect(detailsRequiredMessage(['province'])).toBe('รถคันนี้ยังไม่เคยเข้าร้าน กรุณากรอกจังหวัด')
   })
 
   it('asks only for the name when only the name is missing — no claim the car is new', () => {
@@ -150,7 +167,7 @@ describe.skipIf(!hasDatabase)(tier2('intake refusals parse under their contract 
       { shop_id: fx.shopA, name: 'ลูก', phone: shared },
     ]).execute())
     const res = await post(api, '/api/checkin', {
-      plate: 'ณณ 1001', customerName: 'ใครสักคน', customerPhone: shared, brand: 'Toyota', model: 'Vios',
+      plate: 'ณณ 1001', customerName: 'ใครสักคน', customerPhone: shared, brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร',
     }, t)
     expect(res.status).toBe(409)
     parses(CustomerAmbiguousError, res.body)
@@ -166,11 +183,11 @@ describe.skipIf(!hasDatabase)(tier2('intake refusals parse under their contract 
   it('vehicle_owner_mismatch', async () => {
     const t = await token()
     const first = await post(api, '/api/checkin', {
-      plate: 'ณณ 2002', customerName: 'เจ้าของเดิม', customerPhone: '0877002201', brand: 'Isuzu', model: 'D-Max',
+      plate: 'ณณ 2002', customerName: 'เจ้าของเดิม', customerPhone: '0877002201', brand: 'Isuzu', model: 'D-Max', province: 'กรุงเทพมหานคร',
     }, t)
     expect(first.status).toBe(201)
     const res = await post(api, '/api/checkin', {
-      plate: 'ณณ 2002', customerName: 'เจ้าของใหม่', customerPhone: '0877002202', brand: 'Isuzu', model: 'D-Max',
+      plate: 'ณณ 2002', customerName: 'เจ้าของใหม่', customerPhone: '0877002202', brand: 'Isuzu', model: 'D-Max', province: 'กรุงเทพมหานคร',
     }, t)
     expect(res.status).toBe(409)
     parses(VehicleOwnerMismatchError, res.body)
@@ -192,22 +209,23 @@ describe.skipIf(!hasDatabase)(tier2('intake refusals parse under their contract 
     expect(bare.status).toBe(409)
     parses(VehicleRequiredError, bare.body)
 
-    // A plate nobody has seen, with no brand or model: intake_details_required.
+    // A plate nobody has seen, with no brand, model or province:
+    // intake_details_required naming all three.
     const thin = await post(api, `/api/bookings/${booking.body.id}/arrive`, { plate: 'ณณ 3003' }, t)
     expect(thin.status).toBe(409)
     parses(IntakeDetailsRequiredError, thin.body)
-    expect(Object.keys((thin.body as { fields: object }).fields).sort()).toEqual(['brand', 'model'])
+    expect(Object.keys((thin.body as { fields: object }).fields).sort()).toEqual(['brand', 'model', 'province'])
   })
 
   it('queue_no_taken carries the refused number as data', async () => {
     const t = await token()
     const jobDate = '2030-02-01'
     const a = await post(api, '/api/checkin', {
-      plate: 'ณณ 4004', customerName: 'คิวหนึ่ง', brand: 'Toyota', model: 'Vios', jobDate, queueNo: 7,
+      plate: 'ณณ 4004', customerName: 'คิวหนึ่ง', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร', jobDate, queueNo: 7,
     }, t)
     expect(a.status).toBe(201)
     const b = await post(api, '/api/checkin', {
-      plate: 'ณณ 4005', customerName: 'คิวสอง', brand: 'Toyota', model: 'Vios', jobDate, queueNo: 7,
+      plate: 'ณณ 4005', customerName: 'คิวสอง', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร', jobDate, queueNo: 7,
     }, t)
     expect(b.status).toBe(409)
     parses(QueueNoTakenError, b.body)
@@ -235,7 +253,7 @@ describe.skipIf(!hasDatabase)(tier2('intake refusals parse under their contract 
 
   it('unknown_bay and unknown_file', async () => {
     const t = await token()
-    const base = { customerName: 'ทดสอบ', brand: 'Toyota', model: 'Vios' }
+    const base = { customerName: 'ทดสอบ', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร' }
     const bay = await post(api, '/api/checkin', { ...base, plate: 'ณณ 6006', bayId: ID }, t)
     expect(bay.status).toBe(400)
     parses(UnknownBayError, bay.body)
@@ -275,9 +293,28 @@ describe.skipIf(!hasDatabase)(tier2('intake refusals parse under their contract 
     expect((customer.body as { fields: { phone: string[] } }).fields.phone).toEqual(['invalid_phone'])
   })
 
+  it('invalid_request from POST /api/bookings: codes only, the typed values never echoed', async () => {
+    // It returned zod's flatten().fieldErrors — default messages, which can quote
+    // the value that failed. A phone or a name is not ours to send back.
+    const phone = '12ab-BOOKING-CANARY'
+    const source = 'BOOKING-SOURCE-CANARY'
+    const res = await post(api, '/api/bookings', {
+      source, contactName: 'จอง', contactPhone: phone, bayId: null,
+      slotStart: 'not-a-date-CANARY', slotEnd: new Date().toISOString(),
+    }, await token())
+    expect(res.status).toBe(400)
+    parses(InvalidRequestError, res.body)
+    const body = InvalidRequestError.parse(res.body)
+    const raw = JSON.stringify(res.body)
+    for (const canary of [phone, source, 'not-a-date-CANARY']) expect(raw).not.toContain(canary)
+    expect(body.fields?.contactPhone).toEqual(['invalid_phone'])
+    expect(body.fields?.source).toEqual(['invalid_value'])
+    expect(body.fields?.slotStart).toEqual(['invalid_format'])
+  })
+
   it('booking_not_found, booking_already_arrived, booking_not_open', async () => {
     const t = await token()
-    const car = { brand: 'Toyota', model: 'Vios' }
+    const car = { brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร' }
 
     const missing = await post(api, `/api/bookings/${ID}/arrive`, { plate: 'ณณ 8008', ...car }, t)
     expect(missing.status).toBe(404)
@@ -310,7 +347,7 @@ describe.skipIf(!hasDatabase)(tier2('intake refusals parse under their contract 
       .where('shop_id', '=', fx.shopB).where('series', '=', 'JOB').execute())
     const { accessToken } = await issueTokensFor(fx.userId, fx.shopB, 'owner')
     const res = await post(api, '/api/checkin', {
-      plate: 'ณณ 9009', customerName: 'ไม่มีเลขงาน', brand: 'Toyota', model: 'Vios',
+      plate: 'ณณ 9009', customerName: 'ไม่มีเลขงาน', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร',
     }, accessToken)
     expect(res.status).toBe(500)
     parses(JobNumberSeriesMissingError, res.body)

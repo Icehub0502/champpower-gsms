@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { blankAsAbsent, plate as plateSchema, thaiPhone } from './common.js';
 // Arrival captures the car, so it reuses check-in's own vocabulary rather
 // than growing a parallel one that drifts. See ArriveInput below.
-import { LeadSource } from './checkin.js';
+import { LeadSource, Province } from './checkin.js';
 
 const isoDateTime = z.string().datetime();
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'invalid_date');
@@ -86,8 +86,9 @@ export const ArriveInput = z.object({
   model: blankAsAbsent(z.string().trim().min(1).max(100)),
   color: blankAsAbsent(z.string().trim().max(50)),
   year: blankAsAbsent(z.string().trim().max(10)),
-  // Same rule as CheckInInput.province: stored on a new car, never overwrites.
-  province: blankAsAbsent(z.string().trim().max(50)),
+  // Same rule as CheckInInput.province: one of the plate areas, part of how the car is
+  // found, required for a new car, fills an empty one, never overwrites.
+  province: blankAsAbsent(Province),
   mileageInKm: blankAsAbsent(z.number().int().min(0)),
   bayId: blankAsAbsent(z.string().uuid()),
   queueNo: blankAsAbsent(z.number().int().min(1)),
@@ -101,6 +102,10 @@ export const ArriveInput = z.object({
   // opens the job for both doors.
   customerId: z.string().uuid().optional(),
   confirmOwnerChange: z.boolean().optional(),
+  // Answers to `vehicle_ambiguous`, as on CheckInInput. A `vehicleId` typed
+  // here wins over the booking's own, like every other field on arrival.
+  vehicleId: z.string().uuid().optional(),
+  confirmNewVehicle: z.boolean().optional(),
 });
 export type ArriveInput = z.infer<typeof ArriveInput>;
 

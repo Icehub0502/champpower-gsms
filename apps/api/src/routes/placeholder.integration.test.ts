@@ -51,7 +51,7 @@ describe.skipIf(!hasDatabase)(tier2('placeholder phones with an empty blocklist,
     const { accessToken } = await issueTokensFor(
       fx.userId, shop === 'A' ? fx.shopA : fx.shopB, 'owner')
     return post<CheckInBody>(api, '/api/checkin', {
-      plate, customerName, customerPhone, brand: 'Toyota', model: 'Vigo',
+      plate, customerName, customerPhone, brand: 'Toyota', model: 'Vigo', province: 'กรุงเทพมหานคร',
     }, accessToken)
   }
 

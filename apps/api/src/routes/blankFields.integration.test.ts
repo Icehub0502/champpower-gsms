@@ -30,7 +30,7 @@ const BLANK_OPTIONALS = {
 }
 
 describe('blank optional fields in the schemas (tier 1)', () => {
-  const required = { plate: 'บบ 1234', customerName: 'ชื่อ', brand: 'Toyota', model: 'Vios' }
+  const required = { plate: 'บบ 1234', customerName: 'ชื่อ', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร' }
 
   it('CheckInInput accepts every optional field blank, and treats each as absent', () => {
     const r = CheckInInput.safeParse({ ...required, ...BLANK_OPTIONALS })
@@ -89,7 +89,7 @@ describe('blank optional fields in the schemas (tier 1)', () => {
 
   it('ArriveInput accepts every optional field blank, including the car and customer fields', () => {
     const r = ArriveInput.safeParse({
-      ...BLANK_OPTIONALS, plate: '', customerName: '', brand: '', model: '',
+      ...BLANK_OPTIONALS, plate: '', customerName: '', brand: '', model: '', province: 'กรุงเทพมหานคร',
     })
     expect(r.success, JSON.stringify(r.success ? null : r.error.flatten())).toBe(true)
   })
@@ -111,9 +111,11 @@ describe.skipIf(!hasDatabase)(tier2('blank optional fields at the endpoints'), (
   const token = async () => (await issueTokensFor(fx.userId, fx.shopA, 'owner')).accessToken
 
   it('a walk-in with every optional field blank opens a job, and stores NULL, not ""', async () => {
+    // Province is set AFTER the blanks: a new car cannot be created without one
+    // (owner decision, 29 Sep 2026 — see the next test).
     const res = await post<{ jobId: string; customerId: string; vehicleId: string; jobDate: string }>(
       api, '/api/checkin',
-      { plate: 'บบ 2345', customerName: 'ไม่กรอกอะไรเลย', brand: 'Toyota', model: 'Vios', ...BLANK_OPTIONALS },
+      { plate: 'บบ 2345', customerName: 'ไม่กรอกอะไรเลย', brand: 'Toyota', model: 'Vios', ...BLANK_OPTIONALS, province: 'กรุงเทพมหานคร' },
       await token(),
     )
     expect(res.status, JSON.stringify(res.body)).toBe(201)
@@ -128,12 +130,20 @@ describe.skipIf(!hasDatabase)(tier2('blank optional fields at the endpoints'), (
       complaints: await trx.selectFrom('job_complaints').select(['id'])
         .where('job_id', '=', res.body.jobId).execute(),
     }))
-    expect(stored.vehicle).toEqual({ color: null, year: null, province: null })
+    expect(stored.vehicle).toEqual({ color: null, year: null, province: 'กรุงเทพมหานคร' })
     expect(stored.customer).toEqual({ phone: null, lead_source: null })
     expect(stored.job.bay_id).toBeNull()
     expect(stored.complaints, 'a blank symptom became a complaint line').toHaveLength(0)
     // A blank job date means "today", exactly as if it had been left out.
     expect(res.body.jobDate).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('a blank province on a NEW car is asked for (409 naming province), never a 400', async () => {
+    const res = await post(api, '/api/checkin',
+      { plate: 'บบ 2346', customerName: 'ไม่กรอกจังหวัด', brand: 'Toyota', model: 'Vios', province: '' },
+      await token())
+    expect(res.status, JSON.stringify(res.body)).toBe(409)
+    expect(res.body).toMatchObject({ error: 'intake_details_required', fields: { province: ['required'] } })
   })
 
   it('on arrival, a blank falls back to the booking — it is not a 400', async () => {
@@ -150,7 +160,7 @@ describe.skipIf(!hasDatabase)(tier2('blank optional fields at the endpoints'), (
     // Every field blank: the booking has no car, so the honest answer is
     // vehicle_required — NOT invalid_request.
     const allBlank = await post(api, `/api/bookings/${booking.body.id}/arrive`, {
-      ...BLANK_OPTIONALS, plate: '', customerName: '', brand: '', model: '',
+      ...BLANK_OPTIONALS, plate: '', customerName: '', brand: '', model: '', province: 'กรุงเทพมหานคร',
     }, t)
     expect(allBlank.status).toBe(409)
     expect(allBlank.body).toMatchObject({ error: 'vehicle_required' })

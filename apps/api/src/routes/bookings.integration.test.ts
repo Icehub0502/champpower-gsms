@@ -91,7 +91,7 @@ describe.skipIf(!hasDatabase)(tier2('bookings and arrival (POST /api/bookings, P
       const booking = await bookPhone(s.accessToken, 1)
 
       const arriveOnce = () => post<ArriveBody>(api, `/api/bookings/${booking.id}/arrive`, {
-        plate: 'RACE-ARRIVE-1', customerName: 'Phone Customer', brand: 'Isuzu', model: 'D-Max',
+        plate: 'RACE-ARRIVE-1', customerName: 'Phone Customer', brand: 'Isuzu', model: 'D-Max', province: 'กรุงเทพมหานคร',
       }, s.accessToken)
 
       const [a, b] = await Promise.all([arriveOnce(), arriveOnce()])
@@ -125,7 +125,7 @@ describe.skipIf(!hasDatabase)(tier2('bookings and arrival (POST /api/bookings, P
       expect(before.body.items.some((r) => r.kind === 'booking' && r.refId === booking.id)).toBe(true)
 
       const arrived = await post<ArriveBody>(api, `/api/bookings/${booking.id}/arrive`, {
-        plate: 'BOOKING-VANISH-1', customerName: 'Phone Customer', brand: 'Mazda', model: 'BT-50',
+        plate: 'BOOKING-VANISH-1', customerName: 'Phone Customer', brand: 'Mazda', model: 'BT-50', province: 'กรุงเทพมหานคร',
       }, s.accessToken)
       expect(arrived.status, JSON.stringify(arrived.body)).toBe(201)
 
@@ -171,7 +171,7 @@ describe.skipIf(!hasDatabase)(tier2('bookings and arrival (POST /api/bookings, P
       // And it really can still be arrived, this time with the missing fact
       // supplied.
       const retried = await post<ArriveBody>(api, `/api/bookings/${booking.id}/arrive`, {
-        plate: 'STRAND-RETRY-1', customerName: 'Phone Customer', brand: 'Ford', model: 'Ranger',
+        plate: 'STRAND-RETRY-1', customerName: 'Phone Customer', brand: 'Ford', model: 'Ranger', province: 'กรุงเทพมหานคร',
       }, s.accessToken)
       expect(retried.status, JSON.stringify(retried.body)).toBe(201)
     })
@@ -313,7 +313,7 @@ describe.skipIf(!hasDatabase)(tier2('bookings and arrival (POST /api/bookings, P
       const asB = await owner(fx.shopB)
 
       const res = await post(api, `/api/bookings/${booking.id}/arrive`, {
-        plate: 'XSHOP-ARRIVE-1', customerName: 'x', brand: 'x', model: 'x',
+        plate: 'XSHOP-ARRIVE-1', customerName: 'x', brand: 'x', model: 'x', province: 'กรุงเทพมหานคร',
       }, asB.accessToken)
       expect(res.status).toBe(404)
       expect(res.body).toMatchObject({ error: 'booking_not_found' })
@@ -337,7 +337,7 @@ describe.skipIf(!hasDatabase)(tier2('bookings and arrival (POST /api/bookings, P
       const booking = await bookPhone(owned.accessToken, 121)
       const tech = await asRole(fx.shopA, 'technician')
       const res = await post(api, `/api/bookings/${booking.id}/arrive`, {
-        plate: 'ROLE-TECH-1', customerName: 'x', brand: 'x', model: 'x',
+        plate: 'ROLE-TECH-1', customerName: 'x', brand: 'x', model: 'x', province: 'กรุงเทพมหานคร',
       }, tech.accessToken)
       expect(res.status).toBe(403)
     })
@@ -353,7 +353,7 @@ describe.skipIf(!hasDatabase)(tier2('bookings and arrival (POST /api/bookings, P
       expect((await auditFor(fx.shopA, 'booking_created', booking.id)).length).toBeGreaterThan(0)
 
       const arrived = await post<ArriveBody>(api, `/api/bookings/${booking.id}/arrive`, {
-        plate: 'AUDIT-ARRIVE-1', customerName: 'Phone Customer', brand: 'Nissan', model: 'Navara',
+        plate: 'AUDIT-ARRIVE-1', customerName: 'Phone Customer', brand: 'Nissan', model: 'Navara', province: 'กรุงเทพมหานคร',
       }, s.accessToken)
       expect(arrived.status).toBe(201)
       expect((await auditFor(fx.shopA, 'booking_arrived', booking.id)).length).toBeGreaterThan(0)

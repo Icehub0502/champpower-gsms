@@ -65,7 +65,7 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
       const s = await owner(fx.shopA)
       const plate = 'NODETAILS-2'
       const res = await post(api, '/api/checkin', {
-        plate, brand: 'Toyota', model: 'Hilux',
+        plate, brand: 'Toyota', model: 'Hilux', province: 'กรุงเทพมหานคร',
       }, s.accessToken)
       // zod itself refuses first: customerName is a required field on CheckInInput.
       expect(res.status).toBe(400)
@@ -79,7 +79,7 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
     it('matches "กก 1234", "กก1234" and "กก-1234" to the same vehicle, via plate_key', async () => {
       const s = await owner(fx.shopA)
       const checkin = await post<CheckInBody>(api, '/api/checkin', {
-        plate: 'กก 1234', customerName: 'Plate Normalise Customer', brand: 'Toyota', model: 'Yaris',
+        plate: 'กก 1234', customerName: 'Plate Normalise Customer', brand: 'Toyota', model: 'Yaris', province: 'กรุงเทพมหานคร',
       }, s.accessToken)
       expect(checkin.status, JSON.stringify(checkin.body)).toBe(201)
 
@@ -117,7 +117,7 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
       const s = await owner(fx.shopA)
       const jobDate = '2030-01-01' // far future, isolated from every other test's default-today numbers
       const attempts = Array.from({ length: N }, (_, i) => post<CheckInBody>(api, '/api/checkin', {
-        plate: `RACE-QNO-${i}`, customerName: `Race ${i}`, brand: 'Toyota', model: 'Vios', jobDate,
+        plate: `RACE-QNO-${i}`, customerName: `Race ${i}`, brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร', jobDate,
       }, s.accessToken))
 
       const results = await Promise.all(attempts)
@@ -147,10 +147,10 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
       const jobDate = '2030-01-06'
       const TYPED = 50
       const serverAllocated = Array.from({ length: 8 }, (_, i) => post<CheckInBody>(api, '/api/checkin', {
-        plate: `MIX-SRV-${i}`, customerName: `Server ${i}`, brand: 'Toyota', model: 'Vios', jobDate,
+        plate: `MIX-SRV-${i}`, customerName: `Server ${i}`, brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร', jobDate,
       }, s.accessToken))
       const typed = post<CheckInBody>(api, '/api/checkin', {
-        plate: 'MIX-TYPED', customerName: 'Typed', brand: 'Toyota', model: 'Vios', jobDate, queueNo: TYPED,
+        plate: 'MIX-TYPED', customerName: 'Typed', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร', jobDate, queueNo: TYPED,
       }, s.accessToken)
 
       const [typedRes, ...serverRes] = await Promise.all([typed, ...serverAllocated])
@@ -170,14 +170,14 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
       const s = await owner(fx.shopA)
       const jobDate = '2030-01-02'
       const first = await post<CheckInBody>(api, '/api/checkin', {
-        plate: 'TAKEN-QNO-1', customerName: 'Taken One', brand: 'Toyota', model: 'Vios',
+        plate: 'TAKEN-QNO-1', customerName: 'Taken One', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร',
         jobDate, queueNo: 5,
       }, s.accessToken)
       expect(first.status).toBe(201)
       expect(first.body.queueNo).toBe(5)
 
       const second = await post(api, '/api/checkin', {
-        plate: 'TAKEN-QNO-2', customerName: 'Taken Two', brand: 'Toyota', model: 'Vios',
+        plate: 'TAKEN-QNO-2', customerName: 'Taken Two', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร',
         jobDate, queueNo: 5,
       }, s.accessToken)
       expect(second.status).toBe(409)
@@ -187,11 +187,11 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
     it('the same queue number on a different job date is fine', async () => {
       const s = await owner(fx.shopA)
       const a = await post<CheckInBody>(api, '/api/checkin', {
-        plate: 'SAMEDAY-QNO-1', customerName: 'Day A', brand: 'Toyota', model: 'Vios',
+        plate: 'SAMEDAY-QNO-1', customerName: 'Day A', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร',
         jobDate: '2030-01-03', queueNo: 7,
       }, s.accessToken)
       const b = await post<CheckInBody>(api, '/api/checkin', {
-        plate: 'SAMEDAY-QNO-2', customerName: 'Day B', brand: 'Toyota', model: 'Vios',
+        plate: 'SAMEDAY-QNO-2', customerName: 'Day B', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร',
         jobDate: '2030-01-04', queueNo: 7,
       }, s.accessToken)
       expect(a.status).toBe(201)
@@ -202,11 +202,11 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
       const asA = await owner(fx.shopA)
       const asB = await owner(fx.shopB)
       const a = await post<CheckInBody>(api, '/api/checkin', {
-        plate: 'SAMESHOP-QNO-1', customerName: 'Shop A', brand: 'Toyota', model: 'Vios',
+        plate: 'SAMESHOP-QNO-1', customerName: 'Shop A', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร',
         jobDate: '2030-01-05', queueNo: 9,
       }, asA.accessToken)
       const b = await post<CheckInBody>(api, '/api/checkin', {
-        plate: 'SAMESHOP-QNO-2', customerName: 'Shop B', brand: 'Toyota', model: 'Vios',
+        plate: 'SAMESHOP-QNO-2', customerName: 'Shop B', brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร',
         jobDate: '2030-01-05', queueNo: 9,
       }, asB.accessToken)
       expect(a.status).toBe(201)
@@ -222,7 +222,7 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
       const asA = await owner(fx.shopA)
       const plate = 'XSHOP-LOOKUP-1'
       const checkin = await post<CheckInBody>(api, '/api/checkin', {
-        plate, customerName: 'Cross Shop Lookup', brand: 'Toyota', model: 'Fortuner',
+        plate, customerName: 'Cross Shop Lookup', brand: 'Toyota', model: 'Fortuner', province: 'กรุงเทพมหานคร',
       }, asA.accessToken)
       expect(checkin.status).toBe(201)
 
@@ -240,7 +240,7 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
     it('a viewer cannot check in', async () => {
       const viewer = await asRole(fx.shopA, 'viewer')
       const res = await post(api, '/api/checkin', {
-        plate: 'ROLE-VIEWER-1', customerName: 'x', brand: 'x', model: 'x',
+        plate: 'ROLE-VIEWER-1', customerName: 'x', brand: 'x', model: 'x', province: 'กรุงเทพมหานคร',
       }, viewer.accessToken)
       expect(res.status).toBe(403)
     })
@@ -248,7 +248,7 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
     it('a technician cannot check in', async () => {
       const tech = await asRole(fx.shopA, 'technician')
       const res = await post(api, '/api/checkin', {
-        plate: 'ROLE-TECH-1', customerName: 'x', brand: 'x', model: 'x',
+        plate: 'ROLE-TECH-1', customerName: 'x', brand: 'x', model: 'x', province: 'กรุงเทพมหานคร',
       }, tech.accessToken)
       expect(res.status).toBe(403)
     })
@@ -262,7 +262,7 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
 
     it('check-in requires a token at all', async () => {
       const res = await post(api, '/api/checkin', {
-        plate: 'ROLE-NOAUTH-1', customerName: 'x', brand: 'x', model: 'x',
+        plate: 'ROLE-NOAUTH-1', customerName: 'x', brand: 'x', model: 'x', province: 'กรุงเทพมหานคร',
       })
       expect(res.status).toBe(401)
     })
@@ -275,7 +275,7 @@ describe.skipIf(!hasDatabase)(tier2('walk-in check-in (POST /api/checkin, lookup
     it('writes job_checked_in for a walk-in', async () => {
       const s = await owner(fx.shopA)
       const checkin = await post<CheckInBody>(api, '/api/checkin', {
-        plate: 'AUDIT-CHECKIN-1', customerName: 'Audit Checkin', brand: 'Toyota', model: 'Camry',
+        plate: 'AUDIT-CHECKIN-1', customerName: 'Audit Checkin', brand: 'Toyota', model: 'Camry', province: 'กรุงเทพมหานคร',
       }, s.accessToken)
       expect(checkin.status).toBe(201)
       const audit = await auditFor(fx.shopA, 'job_checked_in', checkin.body.jobId)

@@ -4,7 +4,11 @@
     "lib": ["ES2022"],
     "types": [],
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // Contracts read vocabulary that belongs to the domain (THAI_PROVINCES).
+    // Resolve @champpower/domain from SOURCE, like apps/api's typecheck does,
+    // so this package can never typecheck green against a stale dist.
+    "customConditions": ["gsms-source"]
   },
   "include": ["src/**/*.ts"]
 }

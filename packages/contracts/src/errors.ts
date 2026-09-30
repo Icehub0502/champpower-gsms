@@ -63,8 +63,40 @@ export const VehicleOwnerMismatchError = z
   .strict();
 export type VehicleOwnerMismatchError = z.infer<typeof VehicleOwnerMismatchError>;
 
+/**
+ * A car the counter may pick when a plate matches more than one. Vehicle facts
+ * ONLY — no owner, no phone: brand, model, colour and province are what tell
+ * two cars with one plate apart at the counter, and a customer's name has no
+ * business in a response about which car this is.
+ */
+export const VehicleCandidate = z
+  .object({
+    id: uuid,
+    // null = on file without a province (entered before province was required).
+    province: z.string().nullable(),
+    brand: z.string(),
+    model: z.string(),
+    color: z.string().nullable(),
+  })
+  .strict();
+export type VehicleCandidate = z.infer<typeof VehicleCandidate>;
+
+// 409 — this plate matches more than one car the server cannot choose between:
+// on file in several provinces and none was given, or the province given
+// matches no car exactly but cars with an unknown province could be this one.
+// Resend with `province`, with `vehicleId` (one of these), or with
+// `confirmNewVehicle: true` ("none of these").
+export const VehicleAmbiguousError = z
+  .object({
+    error: z.literal('vehicle_ambiguous'),
+    message: z.string(),
+    candidates: z.array(VehicleCandidate).min(1),
+  })
+  .strict();
+export type VehicleAmbiguousError = z.infer<typeof VehicleAmbiguousError>;
+
 /** The fields a brand-new car cannot be created without. */
-export const IntakeRequiredField = z.enum(['brand', 'model', 'customerName']);
+export const IntakeRequiredField = z.enum(['brand', 'model', 'province', 'customerName']);
 export type IntakeRequiredField = z.infer<typeof IntakeRequiredField>;
 
 // 409 — a plate nobody has seen before, but not enough to create the car.
@@ -77,6 +109,7 @@ export const IntakeDetailsRequiredError = z
       .object({
         brand: z.array(z.string()).optional(),
         model: z.array(z.string()).optional(),
+        province: z.array(z.string()).optional(),
         customerName: z.array(z.string()).optional(),
       })
       .strict(),
@@ -127,6 +160,17 @@ export type UnknownBayError = z.infer<typeof UnknownBayError>;
 export const UnknownFileError = payloadless('unknown_file');
 export type UnknownFileError = z.infer<typeof UnknownFileError>;
 
+// 400 — a picked `vehicleId` (answering vehicle_ambiguous) this shop cannot
+// see. The SAME answer whether the id does not exist or is another branch's
+// car, so the response never reveals that a car exists elsewhere.
+export const UnknownVehicleError = payloadless('unknown_vehicle');
+export type UnknownVehicleError = z.infer<typeof UnknownVehicleError>;
+
+// 409 — the picked `vehicleId` is a car with a different plate from the one
+// typed. A stale form or a wrong pick; nothing is written to either car.
+export const VehiclePlateMismatchError = payloadless('vehicle_plate_mismatch');
+export type VehiclePlateMismatchError = z.infer<typeof VehiclePlateMismatchError>;
+
 // 404 — no such booking in this shop.
 export const BookingNotFoundError = payloadless('booking_not_found');
 export type BookingNotFoundError = z.infer<typeof BookingNotFoundError>;
@@ -167,11 +211,14 @@ export type InvalidRequestError = z.infer<typeof InvalidRequestError>;
 export const IntakeRefusal = z.discriminatedUnion('error', [
   CustomerAmbiguousError,
   VehicleOwnerMismatchError,
+  VehicleAmbiguousError,
   IntakeDetailsRequiredError,
   VehicleRequiredError,
   QueueNoTakenError,
   UnknownBayError,
   UnknownFileError,
+  UnknownVehicleError,
+  VehiclePlateMismatchError,
   BookingNotFoundError,
   BookingAlreadyArrivedError,
   BookingNotOpenError,

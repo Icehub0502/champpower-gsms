@@ -23,7 +23,10 @@ import {
   type IntakeRequiredField,
   type UnknownBayError,
   type UnknownFileError,
+  type UnknownVehicleError,
+  type VehiclePlateMismatchError,
   type QueueBoardRow,
+  type VehicleAmbiguousError,
   type VehicleOwnerMismatchError,
   type VehicleRequiredError,
 } from '@gsms/contracts/index.js'
@@ -35,6 +38,7 @@ import { addDays, bangkokToday, endOfDayExclusive, startOfDay } from '../lib/ban
 import * as queueRepo from '../repositories/queue.js'
 import * as jobsRepo from '../repositories/jobs.js'
 import * as baysRepo from '../repositories/bays.js'
+import type * as vehiclesRepo from '../repositories/vehicles.js'
 import { writeAudit } from '../services/audit.js'
 import type { OpenJobOutcome } from '../services/intake.js'
 
@@ -70,11 +74,28 @@ const idParam = z.object({ id: z.string().uuid() })
  */
 export function detailsRequiredMessage(missing: IntakeRequiredField[]): string {
   const label: Record<IntakeRequiredField, string> = {
-    brand: 'ยี่ห้อ', model: 'รุ่น', customerName: 'ชื่อลูกค้า',
+    brand: 'ยี่ห้อ', model: 'รุ่น', province: 'จังหวัด', customerName: 'ชื่อลูกค้า',
   }
   const words = missing.map((f) => label[f]).join(' ')
-  const newCar = missing.includes('brand') || missing.includes('model')
+  // Province is asked for only when a car is being CREATED, so it marks a new
+  // car just as brand and model do.
+  const newCar = missing.includes('brand') || missing.includes('model') || missing.includes('province')
   return newCar ? `รถคันนี้ยังไม่เคยเข้าร้าน กรุณากรอก${words}` : `กรุณากรอก${words}`
+}
+
+/**
+ * The vehicle_ambiguous body — one builder for the resolver's refusal and the
+ * plate lookup's, so the screen handles one shape. An explicit projection:
+ * vehicle facts only, never the owner (see VehicleCandidate in contracts).
+ */
+export function vehicleAmbiguousBody(candidates: vehiclesRepo.VehicleRow[]): VehicleAmbiguousError {
+  return {
+    error: 'vehicle_ambiguous',
+    message: 'ทะเบียนนี้มีรถมากกว่าหนึ่งคัน กรุณาเลือกจังหวัด หรือเลือกคันที่ใช่',
+    candidates: candidates.map((v) => ({
+      id: v.id, province: v.province, brand: v.brand, model: v.model, color: v.color,
+    })),
+  }
 }
 
 /**
@@ -141,6 +162,23 @@ export function sendIntakeOutcome(
         newOwner: { id: outcome.newOwner.id, name: outcome.newOwner.name },
       }
       res.status(409).json(body)
+      return
+    }
+    case 'unknown_vehicle': {
+      const body: UnknownVehicleError = { error: 'unknown_vehicle', message: 'ไม่พบรถคันที่เลือกในสาขานี้' }
+      res.status(400).json(body)
+      return
+    }
+    case 'vehicle_plate_mismatch': {
+      const body: VehiclePlateMismatchError = {
+        error: 'vehicle_plate_mismatch',
+        message: 'รถคันที่เลือกไม่ใช่ทะเบียนที่กรอก กรุณาตรวจทะเบียนหรือเลือกใหม่',
+      }
+      res.status(409).json(body)
+      return
+    }
+    case 'vehicle_ambiguous': {
+      res.status(409).json(vehicleAmbiguousBody(outcome.candidates))
       return
     }
     default: {

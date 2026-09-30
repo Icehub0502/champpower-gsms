@@ -14,6 +14,7 @@
 import { promises as fsp } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { withShop } from '@gsms/db/client.js'
+import { InvalidRequestError } from '@gsms/contracts/index.js'
 import { db } from '../lib/db.js'
 import { hasDatabase, tier2 } from '../test/env.js'
 import {
@@ -182,6 +183,17 @@ describe.skipIf(!hasDatabase)(tier2('check-in photo files'), () => {
     // The body is the standard JSON error shape, not any part of the photo.
     expect(got.contentType ?? '').toMatch(/application\/json/)
     expect(JSON.parse(got.buf.toString('utf8'))).toEqual({ error: 'not_found' })
+  })
+
+  it('an unknown kind is invalid_request with codes only — the value sent is never echoed', async () => {
+    // It returned zod's flatten() — the wrong shape ({formErrors, fieldErrors})
+    // and default messages that can quote the input.
+    const { accessToken: access } = await tokenA()
+    const canary = 'KIND-CANARY-4417'
+    const up = await uploadFile(api, access, JPEG_BUF, 'checkin.jpg', canary)
+    expect(up.status).toBe(400)
+    expect(InvalidRequestError.parse(up.body).fields).toEqual({ kind: ['invalid_value'] })
+    expect(JSON.stringify(up.body)).not.toContain(canary)
   })
 
   it('rejects a text file renamed .jpg as unsupported_file_type', async () => {

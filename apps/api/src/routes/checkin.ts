@@ -28,7 +28,7 @@ import { fieldErrorsOf } from '../lib/fieldErrors.js'
 import * as customersRepo from '../repositories/customers.js'
 import * as vehiclesRepo from '../repositories/vehicles.js'
 import { openJob, withQueueNoRetry, type OpenJobOutcome } from '../services/intake.js'
-import { BOARD_READ_ROLES, INTAKE_WRITE_ROLES, sendIntakeOutcome } from './queue.js'
+import { BOARD_READ_ROLES, INTAKE_WRITE_ROLES, sendIntakeOutcome, vehicleAmbiguousBody } from './queue.js'
 
 export const checkinRouter = asyncRouter()
 
@@ -73,10 +73,12 @@ checkinRouter.post(
             symptom: input.symptom,
             bayId: input.bayId,
             photoFileIds: input.photoFileIds,
-            // Both present only on a second attempt, after the counter has
-            // seen and answered a 409.
+            // Present only on a second attempt, after the counter has seen
+            // and answered a 409.
             customerId: input.customerId,
             confirmOwnerChange: input.confirmOwnerChange,
+            pickedVehicleId: input.vehicleId,
+            confirmNewVehicle: input.confirmNewVehicle,
           })))
 
       if (outcome.kind !== 'ok') {
@@ -121,8 +123,16 @@ checkinRouter.get(
     }
 
     const found = await withShop(db, req.auth!.shop, async (trx) => {
-      const vehicle = await vehiclesRepo.findByPlate(trx, q.data.plate)
-      if (!vehicle) return undefined
+      // The same decision the check-in makes, so the prefill never shows a car
+      // the POST would then refuse or not pick. Read-only: an empty province is
+      // FILLED only when a job actually opens, never by looking.
+      const match = vehiclesRepo.choosePlateMatch(
+        await vehiclesRepo.candidatesByPlate(trx, req.auth!.shop, q.data.plate, q.data.province),
+        q.data.province,
+      )
+      if (match.kind === 'none') return undefined
+      if (match.kind === 'ambiguous') return match
+      const vehicle = match.vehicle
       const customer = await customersRepo.findById(trx, vehicle.customer_id)
       const result: VehicleLookupResult = {
         vehicleId: vehicle.id,
@@ -141,6 +151,11 @@ checkinRouter.get(
 
     if (!found) {
       res.status(404).json({ error: 'vehicle_not_found', message: 'ไม่พบรถทะเบียนนี้' })
+      return
+    }
+    if ('kind' in found) {
+      // The resolver's refusal, word for word, so the screen has one branch.
+      res.status(409).json(vehicleAmbiguousBody(found.candidates))
       return
     }
     res.json(found)

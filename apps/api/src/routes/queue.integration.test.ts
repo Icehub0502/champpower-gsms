@@ -52,7 +52,7 @@ describe.skipIf(!hasDatabase)(tier2('queue board (GET /api/queue, PATCH bay/queu
   async function openJobA(plate: string, bayId?: string): Promise<CheckInBody> {
     const s = await owner(fx.shopA)
     const res = await post<CheckInBody>(api, '/api/checkin', {
-      plate, customerName: `Board Test ${plate}`, brand: 'Toyota', model: 'Vios',
+      plate, customerName: `Board Test ${plate}`, brand: 'Toyota', model: 'Vios', province: 'กรุงเทพมหานคร',
       ...(bayId ? { bayId } : {}),
     }, s.accessToken)
     expect(res.status, JSON.stringify(res.body)).toBe(201)
@@ -110,7 +110,7 @@ describe.skipIf(!hasDatabase)(tier2('queue board (GET /api/queue, PATCH bay/queu
 
       const arrived = await post<{ jobId: string }>(
         api, `/api/bookings/${booking.body.id}/arrive`,
-        { plate: 'BOARD-BOOKED-1', customerName: 'Booking Bay Change', brand: 'Honda', model: 'City' },
+        { plate: 'BOARD-BOOKED-1', customerName: 'Booking Bay Change', brand: 'Honda', model: 'City', province: 'กรุงเทพมหานคร' },
         s.accessToken,
       )
       expect(arrived.status, JSON.stringify(arrived.body)).toBe(201)

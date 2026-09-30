@@ -73,8 +73,17 @@ export interface OpenJobInput {
   bookingId?: string | null | undefined
   source: 'walk_in' | 'booked'
 
-  /** A car already on file. When set, the plate fields are not consulted. */
+  /**
+   * The car the BOOKING names. Consulted before the plate; the plate typed at
+   * arrival only decides whether an empty province may be filled onto it.
+   */
   vehicleId?: string | null | undefined
+  /**
+   * A car the COUNTER picked, answering vehicle_ambiguous. Wins over the
+   * booking's car. Must be visible to this shop (else unknown_vehicle) and,
+   * when a plate is typed, carry that plate (else vehicle_plate_mismatch).
+   */
+  pickedVehicleId?: string | undefined
   /** A customer already on file, from the booking. */
   customerId?: string | null | undefined
 
@@ -86,12 +95,15 @@ export interface OpenJobInput {
   color?: string | undefined
   year?: string | undefined
   /**
-   * Stored when a NEW car is created, and only then. A car already on file
-   * keeps the province it has: a check-in carrying a different one does not
-   * rewrite it, for the same reason ownership is never changed silently — the
-   * record on file may be right and the typing wrong, and nothing here can tell.
+   * A plate area — one of PLATE_AREAS, the 77 provinces plus เบตง; the contract
+   * refuses anything else. Part of how the car is FOUND —
+   * vehiclesRepo.choosePlateMatch — and required to CREATE one. A car
+   * already on file never has its province rewritten; one with NO province
+   * gets this one, with a `vehicle_province_filled` audit row.
    */
   province?: string | undefined
+  /** Answers `vehicle_ambiguous` with "none of those, a new car". Never defaulted. */
+  confirmNewVehicle?: boolean | undefined
   leadSource?: string | undefined
 
   /**
@@ -214,6 +226,11 @@ type CarResolution =
   // a missing field the error schema does not know.
   | { kind: 'details_required'; fields: IntakeRequiredField[] }
   | { kind: 'customer_ambiguous'; candidates: customersRepo.CustomerCandidate[] }
+  | { kind: 'vehicle_ambiguous'; candidates: vehiclesRepo.VehicleRow[] }
+  /** A picked vehicleId this shop cannot see — nonexistent or another branch's, alike. */
+  | { kind: 'unknown_vehicle' }
+  /** A picked vehicleId whose plate is not the plate typed. */
+  | { kind: 'vehicle_plate_mismatch' }
   | {
       kind: 'vehicle_owner_mismatch'
       vehicleId: string
@@ -223,25 +240,76 @@ type CarResolution =
     }
 
 /**
+ * How many times resolveCar may start over after losing a province fill to a
+ * concurrent check-in. Each restart sees the car WITH the other request's
+ * province, which makes it a different car or no candidate at all, so one
+ * restart settles it; the bound is only there so a bug cannot loop.
+ */
+const MAX_RESOLVE_ATTEMPTS = 3
+
+/**
  * Find or create the customer and the car.
  *
  * `jobs.customer_id` and `jobs.vehicle_id` are NOT NULL, so this has to end
  * with both. The order matters: an existing plate brings its own customer,
  * which is how a returning customer avoids being created a second time under
  * a slightly different spelling of their name.
+ *
+ * Nothing is written until every refusal has been decided. The walk-in door
+ * COMMITS when it returns a refusal (only arrival rolls back), so a write
+ * made before a refusal would outlive the refusal it came with.
  */
-async function resolveCar(trx: ScopedTx, input: OpenJobInput): Promise<CarResolution> {
+async function resolveCar(
+  trx: ScopedTx,
+  input: OpenJobInput,
+  attempt = 1,
+): Promise<CarResolution> {
   // ---------------------------------------------------------------------
-  // 1. The car. The booking may already name it; otherwise the plate does.
+  // 1. The car: picked by the counter, named by the booking, or by the plate.
   // ---------------------------------------------------------------------
-  let vehicle = input.vehicleId
-    // Invisible here means it belongs to another branch, or to nobody.
-    ? await vehiclesRepo.findById(trx, input.vehicleId)
-    : undefined
+  let vehicle: vehiclesRepo.VehicleRow | undefined
+  // The province the car will carry once this job opens, when it has none on
+  // file. Only ever the province typed NOW, only onto an empty one.
+  let fillProvince: string | null = null
+  const typedKey = input.plate ? vehiclesRepo.plateKeyOf(input.plate) : null
+  const plateAgrees = (v: vehiclesRepo.VehicleRow) =>
+    typedKey === null || vehiclesRepo.plateKeyOf(v.plate) === typedKey
+
+  if (input.pickedVehicleId) {
+    // The counter answered vehicle_ambiguous by picking one. An id this shop
+    // cannot see gets ONE answer whether it does not exist or belongs to
+    // another branch — never a fallback to the plate, which used to create a
+    // new car silently and would differ between the two cases.
+    vehicle = await vehiclesRepo.findById(trx, input.shopId, input.pickedVehicleId)
+    if (!vehicle) return { kind: 'unknown_vehicle' }
+    // A stale form, or an id pasted from another car: the plate on the form
+    // and the car picked must be the same car before anything is written to it.
+    if (!plateAgrees(vehicle)) return { kind: 'vehicle_plate_mismatch' }
+    if (vehicle.province === null && input.province) fillProvince = input.province
+  } else if (input.vehicleId) {
+    // The booking's own car. The booking row is this shop's, so this is found
+    // unless the car was removed; then the plate decides, as before.
+    vehicle = await vehiclesRepo.findById(trx, input.shopId, input.vehicleId)
+    // Fill only when what was typed is this car's plate — a different plate
+    // typed at arrival says nothing about where THIS car is registered.
+    if (vehicle && vehicle.province === null && input.province && plateAgrees(vehicle)) {
+      fillProvince = input.province
+    }
+  }
   if (!vehicle && input.plate) {
-    // Matched on plate_key, so spacing and punctuation do not matter — and
-    // never matched at all if the plate is in this shop's match_blocklist.
-    vehicle = await vehiclesRepo.findByPlate(trx, input.plate)
+    // Matched on (plate_key, province), so spacing and punctuation do not
+    // matter — and never matched at all if the plate is in this shop's
+    // match_blocklist. Never a guess between two cars: see choosePlateMatch.
+    const match = vehiclesRepo.choosePlateMatch(
+      await vehiclesRepo.candidatesByPlate(trx, input.shopId, input.plate, input.province),
+      input.province,
+      { confirmNewVehicle: input.confirmNewVehicle },
+    )
+    if (match.kind === 'ambiguous') return { kind: 'vehicle_ambiguous', candidates: match.candidates }
+    if (match.kind === 'one') {
+      vehicle = match.vehicle
+      fillProvince = match.fillProvince
+    }
   }
   // Nothing to go on. This is the phone booking that arrives knowing only a
   // name and a number; the counter has to type the plate.
@@ -270,11 +338,27 @@ async function resolveCar(trx: ScopedTx, input: OpenJobInput): Promise<CarResolu
     phoneIsEvidence = match.kind === 'one' || match.kind === 'none'
   }
 
+  // A booking made for one car, arriving with a DIFFERENT car the counter
+  // picked, when nothing else says who is standing there (no customer on the
+  // booking, no phone anywhere). The booked car's owner is then the only
+  // evidence of who the booking is for, so it stands in as the named
+  // customer: if the picked car belongs to somebody else, the ordinary
+  // owner-mismatch refusal below fires instead of the car being switched
+  // silently (security review, 30 Sep 2026).
+  if (
+    !namedCustomerId && !phoneIsEvidence
+    && input.pickedVehicleId && input.vehicleId && input.pickedVehicleId !== input.vehicleId
+  ) {
+    const booked = await vehiclesRepo.findById(trx, input.shopId, input.vehicleId)
+    if (booked) namedCustomerId = booked.customer_id
+  }
+
   // ---------------------------------------------------------------------
   // 3. The car is on file. Does the caller agree about who owns it?
   // ---------------------------------------------------------------------
   if (vehicle) {
-    const owner = vehicle.customer_id
+    const found = vehicle
+    const owner = found.customer_id
     const ownerRow = await customersRepo.findById(trx, owner)
 
     /*
@@ -308,21 +392,18 @@ async function resolveCar(trx: ScopedTx, input: OpenJobInput): Promise<CarResolu
       && phoneIsEvidence
       && ownerPhone.length > 0
       && givenPhone !== ownerPhone
-
-    if (!contradictedById && !contradictedByPhone) {
-      return { kind: 'ok', customerId: namedCustomerId ?? owner, vehicleId: vehicle.id }
-    }
+    const contradicted = contradictedById || contradictedByPhone
 
     // A car sold on, or a relative bringing it in — routine at a garage, and
     // precisely why it must never happen silently: moving the car pours one
     // customer's repair history into another's, and there is no way back once
     // a few visits have piled up on top. Two seconds of interruption is the
     // cheaper side of that trade by a wide margin.
-    if (!input.confirmOwnerChange) {
+    if (contradicted && !input.confirmOwnerChange) {
       const newOwner = namedCustomerId ? await customersRepo.findById(trx, namedCustomerId) : undefined
       return {
         kind: 'vehicle_owner_mismatch',
-        vehicleId: vehicle.id,
+        vehicleId: found.id,
         // Names, so the counter can see WHO it is about to move the car to
         // rather than comparing two uuids. This is a response to a person at
         // a desk, not a log line — §12 forbids the latter, not the former.
@@ -335,21 +416,56 @@ async function resolveCar(trx: ScopedTx, input: OpenJobInput): Promise<CarResolu
         },
       }
     }
+    // The last refusal on this path, decided before anything is written.
+    if (contradicted && !namedCustomerId && !input.customerName) {
+      return { kind: 'details_required', fields: ['customerName'] }
+    }
+
+    // ----- Every refusal is behind us. Writes start here. -----
+
+    if (fillProvince) {
+      if (await vehiclesRepo.fillProvince(trx, input.shopId, found.id, fillProvince)) {
+        await writeAudit(trx, {
+          shopId: input.shopId,
+          actorId: input.actorId,
+          action: 'vehicle_province_filled',
+          entityType: 'vehicles',
+          entityId: found.id,
+          before: { province: null },
+          after: { province: fillProvince },
+        })
+      } else {
+        // 0 rows: a concurrent check-in gave this car a province between our
+        // read and our write (the UPDATE waited on its row lock, then found
+        // province no longer NULL). If it wrote the same province, this is
+        // still the car. If it wrote another, this car is — by the owner's
+        // rule — a different car from the one at the counter, so start over
+        // and let the plate match decide again. Nothing has been written yet.
+        const now = await vehiclesRepo.findById(trx, input.shopId, found.id)
+        if (now?.province !== fillProvince) {
+          if (attempt >= MAX_RESOLVE_ATTEMPTS) throw new Error('resolveCar: province fill kept losing races')
+          return resolveCar(trx, input, attempt + 1)
+        }
+      }
+    }
+
+    if (!contradicted) {
+      return { kind: 'ok', customerId: namedCustomerId ?? owner, vehicleId: found.id }
+    }
 
     // Confirmed. If the new owner does not exist yet, they do now.
     let newOwnerId = namedCustomerId
     if (!newOwnerId) {
-      if (!input.customerName) return { kind: 'details_required', fields: ['customerName'] }
       const created = await customersRepo.create(trx, {
         shopId: input.shopId,
-        name: input.customerName,
+        name: input.customerName!,
         phone: input.customerPhone,
         leadSource: input.leadSource,
       })
       newOwnerId = created.id
     }
 
-    await vehiclesRepo.changeOwner(trx, vehicle.id, newOwnerId)
+    await vehiclesRepo.changeOwner(trx, input.shopId, found.id, newOwnerId)
     // Ids only here. Who moved which car to whom, and when — enough to
     // reconstruct it, with no personal data in the log.
     await writeAudit(trx, {
@@ -357,11 +473,11 @@ async function resolveCar(trx: ScopedTx, input: OpenJobInput): Promise<CarResolu
       actorId: input.actorId,
       action: 'vehicle_owner_changed',
       entityType: 'vehicles',
-      entityId: vehicle.id,
+      entityId: found.id,
       before: { customer_id: owner },
       after: { customer_id: newOwnerId, confirmed: true },
     })
-    return { kind: 'ok', customerId: newOwnerId, vehicleId: vehicle.id }
+    return { kind: 'ok', customerId: newOwnerId, vehicleId: found.id }
   }
 
   // ---------------------------------------------------------------------
@@ -373,6 +489,9 @@ async function resolveCar(trx: ScopedTx, input: OpenJobInput): Promise<CarResolu
   const missing: IntakeRequiredField[] = []
   if (!input.brand) missing.push('brand')
   if (!input.model) missing.push('model')
+  // Required because the car is FOUND by it next time. A car created without
+  // one is exactly the empty-province row that makes a later plate ambiguous.
+  if (!input.province) missing.push('province')
   if (!namedCustomerId && !input.customerName) missing.push('customerName')
   if (missing.length > 0) return { kind: 'details_required', fields: missing }
 
