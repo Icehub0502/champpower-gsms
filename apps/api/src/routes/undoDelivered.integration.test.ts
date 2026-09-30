@@ -86,18 +86,20 @@ describe.skipIf(!hasDatabase)(tier2('undo delivered -> ready with a reason'), ()
     expect(row).toMatchObject({ status: 'ready', reason: REASON, changed_by: fx.userId })
   })
 
-  it('writes audit job_delivery_undone with job id, user id and the history row id — never the reason text', async () => {
+  it('writes audit job_delivery_undone pointing at the history row — never the reason text', async () => {
     const jobId = await deliveredJob()
     expect((await undo(jobId, REASON)).status).toBe(200)
     const row = await lastHistory(jobId)
 
+    // Job id and user id are the row's own entity_id and actor_id.
     const audit = await auditFor(fx.shopA, 'job_delivery_undone', jobId)
     expect(audit).toHaveLength(1)
+    expect(audit[0]!.entity_id).toBe(jobId)
     expect(audit[0]!.actor_id).toBe(fx.userId)
     const entry = await withShop(db, fx.shopA, (trx) => trx.selectFrom('audit_logs')
       .select(['before', 'after']).where('action', '=', 'job_delivery_undone').where('entity_id', '=', jobId)
       .executeTakeFirstOrThrow())
-    expect(entry.after).toEqual({ status: 'ready', job_id: jobId, user_id: fx.userId, status_history_id: row.id })
+    expect(entry.after).toEqual({ status: 'ready', status_history_id: row.id })
     // Free text stays out of audit_logs in every audit row of this move.
     const all = await withShop(db, fx.shopA, (trx) => trx.selectFrom('audit_logs')
       .select(['before', 'after']).where('entity_id', '=', jobId).execute())

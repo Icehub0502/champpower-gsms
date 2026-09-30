@@ -12,6 +12,7 @@ import {
   DECISION_KEYS,
   EXIT_STATUSES,
   STATUS_FLOW,
+  statusLabelOf,
   type StatusKey,
 } from './statusFlow.js';
 import type { StatusHistoryEntry } from '../types/job.js';
@@ -30,6 +31,18 @@ describe('the ten statuses (decision 6)', () => {
 
   it('answers the quote with yes or no only', () => {
     expect(DECISION_KEYS).toEqual(['approved', 'rejected']);
+  });
+});
+
+describe('statusLabelOf — labels for history, never an invented step', () => {
+  it('gives the Thai label for each of the ten statuses', () => {
+    for (const s of STATUS_FLOW) expect(statusLabelOf(s.key)).toBe(s.label);
+  });
+
+  it('shows an unknown or retired key as itself, NOT as รับรถ', () => {
+    expect(statusLabelOf('scheduled')).toBe('scheduled');
+    expect(statusLabelOf('customerout')).toBe('customerout');
+    expect(statusLabelOf('')).toBe('');
   });
 });
 

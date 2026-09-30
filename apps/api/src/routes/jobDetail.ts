@@ -27,7 +27,7 @@ import {
   allowedMovesFrom,
   isValidSubState,
   moveRequiresReason,
-  statusOf,
+  statusLabelOf,
   type StatusKey,
   type SubState,
 } from '@champpower/domain'
@@ -38,7 +38,7 @@ import { fieldErrorsOf } from '../lib/fieldErrors.js'
 import { bangkokToday, endOfDayExclusive, startOfDay } from '../lib/bangkokDate.js'
 import * as detailRepo from '../repositories/jobDetail.js'
 import { BOARD_READ_ROLES } from './queue.js'
-import { roleMayMove } from './kanban.js'
+import { roleMayMove } from '../lib/statusAuthz.js'
 
 export const jobDetailRouter = asyncRouter()
 
@@ -137,7 +137,7 @@ jobDetailRouter.get(
       jobNumber: job.job_number,
       queueNo: job.queue_no,
       status: job.status,
-      statusLabel: statusOf(job.status).label,
+      statusLabel: statusLabelOf(job.status),
       subState: isValidSubState(job.status, job.sub_state) ? (job.sub_state as SubState | null) : null,
       jobType: job.job_type === 'warranty_claim' ? 'warranty_claim' : 'normal',
       source: job.has_booking ? 'booked' : 'walk_in',
@@ -153,7 +153,9 @@ jobDetailRouter.get(
       onBoard: job.on_board,
       history: history.map((h) => ({
         status: h.status,
-        statusLabel: statusOf(h.status).label,
+        // statusLabelOf, not statusOf: history is unconstrained (0017), and a
+        // retired key such as 'scheduled' must show as itself, never as รับรถ.
+        statusLabel: statusLabelOf(h.status),
         changedAt: h.changed_at.toISOString(),
         changedBy: h.changed_by === null ? null : { userId: h.changed_by, name: h.actor_name ?? '' },
         reason: h.reason,

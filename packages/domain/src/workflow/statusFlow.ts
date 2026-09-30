@@ -133,3 +133,17 @@ export const LEGACY_STATUS_MAP: Record<string, StatusKey> = { customerout: 'quot
 export function statusOf(key: StatusKey | string): StatusDef {
   return STATUS_FLOW.find((s) => s.key === key) ?? STATUS_FLOW[0]!;
 }
+
+/**
+ * The Thai label of a status — or, for a key that is not one of the ten, the
+ * key itself.
+ *
+ * Use this wherever the status comes from HISTORY. statusOf() falls back to
+ * 'รับรถ' so that a live job always renders, but job_status_history is
+ * deliberately unconstrained (0017): an imported row may say 'scheduled' or
+ * another retired value, and labelling it "รับรถ" would put a step into the
+ * record that never happened. Showing the raw value is honest about it.
+ */
+export function statusLabelOf(key: string): string {
+  return STATUS_FLOW.find((s) => s.key === key)?.label ?? key;
+}

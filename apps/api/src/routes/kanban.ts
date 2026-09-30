@@ -27,7 +27,6 @@ import {
   canMoveTo,
   cardLabelOf,
   estMinutes,
-  isCounterOnlyMove,
   isValidSubState,
   kanbanColumnOf,
   kpisOf,
@@ -47,18 +46,14 @@ import * as todayRepo from '../repositories/today.js'
 import * as jobsRepo from '../repositories/jobs.js'
 import { writeAudit } from '../services/audit.js'
 import { fieldErrorsOf } from '../lib/fieldErrors.js'
+import { roleMayMove, STATUS_WRITE_ROLES } from '../lib/statusAuthz.js'
 import { BOARD_READ_ROLES } from './queue.js'
 
 export const kanbanRouter = asyncRouter()
 
-/**
- * CLAUDE.md §12.1: "อัปเดตสถานะงาน / ถ่ายรูป" is open to the technician as well
- * as the counter — the person at the lift is the one who knows the car moved on.
- * Two things inside that are NOT the technician's to do; see the checks below.
- */
-const STATUS_WRITE_ROLES = [
-  'owner', 'manager', 'assistant_manager', 'advisor', 'technician',
-] as const
+// Who may move what (roles) is lib/statusAuthz.ts, shared with the job screen.
+// Inside the status-writing roles, the sub-state endpoint below has one more
+// check of its own (the technician may not assert "paid").
 
 const idParam = z.object({ id: z.string().uuid() })
 
@@ -72,29 +67,6 @@ function estUnitOf(v: string | null): 'minute' | 'hour' | 'day' | null {
 }
 
 const iso = (d: Date | null): string | null => (d === null ? null : d.toISOString())
-
-/**
- * May a caller with this role make this move — as far as ROLE goes?
- *
- * THE single role rule for status moves, used by BOTH doors: GET /jobs/today
- * filters each card's `allowedMoves` through it, and PATCH /jobs/:id/status
- * refuses with 403 through it. If the two ever used separate copies, the board
- * could offer a move the server then refuses — exactly the drift allowedMoves
- * exists to end. Whether the move is legal for the JOB is a separate question,
- * answered by allowedMovesFrom() / canMoveTo() in packages/domain.
- *
- * The technician may move a car along the workshop but not make the
- * customer's decision on the quote (nor take it back) — packages/domain
- * isCounterOnlyMove(); the gate is on the ACT, not on the endpoint that
- * carries it. Every role in STATUS_WRITE_ROLES may make every other legal
- * move, so the roles that may press "ส่งแล้ว" are exactly the roles that may
- * undo it (DECISION-carout.md §3 — no waiting for a manager).
- */
-export function roleMayMove(role: string, from: string, to: string): boolean {
-  if (!(STATUS_WRITE_ROLES as readonly string[]).includes(role)) return false
-  if (role === 'technician' && isCounterOnlyMove(from, to)) return false
-  return true
-}
 
 // ---------------------------------------------------------------------------
 // GET /api/jobs/today
@@ -361,7 +333,9 @@ kanbanRouter.patch(
           entityType: 'jobs',
           entityId: jobId,
           before: { status: job.status },
-          after: { status: to, job_id: jobId, user_id: auth.sub, status_history_id: historyRow.id },
+          // The job is entity_id and the user is actor_id on the row itself;
+          // `after` carries only what those columns cannot.
+          after: { status: to, status_history_id: historyRow.id },
         })
       }
 

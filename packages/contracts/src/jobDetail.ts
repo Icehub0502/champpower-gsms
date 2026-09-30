@@ -93,7 +93,8 @@ export const JobListQuery = z
   .object({
     status: z.literal('delivered'),
     date: z.literal('today'),
-    page: z.coerce.number().int().min(1).default(1),
+    // Capped so a hand-typed page cannot ask the database for an absurd OFFSET.
+    page: z.coerce.number().int().min(1).max(10_000).default(1),
     pageSize: z.coerce.number().int().min(1).max(JOB_LIST_MAX_PAGE_SIZE).default(20),
   })
   .strict();
