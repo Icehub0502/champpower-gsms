@@ -11,6 +11,15 @@ import {
   warrantySnapshotOf,
   wouldCreateMergeCycle,
 } from './catalogItems.js';
+import { PRICE_KEY_FIXTURES } from './priceKeyFixtures.js';
+
+describe('priceKey — shared fixture (also run against SQL price_key() in apps/api tier-2)', () => {
+  for (const f of PRICE_KEY_FIXTURES) {
+    it(f.label, () => {
+      expect(priceKey(f.input)).toBe(f.expected);
+    });
+  }
+});
 
 describe('priceKey', () => {
   it('ignores case, spaces and dashes', () => {

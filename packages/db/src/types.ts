@@ -94,6 +94,51 @@ export interface BotMessages {
   shop_id: string;
 }
 
+export interface CatalogItems {
+  base_price: Numeric | null;
+  category: string;
+  category_key: Generated<string | null>;
+  created_at: Generated<Timestamp>;
+  created_by: string | null;
+  default_qty: Generated<Numeric>;
+  id: Generated<string>;
+  is_active: Generated<boolean>;
+  is_set: Generated<boolean>;
+  legacy_id: string | null;
+  legacy_source: string | null;
+  line_type: Generated<string>;
+  merged_into_id: string | null;
+  name: string;
+  name_key: Generated<string | null>;
+  shop_id: string;
+  unit: string | null;
+  updated_at: Generated<Timestamp>;
+  warranty_term_id: string | null;
+}
+
+export interface CatalogModelPrices {
+  id: Generated<string>;
+  item_id: string;
+  price: Numeric;
+  set_at: Generated<Timestamp>;
+  set_by: string | null;
+  shop_id: string;
+  updated_at: Generated<Timestamp>;
+  updated_by: string | null;
+  vehicle_model_id: string;
+}
+
+export interface CatalogSetComponents {
+  component_item_id: string | null;
+  component_name: string;
+  id: Generated<string>;
+  line_type: Generated<string>;
+  qty: Generated<Numeric>;
+  set_item_id: string;
+  shop_id: string;
+  sort_order: Generated<number>;
+}
+
 export interface CustomerConsents {
   customer_id: string;
   granted: boolean;
@@ -175,8 +220,11 @@ export interface Deposits {
 
 export interface DocumentLines {
   approval_status: Generated<string>;
+  approved_amount: Numeric | null;
   brand_snapshot: string | null;
+  catalog_item_id: string | null;
   decided_at: Timestamp | null;
+  decided_by: string | null;
   decline_note: string | null;
   decline_reason: string | null;
   document_id: string;
@@ -187,7 +235,11 @@ export interface DocumentLines {
   is_vatable: Generated<boolean>;
   line_total: Generated<Numeric>;
   line_type: Generated<string>;
+  list_price: Numeric | null;
   name_snapshot: string;
+  parent_line_id: string | null;
+  price_ref_id: string | null;
+  price_source: string | null;
   qty: Generated<Numeric>;
   shop_id: string;
   sku_id: string | null;
@@ -197,6 +249,7 @@ export interface DocumentLines {
   unit_price: Generated<Numeric>;
   warranty_days: number | null;
   warranty_max_km: number | null;
+  warranty_name: string | null;
   warranty_term_id: string | null;
 }
 
@@ -924,6 +977,7 @@ export interface Vehicles {
   province: string | null;
   shop_id: string;
   updated_at: Generated<Timestamp>;
+  vehicle_model_id: string | null;
   year: string | null;
 }
 
@@ -964,6 +1018,9 @@ export interface DB {
   bays: Bays;
   bookings: Bookings;
   bot_messages: BotMessages;
+  catalog_items: CatalogItems;
+  catalog_model_prices: CatalogModelPrices;
+  catalog_set_components: CatalogSetComponents;
   customer_consents: CustomerConsents;
   customers: Customers;
   daily_closings: DailyClosings;

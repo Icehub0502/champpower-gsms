@@ -3,21 +3,85 @@
  * warranty snapshot, duplicate-name detection (D12) and merge resolution.
  *
  * priceKey() MUST give the same answer as the SQL function price_key() in
- * migration 0020 — a tier-2 test compares them on a fixed sample set.
+ * migration 0020 — priceKeyFixtures.ts is the shared fixture that both a
+ * domain vitest and a tier-2 SQL test check against.
  */
 
 // -----------------------------------------------------------------------------
 // price_key
 // -----------------------------------------------------------------------------
 
-// whitespace, hyphen-minus, underscore, the Unicode dash block, minus sign,
-// zero-width characters and BOM. Kept as ONE character class so the SQL
-// version is a literal copy.
-const KEY_STRIP = /[\s\-_‐-―−​-‍﻿]+/g;
+/**
+ * ASCII-ONLY case fold, deliberately NOT String.prototype.toLowerCase().
+ *
+ * Full Unicode lower-casing is itself locale-sensitive for some code points
+ * (Turkish İ/I, German ẞ) and, more to the point here, the matching SQL side
+ * (migration 0020) cannot do full Unicode case folding without depending on
+ * the cluster's locale/ICU — `lower('Ü')` is a no-op under the dev cluster's
+ * Thai_Thailand.874 locale, but JS `'Ü'.toLowerCase()` gives 'ü'. Restrict
+ * BOTH sides to the one case fold that is unambiguous on any cluster: plain
+ * ASCII A-Z. A non-ASCII letter (Š, Ü, ß, İ, Thai — none of which has an
+ * ASCII case pair) is kept exactly as typed, on both sides, so two names that
+ * differ only in the case of an accented letter are deliberately NOT treated
+ * as the same key. priceKeyFixtures.ts pins this with 'CITROËN' -> 'citroËn'.
+ */
+function asciiLower(s: string): string {
+  return s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
 
-/** Normalise a brand / model / item name for comparison: NFKC, lower case, no spaces or dashes. */
+/**
+ * Removed anywhere in the string (not just trimmed from the ends), as ONE
+ * explicit code-point list — never \s, never a Unicode property class — so
+ * the SQL side (which cannot use \s without the same locale/ctype dependency
+ * that broke lower()) is a literal mirror of this, not an approximation.
+ *
+ *   - whitespace: exactly JavaScript's String.prototype.trim() set (ECMA-262
+ *     WhiteSpace + LineTerminator), the same code points as migration 0019's
+ *     ck_status_history_reason CHECK: U+0009-000D, 0020, 00A0, 1680,
+ *     2000-200A, 2028, 2029, 202F, 205F, 3000, FEFF.
+ *   - zero-width ZWSP/ZWNJ/ZWJ (U+200B-200D): NOT part of JS's trim() set,
+ *     but deliberately stripped here too — a decision, not an oversight. Two
+ *     staff pasting the same part name from different sources (one with an
+ *     invisible ZWSP the other lacks) must key the same, or D12's duplicate
+ *     warning silently misses it. FEFF already covers the BOM / zero-width
+ *     no-break space case via the whitespace set above.
+ *   - hyphen-minus, underscore, the Unicode dash block, minus sign: so
+ *     "ลูกหมากปีกนกล่าง L+R" vs "ลูกหมากปีกนกล่าง L-R" and an en-dash variant
+ *     of the same name key the same (the #186-adjacent dedup case, D12).
+ */
+// Built from decimal code points, not backslash-u escapes in a regex literal:
+// a literal escape sequence sailing through an editor, a JSON-based tool
+// call, or a copy-paste is exactly the kind of silent corruption this file
+// exists to rule out, and decimal code points cannot be misread that way.
+// Each decimal value is commented with its U+ form for the human reader.
+const STRIP_CODE_POINTS: readonly number[] = [
+  0x2d, // U+002D hyphen-minus (listed first: literal, not a range operator)
+  0x5f, // U+005F underscore
+  // JS String.prototype.trim() set (ECMA-262 WhiteSpace + LineTerminator) —
+  // the same code points as migration 0019's ck_status_history_reason CHECK.
+  0x09, 0x0a, 0x0b, 0x0c, 0x0d, // U+0009 to U+000D
+  0x20, // U+0020 space
+  0xa0, // U+00A0 NBSP
+  0x1680, // U+1680 Ogham space mark
+  0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, // U+2000 to U+200A
+  0x2028, 0x2029, // U+2028, U+2029 line/paragraph separator
+  0x202f, // U+202F narrow no-break space
+  0x205f, // U+205F medium mathematical space
+  0x3000, // U+3000 ideographic space
+  0xfeff, // U+FEFF BOM / zero-width no-break space
+  // Deliberately stripped in addition to the trim() set (see the big comment
+  // above): zero-width joiner/non-joiner, not whitespace by ECMA-262.
+  0x200b, 0x200c, 0x200d, // U+200B to U+200D
+  // The Unicode dash block, and the minus sign.
+  0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, // U+2010 to U+2015
+  0x2212, // U+2212 minus sign
+];
+
+const KEY_STRIP = new RegExp('[' + STRIP_CODE_POINTS.map((cp) => String.fromCodePoint(cp)).join('') + ']+', 'gu');
+
+/** Normalise a brand / model / item name for comparison: NFKC, ASCII-only lower case, no spaces/dashes/zero-width. */
 export function priceKey(text: string): string {
-  return text.normalize('NFKC').toLowerCase().replace(KEY_STRIP, '');
+  return asciiLower(text.normalize('NFKC')).replace(KEY_STRIP, '');
 }
 
 // -----------------------------------------------------------------------------

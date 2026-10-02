@@ -23,6 +23,20 @@ npm run seed -w packages/db
   created, add a new file.
 - Every file runs inside its own transaction. A failure rolls back completely —
   the database is left exactly as it was, so never start repairing by hand.
+- `lower()`, `\s`, and POSIX classes like `[[:space:]]` are collation/ctype
+  aware — deterministic on the authoring machine, silently different on a
+  cluster with another locale, and never usable inside an `IMMUTABLE`
+  function (0020's `price_key()` was NO-GO over exactly this: `lower('Ü')` is
+  a no-op under `Thai_Thailand.874`). Fold case with `translate()` naming the
+  exact characters, and strip characters by building the class from
+  `chr(<decimal code point>)`, never a `\uXXXX` escape in the pattern.
+  Two reasons, not one: it is deterministic on every cluster, AND a literal
+  `\uXXXX` (or `\n`, `\t`, …) sitting in a tool call, an editor macro, or any
+  JSON-shaped pipe between where you typed it and the file on disk is a known
+  trap — some layer along the way may decode it as a real escape before it
+  reaches the file, silently turning your regex source into literal control
+  characters. `chr(9)` cannot be misread that way; `\u0009` can. Always
+  re-read the file after writing a pattern like this and verify the bytes.
 - Every table carrying `shop_id` must call `apply_tenant_rls('<table>')` in the
   same migration. A table that forgets is a cross-branch data leak.
 - Every view must be declared `WITH (security_invoker = true)`. Without it the
