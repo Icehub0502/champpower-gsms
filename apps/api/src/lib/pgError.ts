@@ -23,6 +23,7 @@
  *     the same one for different things. The register belongs in CLAUDE.md §9;
  *     it is NOT in this file, and this list is a mirror, not the source:
  *         GS001  document series missing (allocate_document_number, 0014)
+ *         GS002  document / document line immutable (0022)
  *   - The API maps on `err.code` ONLY. Nothing here reads `err.message` — a
  *     message is for the server log and can be reworded, translated or
  *     localised by the server's lc_messages without warning.
@@ -38,13 +39,16 @@
  */
 import type { Response } from 'express'
 import type {
-  BookingAlreadyArrivedError, JobNumberSeriesMissingError, QueueNoTakenError,
+  BookingAlreadyArrivedError, DocumentFrozenError, DocumentLineFrozenError,
+  JobNumberSeriesMissingError, QueueNoTakenError,
 } from '@gsms/contracts/index.js'
 
 /** The subset of node-postgres' error shape this module reads. */
 interface PgErrorLike {
   code?: string
   constraint?: string
+  /** Set by RAISE ... USING TABLE = ...; how GS002 tells a document from a line. */
+  table?: string
   message?: string
 }
 
@@ -64,6 +68,8 @@ export interface MappedError {
     | BookingAlreadyArrivedError
     | QueueNoTakenError
     | JobNumberSeriesMissingError
+    | DocumentFrozenError
+    | DocumentLineFrozenError
     | { error: 'bay_slot_taken'; message: string }
 }
 
@@ -139,6 +145,26 @@ export function mapPgError(err: unknown, ctx: PgErrorContext = {}): MappedError 
       message: 'สาขานี้ยังไม่ได้ตั้งค่าเลขที่ใบงาน (ชุด JOB) กรุณาตั้งค่าก่อนเปิดงาน',
     }
     return { status: 500, body }
+  }
+
+  // GS002 — migration 0022 refused to change a frozen document or one of its
+  // lines. Mapped on err.code; err.table (set by the trigger's RAISE ... USING
+  // TABLE) only picks which of two strict bodies. err.message is never read.
+  // 409: the request conflicts with the document's state, and the way out is a
+  // new revision or a void, not a retry.
+  if (pg.code === 'GS002') {
+    if (pg.table === 'document_lines') {
+      const body: DocumentLineFrozenError = {
+        error: 'document_line_frozen',
+        message: 'เอกสารนี้ออกเลขแล้ว แก้รายการไม่ได้ ต้องออกใบฉบับใหม่',
+      }
+      return { status: 409, body }
+    }
+    const body: DocumentFrozenError = {
+      error: 'document_frozen',
+      message: 'เอกสารนี้ออกเลขแล้ว แก้ไขหรือลบไม่ได้ ต้องออกใบฉบับใหม่หรือยกเลิกเอกสาร',
+    }
+    return { status: 409, body }
   }
 
   return null
