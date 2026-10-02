@@ -190,6 +190,18 @@ export type BookingNotOpenError = z.infer<typeof BookingNotOpenError>;
 export const JobNumberSeriesMissingError = payloadless('job_number_series_missing');
 export type JobNumberSeriesMissingError = z.infer<typeof JobNumberSeriesMissingError>;
 
+// 409 — the database refused to change a numbered document (SQLSTATE GS002,
+// table documents): it is issued/signed/superseded/void and the change is not
+// one the lifecycle allows. The fix is a new revision or a void, never a retry.
+export const DocumentFrozenError = payloadless('document_frozen');
+export type DocumentFrozenError = z.infer<typeof DocumentFrozenError>;
+
+// 409 — same refusal for a LINE of a numbered document (SQLSTATE GS002, table
+// document_lines): the line's content is locked, or its document no longer
+// accepts line changes at all.
+export const DocumentLineFrozenError = payloadless('document_line_frozen');
+export type DocumentLineFrozenError = z.infer<typeof DocumentLineFrozenError>;
+
 // 400 — the request itself did not validate. `fields` (field name -> messages)
 // is present when the failing fields are known; the screen shows them against
 // the fields.
@@ -226,3 +238,202 @@ export const IntakeRefusal = z.discriminatedUnion('error', [
   InvalidRequestError,
 ]);
 export type IntakeRefusal = z.infer<typeof IntakeRefusal>;
+
+// =============================================================================
+// Quotation, catalog and pricing refusals (P3.1)
+// =============================================================================
+// Same rules as above: strict, `error` is a literal code, `message` is Thai for
+// the counter. Bodies with data carry only what the screen needs to recover.
+// 400 validation failures use InvalidRequestError (fields, never an echo of
+// the input); the codes below are the state conflicts (409), business rules
+// (422) and missing things (404).
+
+export const QuotationNotFoundError = payloadless('quotation_not_found');
+export type QuotationNotFoundError = z.infer<typeof QuotationNotFoundError>;
+
+export const QuotationLineNotFoundError = payloadless('quotation_line_not_found');
+export type QuotationLineNotFoundError = z.infer<typeof QuotationLineNotFoundError>;
+
+export const JobNotFoundError = payloadless('job_not_found');
+export type JobNotFoundError = z.infer<typeof JobNotFoundError>;
+
+export const CatalogItemNotFoundError = payloadless('catalog_item_not_found');
+export type CatalogItemNotFoundError = z.infer<typeof CatalogItemNotFoundError>;
+
+export const VehicleModelNotFoundError = payloadless('vehicle_model_not_found');
+export type VehicleModelNotFoundError = z.infer<typeof VehicleModelNotFoundError>;
+
+export const OfferedItemNotFoundError = payloadless('offered_item_not_found');
+export type OfferedItemNotFoundError = z.infer<typeof OfferedItemNotFoundError>;
+
+// 403 — the role may not do this (void, fix a price, merge...). Never says who may.
+export const ForbiddenError = payloadless('forbidden');
+export type ForbiddenError = z.infer<typeof ForbiddenError>;
+
+// 409 — the job already has a live quotation (draft / issued / signed).
+export const QuotationExistsError = payloadless('quotation_exists');
+export type QuotationExistsError = z.infer<typeof QuotationExistsError>;
+
+// 409 — a draft-only action on a quotation that is not a draft (the content
+// is locked once a number is allocated; also the answer to GS002).
+export const QuotationNotDraftError = payloadless('quotation_not_draft');
+export type QuotationNotDraftError = z.infer<typeof QuotationNotDraftError>;
+
+// 409 — a decision on a quotation that is not 'issued'.
+export const QuotationNotIssuedError = payloadless('quotation_not_issued');
+export type QuotationNotIssuedError = z.infer<typeof QuotationNotIssuedError>;
+
+// 409 — the quotation is frozen: confirmed, superseded or void. Revise instead.
+export const QuotationFrozenError = payloadless('quotation_frozen');
+export type QuotationFrozenError = z.infer<typeof QuotationFrozenError>;
+
+// 409 — nothing to issue.
+export const QuotationEmptyError = payloadless('quotation_empty');
+export type QuotationEmptyError = z.infer<typeof QuotationEmptyError>;
+
+// 409 — confirm needs every top-level line decided. Names the ones that are not.
+export const DecisionsIncompleteError = z
+  .object({
+    error: z.literal('decisions_incomplete'),
+    message: z.string(),
+    lineIds: z.array(uuid).min(1),
+  })
+  .strict();
+export type DecisionsIncompleteError = z.infer<typeof DecisionsIncompleteError>;
+
+// 409 — a set had pieces cut and has no agreed amount yet (D10).
+export const SetAmountRequiredError = z
+  .object({
+    error: z.literal('set_amount_required'),
+    message: z.string(),
+    lineIds: z.array(uuid).min(1),
+  })
+  .strict();
+export type SetAmountRequiredError = z.infer<typeof SetAmountRequiredError>;
+
+// 422 — an agreed amount above 2x the offer (almost certainly a typo). Revise instead.
+export const ApprovedAmountTooHighError = z
+  .object({
+    error: z.literal('amount_over_2x'),
+    message: z.string(),
+    lineId: uuid,
+    offered: z.string(),
+    max: z.string(),
+  })
+  .strict();
+export type ApprovedAmountTooHighError = z.infer<typeof ApprovedAmountTooHighError>;
+
+// 422 — the set was offered at 0 (free); an agreed amount above 0 would be a
+// repricing, which needs a new revision. Own code so the screen does not say "typo".
+export const ApprovedAmountAboveFreeSetError = z
+  .object({
+    error: z.literal('amount_above_offer_free_set'),
+    message: z.string(),
+    lineId: uuid,
+  })
+  .strict();
+export type ApprovedAmountAboveFreeSetError = z.infer<typeof ApprovedAmountAboveFreeSetError>;
+
+// 400 — approved_amount sent for a line that is not a cut set.
+export const ApprovedAmountNotAllowedError = z
+  .object({
+    error: z.literal('approved_amount_not_allowed'),
+    message: z.string(),
+    lineId: uuid,
+  })
+  .strict();
+export type ApprovedAmountNotAllowedError = z.infer<typeof ApprovedAmountNotAllowedError>;
+
+// 409 — undo-confirm after the Bangkok day ended.
+export const UndoDifferentDayError = payloadless('undo_confirm_different_day');
+export type UndoDifferentDayError = z.infer<typeof UndoDifferentDayError>;
+
+// 409 — undo-confirm after the job moved past 'approved'.
+export const UndoJobMovedOnError = payloadless('undo_confirm_job_moved_on');
+export type UndoJobMovedOnError = z.infer<typeof UndoJobMovedOnError>;
+
+// 409 — the job cannot go approved -> quoted while its quotation is confirmed.
+export const QuotationConfirmedError = payloadless('quotation_confirmed');
+export type QuotationConfirmedError = z.infer<typeof QuotationConfirmedError>;
+
+// 409 — someone set the first price before you. Carries the price that stands.
+export const PriceAlreadySetError = z
+  .object({
+    error: z.literal('price_already_set'),
+    message: z.string(),
+    existingPrice: z.string(),
+    scope: z.enum(['model', 'base']),
+  })
+  .strict();
+export type PriceAlreadySetError = z.infer<typeof PriceAlreadySetError>;
+
+// 409 — an item with a similar name exists in the category. Id, name, category only.
+export const SimilarItemFoundError = z
+  .object({
+    error: z.literal('similar_item_found'),
+    message: z.string(),
+    similar: z
+      .array(z.object({ id: uuid, category: z.string(), name: z.string() }).strict())
+      .min(1)
+      .max(10),
+  })
+  .strict();
+export type SimilarItemFoundError = z.infer<typeof SimilarItemFoundError>;
+
+// 409 — an item with exactly this name already exists in the category.
+export const CatalogItemExistsError = z
+  .object({ error: z.literal('catalog_item_exists'), message: z.string(), itemId: uuid })
+  .strict();
+export type CatalogItemExistsError = z.infer<typeof CatalogItemExistsError>;
+
+// 409 — merging would make a loop, or merge an item into itself / an already merged item.
+export const MergeNotAllowedError = payloadless('merge_not_allowed');
+export type MergeNotAllowedError = z.infer<typeof MergeNotAllowedError>;
+
+// 409 — both items have a price for these models; the manager must choose.
+export const MergePriceConflictError = z
+  .object({
+    error: z.literal('merge_price_conflict'),
+    message: z.string(),
+    vehicleModelIds: z.array(uuid).min(1),
+  })
+  .strict();
+export type MergePriceConflictError = z.infer<typeof MergePriceConflictError>;
+
+// 409 — this brand + model is already in the controlled list.
+export const VehicleModelExistsError = z
+  .object({ error: z.literal('vehicle_model_exists'), message: z.string(), vehicleModelId: uuid })
+  .strict();
+export type VehicleModelExistsError = z.infer<typeof VehicleModelExistsError>;
+
+/** Every refusal the quotation / catalog doors can answer with. */
+export const QuotationRefusal = z.discriminatedUnion('error', [
+  QuotationNotFoundError,
+  QuotationLineNotFoundError,
+  JobNotFoundError,
+  CatalogItemNotFoundError,
+  VehicleModelNotFoundError,
+  OfferedItemNotFoundError,
+  ForbiddenError,
+  QuotationExistsError,
+  QuotationNotDraftError,
+  QuotationNotIssuedError,
+  QuotationFrozenError,
+  QuotationEmptyError,
+  DecisionsIncompleteError,
+  SetAmountRequiredError,
+  ApprovedAmountTooHighError,
+  ApprovedAmountAboveFreeSetError,
+  ApprovedAmountNotAllowedError,
+  UndoDifferentDayError,
+  UndoJobMovedOnError,
+  QuotationConfirmedError,
+  PriceAlreadySetError,
+  SimilarItemFoundError,
+  CatalogItemExistsError,
+  MergeNotAllowedError,
+  MergePriceConflictError,
+  VehicleModelExistsError,
+  InvalidRequestError,
+]);
+export type QuotationRefusal = z.infer<typeof QuotationRefusal>;

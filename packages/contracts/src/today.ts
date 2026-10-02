@@ -175,6 +175,11 @@ export const UpdateJobStatusInput = z.object({
   to: StatusKey,
   fromStatus: StatusKey,
   reason: StatusMoveReason.optional(),
+  // Closing as 'rejected' while the quotation still has undecided lines (P3.1,
+  // Q1): why the customer said no. Same vocabulary as a line's decline reason;
+  // 'chose_alternative' is not accepted (it is not a refusal). Ignored otherwise.
+  declineReason: z.enum(['too_expensive', 'next_time', 'going_elsewhere', 'not_needed_yet', 'other']).optional(),
+  declineNote: z.string().trim().min(1).max(500).optional(),
 });
 export type UpdateJobStatusInput = z.infer<typeof UpdateJobStatusInput>;
 
