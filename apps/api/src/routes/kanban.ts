@@ -48,6 +48,7 @@ import { writeAudit } from '../services/audit.js'
 import { fieldErrorsOf } from '../lib/fieldErrors.js'
 import { roleMayMove, STATUS_WRITE_ROLES } from '../lib/statusAuthz.js'
 import { BOARD_READ_ROLES } from './queue.js'
+import { closeQuotationForJobEnd, jobBackToQuotedBlocked } from '../services/quotation.js'
 
 export const kanbanRouter = asyncRouter()
 
@@ -277,6 +278,9 @@ kanbanRouter.patch(
       | { kind: 'not_found' }
       | { kind: 'status_changed'; current: string }
       | { kind: 'illegal'; from: string }
+      | { kind: 'quotation_confirmed' }
+      | { kind: 'decline_reason_required' }
+      | { kind: 'decline_note_required' }
 
     const outcome = await withShop(db, auth.shop, async (trx): Promise<Outcome> => {
       const job = await jobsRepo.lockForStatusChange(trx, jobId)
@@ -299,6 +303,32 @@ kanbanRouter.patch(
         to,
       )
       if (!legal) return { kind: 'illegal', from: job.status }
+
+      // P3.1 owner decision 8: approved -> quoted (the "undo yes") is refused
+      // while the job's quotation is confirmed ("signed") — a new revision or
+      // an explicit undo-confirm is the way back, never a silent recompute.
+      // packages/domain's canMoveTo above knows nothing about quotations, so
+      // this is checked here, one level up, same as every other P3.1 rule
+      // layered onto the existing job-status transition table.
+      if (fromStatus === 'approved' && to === 'quoted' && await jobBackToQuotedBlocked(trx, jobId)) {
+        return { kind: 'quotation_confirmed' }
+      }
+
+      // P3.1 Q1: a job ending without a repair closes its own live quotation,
+      // in this SAME transaction. `rejected` with an issued quotation that
+      // still has undecided lines additionally REQUIRES a reason — checked
+      // here, before any write, so a refusal here leaves nothing half-done.
+      if (to === 'rejected' || to === 'carout') {
+        const close = await closeQuotationForJobEnd(
+          trx, auth.shop, jobId, to, parsed.data.declineReason, parsed.data.declineNote, auth.sub,
+        )
+        if (close.action === 'refuse') {
+          if (close.code === 'decline_reason_required') return { kind: 'decline_reason_required' }
+          if (close.code === 'decline_note_required') return { kind: 'decline_note_required' }
+          // 'decline_reason_not_allowed' cannot be reached here: the contract
+          // (UpdateJobStatusInput.declineReason) never accepts chose_alternative.
+        }
+      }
 
       // A label that described the old status does not survive the move.
       const subState = subStateAfterMove(to, job.sub_state)
@@ -366,6 +396,26 @@ kanbanRouter.patch(
         res.status(409).json({
           error: 'illegal_status_move',
           message: `ย้ายงานจาก "${statusOf(outcome.from).label}" ไป "${statusOf(to).label}" ไม่ได้`,
+        })
+        return
+      case 'quotation_confirmed':
+        res.status(409).json({
+          error: 'quotation_confirmed',
+          message: 'ใบเสนอราคายืนยันผลแล้ว ถอยกลับ "เสนอราคา" ไม่ได้ ต้องถอยการยืนยันหรือออกใบฉบับใหม่',
+        })
+        return
+      case 'decline_reason_required':
+        res.status(400).json({
+          error: 'invalid_request',
+          message: 'กรุณาเลือกเหตุผลที่ลูกค้าไม่เอา ก่อนปิดงาน',
+          fields: { declineReason: ['required'] },
+        })
+        return
+      case 'decline_note_required':
+        res.status(400).json({
+          error: 'invalid_request',
+          message: 'กรุณาพิมพ์เหตุผลเพิ่มเติม',
+          fields: { declineNote: ['required'] },
         })
         return
       default:

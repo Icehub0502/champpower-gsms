@@ -13,6 +13,8 @@ import { filesRouter } from './routes/files.js'
 import { kanbanRouter } from './routes/kanban.js'
 import { jobDetailRouter } from './routes/jobDetail.js'
 import { publicBoardRouter } from './routes/publicBoard.js'
+import { catalogRouter } from './routes/catalog.js'
+import { quotationRouter } from './routes/quotation.js'
 
 export interface CreateAppOptions {
   /**
@@ -193,6 +195,12 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   app.use('/api', jobDetailRouter)
   app.use('/api/bookings', intakeWriteLimiter, bookingsRouter)
   app.use('/api/checkin', intakeWriteLimiter, checkinRouter)
+  // Quotation + catalog (P3.1). Same write limiter as every other intake-side
+  // write; quotationRouter's GETs (quotation read, offered-items, work order)
+  // ride along unlimited in effect only in the sense that the limiter counts
+  // requests, not writes specifically — matching how jobDetailRouter's reads
+  // share kanbanRouter's mount point above.
+  app.use('/api', intakeWriteLimiter, catalogRouter, quotationRouter)
 
   // Check-in photo upload/retrieval. Shares the intake write limiter — its
   // `skip: GET` means fetching an already-uploaded photo (routes/files.ts GET
