@@ -48,7 +48,7 @@ import { writeAudit } from '../services/audit.js'
 import { fieldErrorsOf } from '../lib/fieldErrors.js'
 import { roleMayMove, STATUS_WRITE_ROLES } from '../lib/statusAuthz.js'
 import { BOARD_READ_ROLES } from './queue.js'
-import { closeQuotationForJobEnd, jobBackToQuotedBlocked } from '../services/quotation.js'
+import { auditClosedByJob, closeQuotationForJobEnd, jobBackToQuotedBlocked, type CloseCheck } from '../services/quotation.js'
 
 export const kanbanRouter = asyncRouter()
 
@@ -318,6 +318,7 @@ kanbanRouter.patch(
       // in this SAME transaction. `rejected` with an issued quotation that
       // still has undecided lines additionally REQUIRES a reason — checked
       // here, before any write, so a refusal here leaves nothing half-done.
+      let closed: Extract<CloseCheck, { action: 'close' }> | null = null
       if (to === 'rejected' || to === 'carout') {
         const close = await closeQuotationForJobEnd(
           trx, auth.shop, jobId, to, parsed.data.declineReason, parsed.data.declineNote, auth.sub,
@@ -327,6 +328,8 @@ kanbanRouter.patch(
           if (close.code === 'decline_note_required') return { kind: 'decline_note_required' }
           // 'decline_reason_not_allowed' cannot be reached here: the contract
           // (UpdateJobStatusInput.declineReason) never accepts chose_alternative.
+        } else if (close.action === 'close') {
+          closed = close
         }
       }
 
@@ -335,6 +338,12 @@ kanbanRouter.patch(
 
       await jobsRepo.applyStatus(trx, { jobId, status: to, subState })
       const historyRow = await jobsRepo.recordStatusHistory(trx, auth.shop, jobId, to, auth.sub, reason)
+      if (closed && (to === 'rejected' || to === 'carout')) {
+        await auditClosedByJob(trx, {
+          shopId: auth.shop, documentId: closed.documentId, documentStatusBefore: closed.documentStatusBefore,
+          jobId, targetStatus: to, statusHistoryId: historyRow.id, movedBy: auth.sub,
+        })
+      }
 
       await writeAudit(trx, {
         shopId: auth.shop,

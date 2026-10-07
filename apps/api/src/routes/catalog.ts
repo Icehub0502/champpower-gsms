@@ -31,6 +31,7 @@ import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
 import { asyncRouter } from '../middleware/asyncHandler.js'
 import { fieldErrorsOf } from '../lib/fieldErrors.js'
+import { isCatalogNameConflict } from '../lib/pgError.js'
 import { INTAKE_WRITE_ROLES } from './queue.js'
 import * as catalogRepo from '../repositories/catalog.js'
 import * as pricing from '../services/catalogPricing.js'
@@ -80,6 +81,10 @@ catalogRouter.post(
     if (!parsed.success) { badRequest(res, parsed.error, 'ข้อมูลราคาไม่ถูกต้อง'); return }
     const auth = req.auth!
     const result = await withShop(db, auth.shop, (trx) => pricing.writeFirstPrice(trx, { shopId: auth.shop, actorId: auth.sub, ...parsed.data }))
+    if (!result.ok && result.notFound) {
+      res.status(404).json({ error: 'catalog_item_not_found', message: 'ไม่พบรายการหรืองานนี้' })
+      return
+    }
     if (!result.ok) {
       res.status(409).json({ error: 'price_already_set', message: `ราคานี้ถูกตั้งไปแล้วเป็น ฿${result.existingPrice}`, existingPrice: result.existingPrice, scope: result.scope })
       return
@@ -103,7 +108,7 @@ catalogRouter.put(
     const row = await withShop(db, auth.shop, (trx) =>
       pricing.fixPrice(trx, { shopId: auth.shop, actorId: auth.sub, id: params.data.id, ...body.data }))
     if (!row) { res.status(404).json({ error: 'catalog_item_not_found', message: 'ไม่พบราคานี้' }); return }
-    res.json(CatalogPriceWritten.parse({ priceId: row.id, itemId: body.data.scope === 'base' ? params.data.id : params.data.id, scope: body.data.scope, price: row.price }))
+    res.json(CatalogPriceWritten.parse({ priceId: row.id, itemId: row.itemId, scope: body.data.scope, price: row.price }))
   },
 )
 
@@ -121,15 +126,32 @@ catalogRouter.post(
     if (!d.confirmNotSimilar) {
       const similar = await withShop(db, auth.shop, (trx) => pricing.findSimilar(trx, d.category, d.name))
       if (similar.length > 0) {
-        res.status(409).json({ error: 'similar_item_found', message: `คล้ายกับ "${similar[0]!.name}" ที่มีอยู่แล้ว`, similar })
+        res.status(409).json({ error: 'similar_item_found', message: `คล้ายกับ "${similar[0]!.name}" ที่มีอยู่แล้ว`, similar: similar.map(({ id, category, name }) => ({ id, category, name })) })
         return
       }
     }
-    const item = await withShop(db, auth.shop, (trx) => pricing.createItem(trx, {
-      shopId: auth.shop, category: d.category, name: d.name, lineType: d.lineType,
-      unit: d.unit ?? null, defaultQty: d.defaultQty, warrantyTermId: d.warrantyTermId ?? null, actorId: auth.sub,
-    }))
-    res.status(201).json(CatalogItem.parse(itemView(item)))
+    let created: Awaited<ReturnType<typeof pricing.createItem>>
+    try {
+      created = await withShop(db, auth.shop, (trx) => pricing.createItem(trx, {
+        shopId: auth.shop, category: d.category, name: d.name, lineType: d.lineType,
+        unit: d.unit ?? null, defaultQty: d.defaultQty, warrantyTermId: d.warrantyTermId ?? null, actorId: auth.sub,
+      }))
+    } catch (err) {
+      if (!isCatalogNameConflict(err)) throw err
+      // Lost the race on uq_catalog_items_name: the winner is committed now.
+      const winner = await withShop(db, auth.shop, (trx) => catalogRepo.findItemByKeys(trx, d.category, d.name))
+      if (!winner) throw err
+      created = { kind: 'exists', itemId: winner.id }
+    }
+    if (created.kind === 'warranty_not_found') {
+      res.status(404).json({ error: 'warranty_term_not_found', message: 'ไม่พบเงื่อนไขการรับประกันนี้' })
+      return
+    }
+    if (created.kind === 'exists') {
+      res.status(409).json({ error: 'catalog_item_exists', message: 'มีรายการชื่อนี้ในหมวดนี้อยู่แล้ว', itemId: created.itemId })
+      return
+    }
+    res.status(201).json(CatalogItem.parse(itemView(created.item)))
   },
 )
 
@@ -242,10 +264,16 @@ catalogRouter.put(
     const body = VehicleModelAssignInput.safeParse(req.body)
     if (!params.success || !body.success) { res.status(400).json({ error: 'invalid_request' }); return }
     const auth = req.auth!
-    await withShop(db, auth.shop, async (trx) => {
+    const outcome = await withShop(db, auth.shop, async (trx) => {
+      // A missing id and another shop's id look the same (RLS): 404, and nothing is written.
+      if (!(await catalogRepo.vehicleExists(trx, params.data.id))) return 'vehicle_not_found' as const
+      if (!(await catalogRepo.vehicleModelExists(trx, body.data.vehicleModelId))) return 'vehicle_model_not_found' as const
       await catalogRepo.assignVehicleModel(trx, params.data.id, body.data.vehicleModelId)
       await writeAudit(trx, { shopId: auth.shop, actorId: auth.sub, action: 'vehicle_model_assigned', entityType: 'vehicles', entityId: params.data.id, after: { vehicleModelId: body.data.vehicleModelId } })
+      return 'ok' as const
     })
+    if (outcome === 'vehicle_not_found') { res.status(404).json({ error: 'vehicle_not_found', message: 'ไม่พบรถคันนี้' }); return }
+    if (outcome === 'vehicle_model_not_found') { res.status(404).json({ error: 'vehicle_model_not_found', message: 'ไม่พบรุ่นรถนี้' }); return }
     res.json(VehicleModelAssigned.parse({ vehicleId: params.data.id, vehicleModelId: body.data.vehicleModelId }))
   },
 )
@@ -279,6 +307,7 @@ catalogRouter.post(
     if (!parsed.success) { badRequest(res, parsed.error, 'ข้อมูลไม่ถูกต้อง'); return }
     const auth = req.auth!
     const updated = await withShop(db, auth.shop, async (trx) => {
+      if (!(await catalogRepo.vehicleModelExists(trx, parsed.data.vehicleModelId))) return null
       const n = await catalogRepo.assignModelToGroup(trx, parsed.data.brandText, parsed.data.modelText, parsed.data.vehicleModelId)
       await writeAudit(trx, {
         shopId: auth.shop, actorId: auth.sub, action: 'vehicle_model_group_assigned', entityType: 'vehicle_models', entityId: parsed.data.vehicleModelId,
@@ -286,6 +315,7 @@ catalogRouter.post(
       })
       return n
     })
+    if (updated === null) { res.status(404).json({ error: 'vehicle_model_not_found', message: 'ไม่พบรุ่นรถนี้' }); return }
     res.json(UnmatchedAssignResult.parse({ updated }))
   },
 )

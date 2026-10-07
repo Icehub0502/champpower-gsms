@@ -516,13 +516,16 @@ export type QuotationClosePlan =
 
 /**
  * What the job-status change to rejected/carout does to the quotation, in the
- * same transaction (v3 §6.4): signed is left alone; issued and draft are
+ * same transaction (v3 §6.4): signed and draft are left alone; issued is
  * closed by the system; closing as 'rejected' with pending lines on an issued
  * quotation REQUIRES a decline reason, which is written to those lines.
  */
 export function planQuotationClose(input: QuotationCloseInput): QuotationClosePlan {
   const q = input.quotation;
-  if (!q || (q.status !== 'draft' && q.status !== 'issued')) return { action: 'none' };
+  // A draft is left untouched (owner decision, 6 Oct 2026): it has no number, no accounting
+  // effect, and never shows in "waiting for the customer". A void would also violate
+  // ck_number_when_issued. Only an ISSUED quotation is closed by the system.
+  if (!q || q.status !== 'issued') return { action: 'none' };
 
   const pending = q.lines.filter((l) => l.approvalStatus === 'pending');
   const needsReason = input.targetStatus === 'rejected' && q.status === 'issued' && pending.some((l) => l.parentLineId === null);
@@ -587,4 +590,23 @@ export function offeredItemLineIds(lines: readonly QuoteLineDecisionState[]): st
       return !(p && p.approvalStatus === 'declined');
     })
     .map((l) => l.id);
+}
+
+// -----------------------------------------------------------------------------
+// Issuing moves the job (owner decision, 3 Oct 2026)
+// -----------------------------------------------------------------------------
+
+/**
+ * Where issuing a quotation puts the job: 'quoted' from received or
+ * inspecting, otherwise null (no move). A job is never moved backwards or
+ * sideways by an issue — a revision issued while the job is approved,
+ * repairing, ready... changes nothing about the job.
+ *
+ * This deliberately bypasses the manual-move table (allowedMovesFrom): from
+ * 'received' it is ONE received -> quoted step, with no invented 'inspecting'
+ * in between. It exists only for the issue action; manual moves still go
+ * through canMoveTo.
+ */
+export function jobStatusOnIssue(current: string): 'quoted' | null {
+  return current === 'received' || current === 'inspecting' ? 'quoted' : null;
 }

@@ -28,15 +28,16 @@
 import { z } from 'zod'
 import { withShop } from '@gsms/db/client.js'
 import {
-  AddLineInput, ConfirmInput, CreateQuotationInput, DecideLineInput, OfferedItemPage,
+  AddLineInput, ConfirmInput, ConfirmResult, CreateQuotationInput, DecideLineInput, OfferedItemPage,
   OfferedItemQuery, PatchLineInput, PatchQuotationInput, Quotation, ReviseInput,
-  UndoConfirmInput, VoidInput, WorkOrder, type InvalidRequestError,
+  UndoConfirmInput, VoidInput, WorkOrder, type DocumentSeriesMissingError, type InvalidRequestError,
 } from '@gsms/contracts/index.js'
 import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
 import { asyncRouter } from '../middleware/asyncHandler.js'
 import { fieldErrorsOf } from '../lib/fieldErrors.js'
-import { sendPgError } from '../lib/pgError.js'
+import { isCatalogNameConflict, sendPgError } from '../lib/pgError.js'
+import * as catalogRepo from '../repositories/catalog.js'
 import { BOARD_READ_ROLES, INTAKE_WRITE_ROLES } from './queue.js'
 import * as quotationSvc from '../services/quotation.js'
 import * as quotationRepo from '../repositories/quotation.js'
@@ -45,6 +46,8 @@ import { buildQuotationView } from '../services/quotationView.js'
 export const quotationRouter = asyncRouter()
 
 const OWNER_ONLY = ['owner'] as const
+// Quotations and offered items carry selling prices; the technician sees no money (CLAUDE.md §12.1) — he has the work order instead.
+const PRICE_READ_ROLES = BOARD_READ_ROLES.filter((r) => r !== 'technician')
 
 const jobIdParam = z.object({ jobId: z.string().uuid() })
 const lineParams = z.object({ jobId: z.string().uuid(), lineId: z.string().uuid() })
@@ -77,6 +80,8 @@ function sendServiceError(res: import('express').Response, error: quotationSvc.Q
     case 'undo_confirm_different_day': res.status(409).json({ error: 'undo_confirm_different_day', message: 'ถอยการยืนยันได้แค่วันเดียวกันเท่านั้น' }); return
     case 'undo_confirm_job_moved_on': res.status(409).json({ error: 'undo_confirm_job_moved_on', message: 'งานนี้ไปขั้นตอนต่อไปแล้ว ถอยการยืนยันไม่ได้' }); return
     case 'quotation_confirmed': res.status(409).json({ error: 'quotation_confirmed', message: 'ใบเสนอราคานี้ยืนยันผลแล้ว ต้องถอยการยืนยันหรือออกฉบับใหม่' }); return
+    case 'warranty_term_not_found': res.status(404).json({ error: 'warranty_term_not_found', message: 'ไม่พบเงื่อนไขการรับประกันนี้' }); return
+    case 'catalog_item_exists': res.status(409).json({ error: 'catalog_item_exists', message: 'มีรายการชื่อนี้ในหมวดนี้อยู่แล้ว', itemId: error.itemId }); return
     case 'similar_item_found': res.status(409).json({ error: 'similar_item_found', message: 'มีรายการที่ชื่อคล้ายกันอยู่แล้ว', similar: error.similar }); return
   }
 }
@@ -84,6 +89,16 @@ function sendServiceError(res: import('express').Response, error: quotationSvc.Q
 async function loadView(jobId: string, auth: AuthedRequest['auth']) {
   return withShop(db, auth!.shop, async (trx) => {
     const doc = await quotationRepo.findLiveQuotation(trx, jobId)
+    if (!doc) return null
+    const lines = await quotationRepo.getLines(trx, doc.id)
+    const job = doc.job_id ? await quotationRepo.jobWithVehicle(trx, doc.job_id) : undefined
+    return buildQuotationView(doc, lines, job?.status ?? null)
+  })
+}
+
+async function loadViewByDocument(documentId: string, auth: AuthedRequest['auth']) {
+  return withShop(db, auth!.shop, async (trx) => {
+    const doc = await quotationRepo.getDocument(trx, documentId)
     if (!doc) return null
     const lines = await quotationRepo.getLines(trx, doc.id)
     const job = doc.job_id ? await quotationRepo.jobWithVehicle(trx, doc.job_id) : undefined
@@ -114,7 +129,7 @@ quotationRouter.post(
 // ---------------------------------------------------------------------------
 quotationRouter.get(
   '/jobs/:jobId/quotation',
-  requireAuth, requireRole(...BOARD_READ_ROLES),
+  requireAuth, requireRole(...PRICE_READ_ROLES),
   async (req: AuthedRequest, res) => {
     const params = jobIdParam.safeParse(req.params)
     if (!params.success) { res.status(404).json({ error: 'quotation_not_found' }); return }
@@ -169,6 +184,12 @@ quotationRouter.post(
       const view = await loadView(params.data.jobId, auth)
       res.status(201).json(Quotation.parse(view))
     } catch (err) {
+      // A free-text line that adds to the catalog can lose the name race too (same 409 as POST /catalog/items).
+      if (isCatalogNameConflict(err) && body.data.kind === 'free' && body.data.category) {
+        const { category, name } = body.data
+        const winner = await withShop(db, auth.shop, (trx) => catalogRepo.findItemByKeys(trx, category, name))
+        if (winner) { res.status(409).json({ error: 'catalog_item_exists', message: 'มีรายการชื่อนี้ในหมวดนี้อยู่แล้ว', itemId: winner.id }); return }
+      }
       sendPgError(res, err)
     }
   },
@@ -242,6 +263,13 @@ quotationRouter.post(
       const view = await loadView(params.data.jobId, auth)
       res.json(Quotation.parse(view))
     } catch (err) {
+      // GS001 from allocate_document_number: this shop has no active QUO series.
+      // Mapped on err.code only, and only here, so job numbers keep their own mapping.
+      if ((err as { code?: string }).code === 'GS001') {
+        const body: DocumentSeriesMissingError = { error: 'document_series_missing', message: 'ยังไม่ได้ตั้งค่าชุดเลขที่ใบเสนอราคา (QUO) กรุณาตั้งค่าในหน้าตั้งค่าก่อนออกใบ' }
+        res.status(409).json(body)
+        return
+      }
       sendPgError(res, err)
     }
   },
@@ -289,7 +317,7 @@ quotationRouter.post(
     })
     if (!result.ok) { sendServiceError(res, result.error); return }
     const view = await loadView(params.data.jobId, auth)
-    res.json(Quotation.parse(view))
+    res.json(ConfirmResult.parse({ ...view, jobStatusUnchanged: result.value.jobStatusUnchanged }))
   },
 )
 
@@ -361,7 +389,7 @@ quotationRouter.post(
       return quotationSvc.voidQuotation(trx, auth.shop, doc.id, body.data.reason, auth.sub)
     })
     if (!result.ok) { sendServiceError(res, result.error); return }
-    const view = await loadView(params.data.jobId, auth)
+    const view = await loadViewByDocument(result.value.id, auth)
     res.json(Quotation.parse(view))
   },
 )
@@ -371,7 +399,7 @@ quotationRouter.post(
 // ---------------------------------------------------------------------------
 quotationRouter.get(
   '/vehicles/:vehicleId/offered-items',
-  requireAuth, requireRole(...BOARD_READ_ROLES),
+  requireAuth, requireRole(...PRICE_READ_ROLES),
   async (req: AuthedRequest, res) => {
     const params = z.object({ vehicleId: z.string().uuid() }).safeParse(req.params)
     const query = OfferedItemQuery.safeParse(req.query)

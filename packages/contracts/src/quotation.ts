@@ -8,7 +8,7 @@
 //   DELETE /api/jobs/:jobId/quotation/lines/:lineId        -> Quotation (draft; deleting a set parent deletes its children)
 //   POST  /api/jobs/:jobId/quotation/issue                 IssueInput           -> Quotation   (allocates the IV number)
 //   PATCH /api/jobs/:jobId/quotation/lines/:lineId/decision DecideLineInput     -> Quotation   (issued)
-//   POST  /api/jobs/:jobId/quotation/confirm               ConfirmInput         -> Quotation   (issued -> signed)
+//   POST  /api/jobs/:jobId/quotation/confirm               ConfirmInput         -> ConfirmResult (issued -> signed)
 //   POST  /api/jobs/:jobId/quotation/confirm/undo          UndoConfirmInput     -> Quotation   (signed -> issued)
 //   POST  /api/jobs/:jobId/quotation/revise                ReviseInput          -> Quotation   (new revision, old superseded)
 //   POST  /api/jobs/:jobId/quotation/void                  VoidInput            -> Quotation   (owner only)
@@ -263,6 +263,14 @@ export const ConfirmInput = z
   })
   .strict();
 export type ConfirmInput = z.infer<typeof ConfirmInput>;
+
+// Confirm returns the quotation plus, when the job was still before "quoted"
+// (received/inspecting), jobStatusUnchanged so the screen can say the job was not
+// moved to approved. null otherwise (including when the job is already past quoted).
+export const ConfirmResult = Quotation.extend({
+  jobStatusUnchanged: z.object({ currentStatus: z.string() }).strict().nullable(),
+}).strict();
+export type ConfirmResult = z.infer<typeof ConfirmResult>;
 
 export const UndoConfirmInput = z.object({ reason: ChangeReason }).strict();
 export type UndoConfirmInput = z.infer<typeof UndoConfirmInput>;

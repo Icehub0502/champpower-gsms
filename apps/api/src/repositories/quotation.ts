@@ -214,7 +214,7 @@ export interface PatchLine {
   sortOrder?: number
 }
 
-export async function updateLineContent(trx: ScopedTx, lineId: string, patch: PatchLine): Promise<void> {
+export async function updateLineContent(trx: ScopedTx, documentId: string, lineId: string, patch: PatchLine): Promise<void> {
   const set: Record<string, unknown> = {}
   if (patch.nameSnapshot !== undefined) set.name_snapshot = patch.nameSnapshot
   if (patch.brandSnapshot !== undefined) set.brand_snapshot = patch.brandSnapshot
@@ -233,12 +233,13 @@ export async function updateLineContent(trx: ScopedTx, lineId: string, patch: Pa
   if (patch.warrantyMaxKm !== undefined) set.warranty_max_km = patch.warrantyMaxKm
   if (patch.sortOrder !== undefined) set.sort_order = patch.sortOrder
   if (Object.keys(set).length === 0) return
-  await trx.updateTable('document_lines').set(set).where('id', '=', lineId).execute()
+  await trx.updateTable('document_lines').set(set).where('id', '=', lineId).where('document_id', '=', documentId).execute()
 }
 
 /** Draft only (the trigger refuses it otherwise); children cascade via ON DELETE CASCADE. */
-export async function deleteLine(trx: ScopedTx, lineId: string): Promise<void> {
-  await trx.deleteFrom('document_lines').where('id', '=', lineId).execute()
+export async function deleteLine(trx: ScopedTx, documentId: string, lineId: string): Promise<void> {
+  // document_id in the WHERE besides RLS: a line of another document is never touched.
+  await trx.deleteFrom('document_lines').where('id', '=', lineId).where('document_id', '=', documentId).execute()
 }
 
 export interface DecisionWrite {

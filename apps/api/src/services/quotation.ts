@@ -11,9 +11,9 @@
 import {
   applySetDecision, approvedLineSatang, bangkokDayKey, blocksJobBackToQuoted,
   canUndoConfirm, checkApprovedAmount, confirmReadiness, formatSatang, isTrueDecline,
-  jobOutcomeAtConfirm, lineTotalSatang, offeredItemLineIds, planQuotationClose, quoteTotals,
+  jobOutcomeAtConfirm, jobStatusOnIssue, lineTotalSatang, offeredItemLineIds, planQuotationClose, quoteTotals,
   quoteTotalsDecimal, setsNeedingAmount, toSatang, warrantySnapshotOf, workOrderLineIds,
-  type DeclineReason, type QuoteLineDecisionState, type QuoteLineMoney,
+  subStateAfterMove, type DeclineReason, type QuoteLineDecisionState, type QuoteLineMoney,
 } from '@champpower/domain'
 import type { ScopedTx } from '@gsms/db/client.js'
 import * as catalogRepo from '../repositories/catalog.js'
@@ -67,6 +67,8 @@ export type QuotationError =
   | { code: 'undo_confirm_different_day' }
   | { code: 'undo_confirm_job_moved_on' }
   | { code: 'quotation_confirmed' }
+  | { code: 'warranty_term_not_found' }
+  | { code: 'catalog_item_exists'; itemId: string }
   | { code: 'similar_item_found'; similar: Array<{ id: string; category: string; name: string }> }
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: QuotationError }
@@ -195,24 +197,30 @@ export async function addLine(
     return ok(lines.filter((l) => l.id === id))
   }
 
-  // free text
+  // free text. Validate every foreign-able id BEFORE any write; a missing and another shop's id look the same.
   let catalogItemId: string | null = null
+  const term = input.warrantyTermId ? await catalogRepo.getWarrantyTerm(trx, input.warrantyTermId) : undefined
+  if (input.warrantyTermId && !term) return err({ code: 'warranty_term_not_found' })
+  if (input.addToCatalog && input.useExistingItemId && !(await catalogRepo.getItemById(trx, input.useExistingItemId))) {
+    return err({ code: 'catalog_item_not_found' })
+  }
   if (input.addToCatalog) {
     if (input.useExistingItemId) {
       catalogItemId = input.useExistingItemId
     } else if (!input.confirmNotSimilar && input.category) {
       const similar = await findSimilar(trx, input.category, input.name)
-      if (similar.length > 0) return err({ code: 'similar_item_found', similar })
+      if (similar.length > 0) return err({ code: 'similar_item_found', similar: similar.map(({ id, category, name }) => ({ id, category, name })) })
     }
     if (!catalogItemId && input.category) {
       const created = await createItem(trx, {
         shopId, category: input.category, name: input.name, lineType: input.lineType,
         unit: input.unit ?? null, defaultQty: input.qty, warrantyTermId: input.warrantyTermId ?? null, actorId,
       })
-      catalogItemId = created.id
+      if (created.kind === 'warranty_not_found') return err({ code: 'warranty_term_not_found' })
+      if (created.kind === 'exists') return err({ code: 'catalog_item_exists', itemId: created.itemId })
+      catalogItemId = created.item.id
     }
   }
-  const term = input.warrantyTermId ? await catalogRepo.getWarrantyTerm(trx, input.warrantyTermId) : undefined
   const warranty = warrantySnapshotOf(term ? { id: term.id, name: term.name, days: term.days, maxKm: term.max_km } : null)
   const [id] = await quotationRepo.insertLines(trx, [{
     shopId, documentId, parentLineId: null, sortOrder: sortOrder++,
@@ -236,7 +244,7 @@ export async function patchLine(trx: ScopedTx, documentId: string, lineId: strin
   const qty = patch.qty ?? line.qty
   const unitPrice = patch.unitPrice ?? line.unit_price
   const lineTotal = line.parent_line_id === null ? formatSatang(lineTotalSatang(qty, unitPrice)) : '0.00'
-  await quotationRepo.updateLineContent(trx, lineId, { ...patch, lineTotal })
+  await quotationRepo.updateLineContent(trx, documentId, lineId, { ...patch, lineTotal })
   return ok(undefined)
 }
 
@@ -244,7 +252,10 @@ export async function removeLine(trx: ScopedTx, documentId: string, lineId: stri
   const doc = await quotationRepo.lockDocument(trx, documentId)
   if (!doc) return err({ code: 'quotation_not_found' })
   if (doc.status !== 'draft') return err({ code: 'quotation_not_draft' })
-  await quotationRepo.deleteLine(trx, lineId)
+  // The line must be on THIS document (of this shop, via RLS); a foreign or missing line is the same 404.
+  const lines = await quotationRepo.getLines(trx, documentId)
+  if (!lines.some((l) => l.id === lineId)) return err({ code: 'quotation_line_not_found' })
+  await quotationRepo.deleteLine(trx, documentId, lineId)
   return ok(undefined)
 }
 
@@ -269,6 +280,27 @@ export async function issue(trx: ScopedTx, shopId: string, documentId: string, a
     shopId, actorId, action: 'quotation_issued', entityType: 'documents', entityId: documentId,
     after: { number, offeredTotal: totals.offeredTotal },
   })
+
+  // Owner decision (3 Oct 2026): issuing moves the job to 'quoted', in this SAME
+  // transaction — a failure anywhere above or below rolls back the number and
+  // the status together. jobStatusOnIssue deliberately bypasses the manual-move
+  // table (received -> quoted is ONE step, no invented 'inspecting'); it is used
+  // here and nowhere else. The write goes through the same repository functions
+  // the kanban status route uses, so there is no second status path.
+  if (doc.job_id) {
+    const job = await jobsRepo.lockForStatusChange(trx, doc.job_id)
+    const to = job ? jobStatusOnIssue(job.status) : null
+    if (job && to) {
+      const subState = subStateAfterMove(to, job.sub_state)
+      await jobsRepo.applyStatus(trx, { jobId: doc.job_id, status: to, subState })
+      const history = await jobsRepo.recordStatusHistory(trx, shopId, doc.job_id, to, actorId, 'ออกใบเสนอราคา')
+      await writeAudit(trx, {
+        shopId, actorId, action: 'job_status_changed', entityType: 'jobs', entityId: doc.job_id,
+        before: { status: job.status, sub_state: job.sub_state },
+        after: { status: to, sub_state: subState, status_history_id: history.id },
+      })
+    }
+  }
   return ok((await quotationRepo.getDocument(trx, documentId))!)
 }
 
@@ -324,6 +356,8 @@ export interface ConfirmAdjustments {
 export interface ConfirmOutcome {
   document: quotationRepo.DocumentRow
   jobOutcome: 'approve_job' | 'keep_quoted'
+  /** Set when the quotation was confirmed but the job is still before 'quoted' (received/inspecting), so the screen can say the job was not moved. */
+  jobStatusUnchanged: { currentStatus: string } | null
 }
 
 export async function confirm(
@@ -359,6 +393,9 @@ export async function confirm(
       if (check.code === 'free_set') return err({ code: 'amount_above_offer_free_set', lineId: a.lineId })
       return err({ code: 'approved_amount_not_allowed', lineId: a.lineId })
     }
+  }
+  // Everything validated above; only now write, so no refusal can leave a partial adjustment behind.
+  for (const a of adjustments?.setLines ?? []) {
     await quotationRepo.setApprovedAmount(trx, a.lineId, a.approvedAmount)
   }
 
@@ -372,6 +409,7 @@ export async function confirm(
   const auditAfter: Record<string, unknown> = { approvedTotal: totals.approvedTotal, discount: totals.discount }
   if (adjustments?.discount) auditAfter.discountReason = adjustments.discount.reason
   if (adjustments?.setLines?.length) auditAfter.setLines = adjustments.setLines.map((a) => ({ lineId: a.lineId, approvedAmount: a.approvedAmount, reason: a.reason }))
+  // The free-text reasons below (discount / agreed set amount) go into audit_logs.after on purpose: CLAUDE.md §9 requires the reason of a money adjustment to be audited and documents has no column for it. Unlike undo-delivered, whose reason lives on the job_status_history row, so audit keeps only the row id.
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_confirmed', entityType: 'documents', entityId: documentId,
     before: { discount: doc.discount }, after: auditAfter,
@@ -394,6 +432,7 @@ export async function confirm(
   }
 
   const outcome = jobOutcomeAtConfirm(declineStates)
+  let jobStatusUnchanged: { currentStatus: string } | null = null
   if (doc.job_id && outcome === 'approve_job') {
     const job = await quotationRepo.lockJob(trx, doc.job_id)
     if (job && job.status === 'quoted') {
@@ -403,10 +442,13 @@ export async function confirm(
         shopId, actorId, action: 'job_status_changed', entityType: 'jobs', entityId: doc.job_id,
         before: { status: 'quoted' }, after: { status: 'approved', statusHistoryId: history.id },
       })
+    } else if (job && (job.status === 'received' || job.status === 'inspecting')) {
+      // Before 'quoted': do not skip silently. Past 'quoted' skipping is correct.
+      jobStatusUnchanged = { currentStatus: job.status }
     }
   }
 
-  return ok({ document: (await quotationRepo.getDocument(trx, documentId))!, jobOutcome: outcome === 'approve_job' ? 'approve_job' : 'keep_quoted' })
+  return ok({ document: (await quotationRepo.getDocument(trx, documentId))!, jobOutcome: outcome === 'approve_job' ? 'approve_job' : 'keep_quoted', jobStatusUnchanged })
 }
 
 // -----------------------------------------------------------------------------
@@ -431,6 +473,7 @@ export async function undoConfirm(trx: ScopedTx, shopId: string, documentId: str
     await jobsRepo.applyStatus(trx, { jobId: doc.job_id!, status: 'quoted', subState: null })
     await jobsRepo.recordStatusHistory(trx, shopId, doc.job_id!, 'quoted', actorId)
   }
+  // Reason kept in audit_logs.after on purpose (see quotation_confirmed above): no history row exists for a document to hold it, unlike undo-delivered.
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_confirm_undone', entityType: 'documents', entityId: documentId,
     before: { status: 'signed' }, after: { status: 'issued', reason },
@@ -448,6 +491,8 @@ export async function revise(trx: ScopedTx, shopId: string, documentId: string, 
   if (doc.status !== 'issued' && doc.status !== 'signed') return err({ code: 'quotation_frozen' })
   if (!doc.job_id) return err({ code: 'job_not_found' })
 
+  // Supersede FIRST: uq_live_quotation_per_job allows one draft/issued/signed quotation per job, so the new draft cannot exist while the old one is still live.
+  await quotationRepo.markSuperseded(trx, doc.id)
   const newDoc = await quotationRepo.insertRevision(trx, {
     shopId, jobId: doc.job_id, customerId: doc.customer_id, revision: doc.revision + 1, supersedesDocumentId: doc.id,
   })
@@ -476,7 +521,6 @@ export async function revise(trx: ScopedTx, shopId: string, documentId: string, 
     if (l.approved_amount !== null) await quotationRepo.setApprovedAmount(trx, newId, l.approved_amount)
   }
 
-  await quotationRepo.markSuperseded(trx, doc.id)
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_revised', entityType: 'documents', entityId: newDoc.id,
     before: { supersedes: doc.id, reason: reason ?? null }, after: { revision: newDoc.revision },
@@ -516,7 +560,7 @@ export async function voidQuotation(trx: ScopedTx, shopId: string, documentId: s
 
 export type CloseCheck =
   | { action: 'none' }
-  | { action: 'close' }
+  | { action: 'close'; documentId: string; documentStatusBefore: string }
   | { action: 'refuse'; code: 'decline_reason_required' | 'decline_note_required' | 'decline_reason_not_allowed' }
 
 export async function closeQuotationForJobEnd(
@@ -546,11 +590,24 @@ export async function closeQuotationForJobEnd(
   }
   // System close: void_reason = 'job_closed', voided_by = NULL (not a person pressing void).
   await quotationRepo.markVoid(trx, doc.id, { reason: 'job_closed', voidedBy: null })
+  return { action: 'close', documentId: doc.id, documentStatusBefore: doc.status }
+}
+
+/**
+ * The audit row for a system close. Called by the job-status route AFTER the
+ * job_status_history row exists, so the cause can be named: actor_id stays NULL
+ * (the system closed it, like voided_by) but after{} carries the history row id
+ * and the user of the rejected/carout move — who closed the job is one join away.
+ */
+export async function auditClosedByJob(
+  trx: ScopedTx,
+  input: { shopId: string; documentId: string; documentStatusBefore: string; jobId: string; targetStatus: 'rejected' | 'carout'; statusHistoryId: string; movedBy: string },
+): Promise<void> {
   await writeAudit(trx, {
-    shopId, actorId: null, action: 'document_closed_by_job', entityType: 'documents', entityId: doc.id,
-    before: { status: doc.status }, after: { status: 'void', voidReason: 'job_closed', jobId, targetStatus },
+    shopId: input.shopId, actorId: null, action: 'document_closed_by_job', entityType: 'documents', entityId: input.documentId,
+    before: { status: input.documentStatusBefore },
+    after: { status: 'void', voidReason: 'job_closed', jobId: input.jobId, targetStatus: input.targetStatus, statusHistoryId: input.statusHistoryId, movedByUserId: input.movedBy },
   })
-  return { action: 'close' }
 }
 
 /** approved -> quoted is refused while the quotation is confirmed (owner decision 8) — checked by the job-status route. */

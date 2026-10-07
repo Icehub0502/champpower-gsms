@@ -214,6 +214,7 @@ export interface CreateVehicle {
   color?: string | undefined
   year?: string | undefined
   province?: string | undefined
+  vehicleModelId?: string | null | undefined
 }
 
 export async function create(trx: ScopedTx, input: CreateVehicle): Promise<VehicleRow> {
@@ -228,6 +229,7 @@ export async function create(trx: ScopedTx, input: CreateVehicle): Promise<Vehic
       color: input.color ?? null,
       year: input.year ?? null,
       province: input.province ?? null,
+      vehicle_model_id: input.vehicleModelId ?? null,
     })
     .returning(['id', 'customer_id', 'plate', 'brand', 'model', 'color', 'year', 'province'])
     .executeTakeFirstOrThrow()

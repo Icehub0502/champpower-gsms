@@ -169,13 +169,14 @@ export async function insertItem(trx: ScopedTx, input: InsertCatalogItem): Promi
 }
 
 /** Items in the same category, for the D12 similar-name check — small enough per shop to filter in JS. */
-export async function itemsInCategory(trx: ScopedTx, category: string): Promise<{ id: string; category: string; name: string }[]> {
-  return trx
+export async function itemsInCategory(trx: ScopedTx, category: string): Promise<{ id: string; category: string; name: string; isSet: boolean }[]> {
+  const rows = await trx
     .selectFrom('catalog_items')
-    .select(['id', 'category', 'name'])
+    .select(['id', 'category', 'name', 'is_set'])
     .where(sql<boolean>`category_key = price_key(${category})`)
     .where('is_active', '=', true)
     .execute()
+  return rows.map((r) => ({ id: r.id, category: r.category, name: r.name, isSet: r.is_set }))
 }
 
 /**
@@ -403,4 +404,28 @@ export async function assignModelToGroup(
     .where('vehicle_model_id', 'is', null)
     .executeTakeFirst()
   return Number(result.numUpdatedRows)
+}
+
+/** The live item with exactly this normalised (category, name), if any — the unique-index twin, for a clean 409. */
+export async function findItemByKeys(trx: ScopedTx, category: string, name: string): Promise<{ id: string } | undefined> {
+  return trx
+    .selectFrom('catalog_items')
+    .select(['id'])
+    .where(sql<boolean>`category_key = price_key(${category})`)
+    .where(sql<boolean>`name_key = price_key(${name})`)
+    .where('merged_into_id', 'is', null)
+    .executeTakeFirst()
+}
+
+/** Locks one item row (merge serialises on it). */
+export async function lockItem(trx: ScopedTx, itemId: string): Promise<{ id: string; merged_into_id: string | null } | undefined> {
+  return trx.selectFrom('catalog_items').select(['id', 'merged_into_id']).where('id', '=', itemId).forUpdate().executeTakeFirst()
+}
+
+export async function vehicleExists(trx: ScopedTx, vehicleId: string): Promise<boolean> {
+  return (await trx.selectFrom('vehicles').select('id').where('id', '=', vehicleId).executeTakeFirst()) !== undefined
+}
+
+export async function vehicleModelExists(trx: ScopedTx, id: string): Promise<boolean> {
+  return (await trx.selectFrom('vehicle_models').select('id').where('id', '=', id).executeTakeFirst()) !== undefined
 }

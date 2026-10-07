@@ -30,12 +30,12 @@ export interface SearchHit {
   price: string | null
   priceSource: 'model' | 'base' | 'none'
   priceRefId: string | null
-  warranty: { termId: string; name: string; days: number | null; maxKm: number | null } | null
+  warranty: { id: string; name: string; days: number | null; maxKm: number | null } | null
 }
 
 function warrantyOf(row: { warranty_term_id: string | null; warranty_name: string | null; warranty_days: number | null; warranty_max_km: number | null }) {
   return row.warranty_term_id
-    ? { termId: row.warranty_term_id, name: row.warranty_name!, days: row.warranty_days, maxKm: row.warranty_max_km }
+    ? { id: row.warranty_term_id, name: row.warranty_name!, days: row.warranty_days, maxKm: row.warranty_max_km }
     : null
 }
 
@@ -89,7 +89,8 @@ export async function searchCatalog(
 
 export type FirstPriceResult =
   | { ok: true; priceId: string; itemId: string; scope: 'model' | 'base'; price: string }
-  | { ok: false; existingPrice: string; scope: 'model' | 'base' }
+  | { ok: false; notFound: true }
+  | { ok: false; notFound?: undefined; existingPrice: string; scope: 'model' | 'base' }
 
 /**
  * D8: the first price typed for an item on a car model becomes that model's
@@ -103,8 +104,9 @@ export async function writeFirstPrice(
 ): Promise<FirstPriceResult> {
   const job = await quotationRepo.jobWithVehicle(trx, input.jobId)
   const item = await catalogRepo.getItemById(trx, input.itemId)
+  if (!job || !item) return { ok: false, notFound: true }
 
-  if (job?.vehicle_model_id) {
+  if (job.vehicle_model_id) {
     const written = await catalogRepo.insertModelPriceIfAbsent(trx, {
       shopId: input.shopId, itemId: input.itemId, vehicleModelId: job.vehicle_model_id,
       price: input.price, setBy: input.actorId,
@@ -123,7 +125,7 @@ export async function writeFirstPrice(
 
   // No controlled model for this car — fall back to the item's base price,
   // same first-writer-wins shape (D8/v3 §4.2).
-  if (item && isPriceUnset(item.base_price)) {
+  if (isPriceUnset(item.base_price)) {
     const wrote = await catalogRepo.setBasePriceIfAbsent(trx, input.itemId, input.price)
     if (wrote) {
       await writeAudit(trx, {
@@ -142,7 +144,7 @@ export async function writeFirstPrice(
 export async function fixPrice(
   trx: ScopedTx,
   input: { shopId: string; scope: 'model' | 'base'; id: string; price: string; reason: string; actorId: string },
-): Promise<{ id: string; price: string } | undefined> {
+): Promise<{ id: string; itemId: string; price: string } | undefined> {
   if (input.scope === 'model') {
     const before = await catalogRepo.getModelPriceById(trx, input.id)
     const row = await catalogRepo.fixModelPrice(trx, input.id, input.price, input.actorId)
@@ -152,7 +154,7 @@ export async function fixPrice(
       entityType: 'catalog_model_prices', entityId: input.id,
       before: { price: before?.price ?? null, reason: input.reason }, after: { price: row.price },
     })
-    return row
+    return { id: row.id, itemId: before!.item_id, price: row.price }
   }
   const before = await catalogRepo.getItemById(trx, input.id)
   const row = await catalogRepo.fixBasePrice(trx, input.id, input.price)
@@ -162,21 +164,30 @@ export async function fixPrice(
     entityType: 'catalog_items', entityId: input.id,
     before: { price: before?.base_price ?? null, reason: input.reason }, after: { price: row.price },
   })
-  return row
+  return { id: row.id, itemId: row.id, price: row.price }
 }
 
-export interface SimilarHit { id: string; category: string; name: string }
+export interface SimilarHit { id: string; category: string; name: string; isSet: boolean }
 
 export async function findSimilar(trx: ScopedTx, category: string, name: string): Promise<SimilarHit[]> {
   const candidates = await catalogRepo.itemsInCategory(trx, category)
   return findSimilarNames(name, candidates).slice(0, 10)
 }
 
+export type CreateItemResult =
+  | { kind: 'ok'; item: catalogRepo.CatalogItemRow }
+  | { kind: 'warranty_not_found' }
+  | { kind: 'exists'; itemId: string }
+
 /** D12: add to the catalog, by default — called by the quotation service when a free-text line opts in. */
 export async function createItem(
   trx: ScopedTx,
   input: { shopId: string; category: string; name: string; lineType: string; unit: string | null; defaultQty: string; warrantyTermId: string | null; actorId: string },
-) {
+): Promise<CreateItemResult> {
+  // A term id that is not this shop's looks exactly like a missing one (RLS hides it).
+  if (input.warrantyTermId && !(await catalogRepo.getWarrantyTerm(trx, input.warrantyTermId))) return { kind: 'warranty_not_found' }
+  const same = await catalogRepo.findItemByKeys(trx, input.category, input.name)
+  if (same) return { kind: 'exists', itemId: same.id }
   const item = await catalogRepo.insertItem(trx, {
     shopId: input.shopId, category: input.category, name: input.name, lineType: input.lineType,
     unit: input.unit, defaultQty: input.defaultQty, warrantyTermId: input.warrantyTermId, createdBy: input.actorId,
@@ -185,7 +196,7 @@ export async function createItem(
     shopId: input.shopId, actorId: input.actorId, action: 'catalog_item_created',
     entityType: 'catalog_items', entityId: item.id, after: { category: input.category, name: input.name },
   })
-  return item
+  return { kind: 'ok', item }
 }
 
 export type MergeResult =
@@ -205,17 +216,27 @@ export async function mergeItems(
     actorId: string
   },
 ): Promise<MergeResult> {
-  const [source, target] = await Promise.all([
-    catalogRepo.getItemById(trx, input.sourceItemId),
-    catalogRepo.getItemById(trx, input.intoItemId),
-  ])
+  // Lock both rows in a fixed order (no deadlock between two opposite merges), then load the WHOLE
+  // chain from the target so a loop of any length (A->B->C->A) is seen by the domain check.
+  const [first, second] = [input.sourceItemId, input.intoItemId].sort()
+  const locked = [await catalogRepo.lockItem(trx, first!), await catalogRepo.lockItem(trx, second!)]
+  const source = locked.find((l) => l?.id === input.sourceItemId)
+  const target = locked.find((l) => l?.id === input.intoItemId)
   if (!source || !target) return { ok: false, code: 'not_allowed' }
+  if (source.merged_into_id !== null) return { ok: false, code: 'not_allowed' } // already retired
 
-  const items = new Map<string, MergeableItem>([
-    [source.id, { id: source.id, mergedIntoId: source.merged_into_id }],
-    [target.id, { id: target.id, mergedIntoId: target.merged_into_id }],
-  ])
+  const items = new Map<string, MergeableItem>()
+  let cursor: string | null = input.intoItemId
+  for (let hops = 0; cursor && !items.has(cursor) && hops < 64; hops++) {
+    const row = await catalogRepo.lockItem(trx, cursor)
+    if (!row) break
+    items.set(row.id, { id: row.id, mergedIntoId: row.merged_into_id })
+    cursor = row.merged_into_id
+  }
+  items.set(source.id, { id: source.id, mergedIntoId: source.merged_into_id })
   if (wouldCreateMergeCycle(input.sourceItemId, input.intoItemId, items)) return { ok: false, code: 'not_allowed' }
+  // Merging into an item that is itself retired is refused too: the survivor must be live.
+  if (target.merged_into_id !== null) return { ok: false, code: 'not_allowed' }
 
   const [sourcePrices, targetPrices] = await Promise.all([
     catalogRepo.modelPricesOfItem(trx, input.sourceItemId),
