@@ -119,6 +119,17 @@ export interface LineRow {
   warranty_name: string | null
   warranty_days: number | null
   warranty_max_km: number | null
+  /** The line on the superseded revision this one was copied from (null for new lines / rev 1). */
+  source_line_id: string | null
+  src_decided_at: Date | null
+  src_catalog_item_id: string | null
+  src_name: string | null
+  src_line_type: string | null
+  src_qty: string | null
+  src_unit_price: string | null
+  src_warranty_term_id: string | null
+  src_warranty_days: number | null
+  src_warranty_max_km: number | null
 }
 
 const LINE_COLUMNS = [
@@ -128,16 +139,33 @@ const LINE_COLUMNS = [
   'dl.approval_status', 'dl.decline_reason', 'dl.decline_note', 'dl.decided_at', 'dl.decided_by',
   'u.name as decided_by_name', 'dl.approved_amount',
   'dl.warranty_term_id', 'dl.warranty_name', 'dl.warranty_days', 'dl.warranty_max_km',
+  'dl.source_line_id',
+  'src.decided_at as src_decided_at', 'src.catalog_item_id as src_catalog_item_id', 'src.name_snapshot as src_name',
+  'src.line_type as src_line_type', 'src.qty as src_qty', 'src.unit_price as src_unit_price',
+  'src.warranty_term_id as src_warranty_term_id', 'src.warranty_days as src_warranty_days',
+  'src.warranty_max_km as src_warranty_max_km',
 ] as const
 
 export async function getLines(trx: ScopedTx, documentId: string): Promise<LineRow[]> {
   return trx
     .selectFrom('document_lines as dl')
     .leftJoin('users as u', 'u.id', 'dl.decided_by')
+    .leftJoin('document_lines as src', 'src.id', 'dl.source_line_id')
     .select(LINE_COLUMNS)
     .where('dl.document_id', '=', documentId)
     .orderBy('dl.sort_order', 'asc')
     .execute()
+}
+
+export async function getLine(trx: ScopedTx, documentId: string, lineId: string): Promise<LineRow | undefined> {
+  return trx
+    .selectFrom('document_lines as dl')
+    .leftJoin('users as u', 'u.id', 'dl.decided_by')
+    .leftJoin('document_lines as src', 'src.id', 'dl.source_line_id')
+    .select(LINE_COLUMNS)
+    .where('dl.document_id', '=', documentId)
+    .where('dl.id', '=', lineId)
+    .executeTakeFirst()
 }
 
 export interface NewLine {
@@ -161,6 +189,12 @@ export interface NewLine {
   warrantyName: string | null
   warrantyDays: number | null
   warrantyMaxKm: number | null
+  /** Revision copy only: the line this one came from, and its decision carried over as-is. */
+  sourceLineId?: string | null
+  decision?: {
+    approvalStatus: string; decidedAt: Date | null; decidedBy: string | null
+    declineReason: string | null; declineNote: string | null; approvedAmount: string | null
+  } | null
 }
 
 /** Insert one or more lines (a set header plus its children) in one statement. Draft only — the trigger enforces that. */
@@ -189,6 +223,11 @@ export async function insertLines(trx: ScopedTx, lines: readonly NewLine[]): Pro
       warranty_name: l.warrantyName,
       warranty_days: l.warrantyDays,
       warranty_max_km: l.warrantyMaxKm,
+      source_line_id: l.sourceLineId ?? null,
+      ...(l.decision ? {
+        approval_status: l.decision.approvalStatus, decided_at: l.decision.decidedAt, decided_by: l.decision.decidedBy,
+        decline_reason: l.decision.declineReason, decline_note: l.decision.declineNote, approved_amount: l.decision.approvedAmount,
+      } : {}),
     })))
     .returning(['id'])
     .execute()
@@ -266,6 +305,34 @@ export async function applyDecisions(trx: ScopedTx, changes: readonly DecisionWr
   }
 }
 
+/** Draft only: a changed line forgets what the customer decided about the old offer (owner Q2). */
+export async function resetDecision(trx: ScopedTx, lineId: string): Promise<void> {
+  await trx
+    .updateTable('document_lines')
+    .set({ approval_status: 'pending', decided_at: null, decided_by: null, decline_reason: null, decline_note: null, approved_amount: null })
+    .where('id', '=', lineId)
+    .execute()
+}
+
+/**
+ * Decline the lines that are STILL pending. The approval_status predicate is
+ * defence in depth beneath the document lock: a decision recorded a moment
+ * earlier is never overwritten by a close.
+ */
+export async function declinePending(
+  trx: ScopedTx,
+  lineIds: readonly string[],
+  input: { declineReason: string; declineNote: string | null; decidedBy: string },
+): Promise<void> {
+  if (lineIds.length === 0) return
+  await trx
+    .updateTable('document_lines')
+    .set({ approval_status: 'declined', decided_at: new Date(), decided_by: input.decidedBy, decline_reason: input.declineReason, decline_note: input.declineNote })
+    .where('id', 'in', lineIds)
+    .where('approval_status', '=', 'pending')
+    .execute()
+}
+
 export async function setApprovedAmount(trx: ScopedTx, lineId: string, amount: string | null): Promise<void> {
   await trx.updateTable('document_lines').set({ approved_amount: amount }).where('id', '=', lineId).execute()
 }
@@ -331,7 +398,7 @@ export async function markVoid(
 
 export async function insertRevision(
   trx: ScopedTx,
-  input: { shopId: string; jobId: string; customerId: string; revision: number; supersedesDocumentId: string },
+  input: { shopId: string; jobId: string; customerId: string; revision: number; supersedesDocumentId: string; discount: string },
 ): Promise<DocumentRow> {
   const row = await trx
     .insertInto('documents')
@@ -343,6 +410,7 @@ export async function insertRevision(
       series: 'QUO',
       revision: input.revision,
       supersedes_document_id: input.supersedesDocumentId,
+      discount: input.discount,
     })
     .returning(['id'])
     .executeTakeFirstOrThrow()
@@ -362,15 +430,27 @@ export interface OfferedItemRow {
 
 export async function insertOfferedItem(
   trx: ScopedTx,
-  input: { shopId: string; vehicleId: string; documentLineId: string; name: string },
+  input: { shopId: string; vehicleId: string; documentLineId: string; name: string; catalogItemId: string | null },
 ): Promise<void> {
-  await trx
-    .insertInto('vehicle_offered_items')
-    .values({ shop_id: input.shopId, vehicle_id: input.vehicleId, document_line_id: input.documentLineId, name: input.name })
-    // A line is confirmed at most once; undo-confirm removes the row before a
-    // re-confirm could try to insert it again (see deleteOfferedItemsOfDocument).
-    .onConflict((oc) => oc.column('document_line_id').doNothing())
-    .execute()
+  // Same vehicle + same item is offered once: when an earlier revision (or an earlier visit) already
+  // left an active row for it, skip. "Same item" = same catalog item, or for free text the same
+  // price_key of the name. Revise keeps the old rows, so this is what stops rev 2 duplicating them.
+  // Undo-confirm removes only rows whose line belongs to the undone document, so a skipped row is never lost.
+  await sql`
+    insert into vehicle_offered_items (shop_id, vehicle_id, document_line_id, name)
+    select ${input.shopId}, ${input.vehicleId}, ${input.documentLineId}, ${input.name}
+    where not exists (
+      select 1
+        from vehicle_offered_items voi
+        join document_lines dl on dl.id = voi.document_line_id
+       where voi.vehicle_id = ${input.vehicleId}
+         and voi.status = 'declined'
+         and (
+           (${input.catalogItemId}::uuid is not null and dl.catalog_item_id = ${input.catalogItemId}::uuid)
+           or (${input.catalogItemId}::uuid is null and dl.catalog_item_id is null and price_key(voi.name) = price_key(${input.name}))
+         )
+    )
+    on conflict (document_line_id) do nothing`.execute(trx)
 }
 
 export async function deleteOfferedItemsOfDocument(trx: ScopedTx, documentId: string): Promise<void> {
@@ -413,11 +493,11 @@ export async function listOfferedItems(
   return { rows, total: Number(countRow?.n ?? 0) }
 }
 
-export async function getOfferedItem(trx: ScopedTx, offeredItemId: string): Promise<(OfferedItemListRow & { vehicle_id: string }) | undefined> {
+export async function getOfferedItem(trx: ScopedTx, offeredItemId: string): Promise<(OfferedItemListRow & { vehicle_id: string; status: string }) | undefined> {
   return trx
     .selectFrom('vehicle_offered_items as voi')
     .innerJoin('document_lines as dl', 'dl.id', 'voi.document_line_id')
-    .select(['voi.id', 'voi.name', 'voi.offered_at', 'voi.vehicle_id', 'dl.line_type', 'dl.catalog_item_id', 'dl.unit_price', 'dl.qty'])
+    .select(['voi.id', 'voi.name', 'voi.offered_at', 'voi.vehicle_id', 'voi.status', 'dl.line_type', 'dl.catalog_item_id', 'dl.unit_price', 'dl.qty'])
     .where('voi.id', '=', offeredItemId)
     .executeTakeFirst()
 }

@@ -456,3 +456,27 @@ export type WarrantyTermNotFoundError = z.infer<typeof WarrantyTermNotFoundError
 // 404 — a vehicle id that is not this shop's.
 export const VehicleNotFoundError = payloadless('vehicle_not_found');
 export type VehicleNotFoundError = z.infer<typeof VehicleNotFoundError>;
+
+// 409 — the job has ended (rejected / carout / delivered): no new quotation, revision or issue.
+export const JobNotOpenError = payloadless('job_not_open');
+export type JobNotOpenError = z.infer<typeof JobNotOpenError>;
+
+// 409 — the work order was asked for but the job has no quotation at all (owner Q1).
+export const QuotationMissingError = payloadless('quotation_missing');
+export type QuotationMissingError = z.infer<typeof QuotationMissingError>;
+
+// 409 — the quotation exists but the customer's outcome is not confirmed yet (draft / issued) — also undo-confirm on a document that is not signed.
+export const QuotationNotConfirmedError = payloadless('quotation_not_confirmed');
+export type QuotationNotConfirmedError = z.infer<typeof QuotationNotConfirmedError>;
+
+/** Every body the quotation / catalog doors send, one place — routes type their refusals with this. */
+export const QuotationBody = z.union([
+  QuotationRefusal,
+  DocumentSeriesMissingError,
+  WarrantyTermNotFoundError,
+  VehicleNotFoundError,
+  JobNotOpenError,
+  QuotationMissingError,
+  QuotationNotConfirmedError,
+]);
+export type QuotationBody = z.infer<typeof QuotationBody>;

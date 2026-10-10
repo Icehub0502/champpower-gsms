@@ -25,7 +25,7 @@ import {
   CatalogPriceFixInput, CatalogPriceWritten, CatalogSearchQuery, CatalogSearchResult, CatalogSimilarQuery,
   CatalogSimilarResult, UnmatchedAssignInput, UnmatchedAssignResult, UnmatchedModelPage,
   VehicleModel, VehicleModelCreateInput, VehicleModelAssignInput, VehicleModelAssigned, VehicleModelPage,
-  VehicleModelQuery, WarrantyTermList, type InvalidRequestError,
+  VehicleModelQuery, WarrantyTermList, type InvalidRequestError, type QuotationBody,
 } from '@gsms/contracts/index.js'
 import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
@@ -40,6 +40,11 @@ import { writeAudit } from '../services/audit.js'
 export const catalogRouter = asyncRouter()
 
 const MANAGER_ROLES = ['owner', 'manager', 'assistant_manager'] as const
+
+/** Every refusal body is typed with its contract schema (QuotationBody): a code or field not in packages/contracts does not compile. */
+function refuse(res: import('express').Response, status: number, body: QuotationBody): void {
+  res.status(status).json(body)
+}
 
 function badRequest(res: import('express').Response, error: import('zod').ZodError, message: string): void {
   const body: InvalidRequestError = { error: 'invalid_request', message, fields: fieldErrorsOf(error) }
@@ -82,11 +87,11 @@ catalogRouter.post(
     const auth = req.auth!
     const result = await withShop(db, auth.shop, (trx) => pricing.writeFirstPrice(trx, { shopId: auth.shop, actorId: auth.sub, ...parsed.data }))
     if (!result.ok && result.notFound) {
-      res.status(404).json({ error: 'catalog_item_not_found', message: 'ไม่พบรายการหรืองานนี้' })
+      refuse(res, 404, { error: 'catalog_item_not_found', message: 'ไม่พบรายการหรืองานนี้' })
       return
     }
     if (!result.ok) {
-      res.status(409).json({ error: 'price_already_set', message: `ราคานี้ถูกตั้งไปแล้วเป็น ฿${result.existingPrice}`, existingPrice: result.existingPrice, scope: result.scope })
+      refuse(res, 409, { error: 'price_already_set', message: `ราคานี้ถูกตั้งไปแล้วเป็น ฿${result.existingPrice}`, existingPrice: result.existingPrice, scope: result.scope })
       return
     }
     res.status(201).json(CatalogPriceWritten.parse({ priceId: result.priceId, itemId: result.itemId, scope: result.scope, price: result.price }))
@@ -102,12 +107,12 @@ catalogRouter.put(
   async (req: AuthedRequest, res) => {
     const params = z.object({ id: z.string().uuid() }).safeParse(req.params)
     const body = CatalogPriceFixInput.safeParse(req.body)
-    if (!params.success) { res.status(404).json({ error: 'catalog_item_not_found' }); return }
+    if (!params.success) { refuse(res, 404, { error: 'catalog_item_not_found', message: 'ไม่พบรายการนี้' }); return }
     if (!body.success) { badRequest(res, body.error, 'ข้อมูลไม่ถูกต้อง'); return }
     const auth = req.auth!
     const row = await withShop(db, auth.shop, (trx) =>
       pricing.fixPrice(trx, { shopId: auth.shop, actorId: auth.sub, id: params.data.id, ...body.data }))
-    if (!row) { res.status(404).json({ error: 'catalog_item_not_found', message: 'ไม่พบราคานี้' }); return }
+    if (!row) { refuse(res, 404, { error: 'catalog_item_not_found', message: 'ไม่พบราคานี้' }); return }
     res.json(CatalogPriceWritten.parse({ priceId: row.id, itemId: row.itemId, scope: body.data.scope, price: row.price }))
   },
 )
@@ -126,7 +131,7 @@ catalogRouter.post(
     if (!d.confirmNotSimilar) {
       const similar = await withShop(db, auth.shop, (trx) => pricing.findSimilar(trx, d.category, d.name))
       if (similar.length > 0) {
-        res.status(409).json({ error: 'similar_item_found', message: `คล้ายกับ "${similar[0]!.name}" ที่มีอยู่แล้ว`, similar: similar.map(({ id, category, name }) => ({ id, category, name })) })
+        refuse(res, 409, { error: 'similar_item_found', message: `คล้ายกับ "${similar[0]!.name}" ที่มีอยู่แล้ว`, similar: similar.map(({ id, category, name }) => ({ id, category, name })) })
         return
       }
     }
@@ -144,11 +149,11 @@ catalogRouter.post(
       created = { kind: 'exists', itemId: winner.id }
     }
     if (created.kind === 'warranty_not_found') {
-      res.status(404).json({ error: 'warranty_term_not_found', message: 'ไม่พบเงื่อนไขการรับประกันนี้' })
+      refuse(res, 404, { error: 'warranty_term_not_found', message: 'ไม่พบเงื่อนไขการรับประกันนี้' })
       return
     }
     if (created.kind === 'exists') {
-      res.status(409).json({ error: 'catalog_item_exists', message: 'มีรายการชื่อนี้ในหมวดนี้อยู่แล้ว', itemId: created.itemId })
+      refuse(res, 409, { error: 'catalog_item_exists', message: 'มีรายการชื่อนี้ในหมวดนี้อยู่แล้ว', itemId: created.itemId })
       return
     }
     res.status(201).json(CatalogItem.parse(itemView(created.item)))
@@ -179,7 +184,7 @@ catalogRouter.post(
   async (req: AuthedRequest, res) => {
     const params = z.object({ id: z.string().uuid() }).safeParse(req.params)
     const body = CatalogMergeInput.safeParse(req.body)
-    if (!params.success) { res.status(404).json({ error: 'catalog_item_not_found' }); return }
+    if (!params.success) { refuse(res, 404, { error: 'catalog_item_not_found', message: 'ไม่พบรายการนี้' }); return }
     if (!body.success) { badRequest(res, body.error, 'ข้อมูลไม่ถูกต้อง'); return }
     const auth = req.auth!
     const result = await withShop(db, auth.shop, (trx) => pricing.mergeItems(trx, {
@@ -187,8 +192,8 @@ catalogRouter.post(
       priceConflicts: body.data.priceConflicts, reason: body.data.reason, actorId: auth.sub,
     }))
     if (!result.ok) {
-      if (result.code === 'not_allowed') { res.status(409).json({ error: 'merge_not_allowed', message: 'รวมรายการนี้ไม่ได้' }); return }
-      res.status(409).json({ error: 'merge_price_conflict', message: 'มีราคาของทั้งสองรายการชนกันในบางรุ่นรถ ต้องเลือกก่อน', vehicleModelIds: result.vehicleModelIds })
+      if (result.code === 'not_allowed') { refuse(res, 409, { error: 'merge_not_allowed', message: 'รวมรายการนี้ไม่ได้' }); return }
+      refuse(res, 409, { error: 'merge_price_conflict', message: 'มีราคาของทั้งสองรายการชนกันในบางรุ่นรถ ต้องเลือกก่อน', vehicleModelIds: result.vehicleModelIds })
       return
     }
     res.json(CatalogMergeResult.parse({ sourceItemId: params.data.id, intoItemId: body.data.intoItemId, movedPrices: result.movedPrices, droppedPrices: result.droppedPrices }))
@@ -246,7 +251,7 @@ catalogRouter.post(
       return { exists: false as const, row }
     })
     if (result.exists) {
-      res.status(409).json({ error: 'vehicle_model_exists', message: 'รุ่นรถนี้มีอยู่ในรายการแล้ว', vehicleModelId: result.row.id })
+      refuse(res, 409, { error: 'vehicle_model_exists', message: 'รุ่นรถนี้มีอยู่ในรายการแล้ว', vehicleModelId: result.row.id })
       return
     }
     res.status(201).json(VehicleModel.parse({ id: result.row.id, brand: result.row.brand, name: result.row.name, yearRange: result.row.year_range }))
@@ -262,18 +267,20 @@ catalogRouter.put(
   async (req: AuthedRequest, res) => {
     const params = z.object({ id: z.string().uuid() }).safeParse(req.params)
     const body = VehicleModelAssignInput.safeParse(req.body)
-    if (!params.success || !body.success) { res.status(400).json({ error: 'invalid_request' }); return }
+    if (!params.success) { refuse(res, 404, { error: 'vehicle_not_found', message: 'ไม่พบรถคันนี้' }); return }
+    if (!body.success) { badRequest(res, body.error, 'ข้อมูลไม่ถูกต้อง'); return }
     const auth = req.auth!
     const outcome = await withShop(db, auth.shop, async (trx) => {
       // A missing id and another shop's id look the same (RLS): 404, and nothing is written.
       if (!(await catalogRepo.vehicleExists(trx, params.data.id))) return 'vehicle_not_found' as const
       if (!(await catalogRepo.vehicleModelExists(trx, body.data.vehicleModelId))) return 'vehicle_model_not_found' as const
+      const previous = await catalogRepo.getVehicleModelId(trx, params.data.id)
       await catalogRepo.assignVehicleModel(trx, params.data.id, body.data.vehicleModelId)
-      await writeAudit(trx, { shopId: auth.shop, actorId: auth.sub, action: 'vehicle_model_assigned', entityType: 'vehicles', entityId: params.data.id, after: { vehicleModelId: body.data.vehicleModelId } })
+      await writeAudit(trx, { shopId: auth.shop, actorId: auth.sub, action: 'vehicle_model_assigned', entityType: 'vehicles', entityId: params.data.id, before: { vehicleModelId: previous ?? null }, after: { vehicleModelId: body.data.vehicleModelId } })
       return 'ok' as const
     })
-    if (outcome === 'vehicle_not_found') { res.status(404).json({ error: 'vehicle_not_found', message: 'ไม่พบรถคันนี้' }); return }
-    if (outcome === 'vehicle_model_not_found') { res.status(404).json({ error: 'vehicle_model_not_found', message: 'ไม่พบรุ่นรถนี้' }); return }
+    if (outcome === 'vehicle_not_found') { refuse(res, 404, { error: 'vehicle_not_found', message: 'ไม่พบรถคันนี้' }); return }
+    if (outcome === 'vehicle_model_not_found') { refuse(res, 404, { error: 'vehicle_model_not_found', message: 'ไม่พบรุ่นรถนี้' }); return }
     res.json(VehicleModelAssigned.parse({ vehicleId: params.data.id, vehicleModelId: body.data.vehicleModelId }))
   },
 )
@@ -315,7 +322,7 @@ catalogRouter.post(
       })
       return n
     })
-    if (updated === null) { res.status(404).json({ error: 'vehicle_model_not_found', message: 'ไม่พบรุ่นรถนี้' }); return }
+    if (updated === null) { refuse(res, 404, { error: 'vehicle_model_not_found', message: 'ไม่พบรุ่นรถนี้' }); return }
     res.json(UnmatchedAssignResult.parse({ updated }))
   },
 )

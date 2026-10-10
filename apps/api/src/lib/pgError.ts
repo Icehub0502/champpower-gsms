@@ -194,6 +194,16 @@ export function sendPgError(res: Response, err: unknown, ctx: PgErrorContext = {
 }
 
 /**
+ * True when this error is uq_live_quotation_per_job (0011): two requests created the
+ * first quotation of one job at once. Answered outside the aborted transaction as
+ * 409 quotation_exists.
+ */
+export function isLiveQuotationConflict(err: unknown): boolean {
+  const pg = asPgError(err)
+  return pg?.code === '23505' && pg.constraint === 'uq_live_quotation_per_job'
+}
+
+/**
  * True when this error is the live-item name unique violation (0020,
  * uq_catalog_items_name): two requests created the same (category, name) at
  * the same moment, past createItem's own pre-check. The failed statement has

@@ -577,3 +577,20 @@ describe('jobStatusOnIssue', () => {
     }
   });
 });
+
+describe('canUndoConfirm with the confirm outcome (owner, 6 Oct 2026)', () => {
+  const base = { quotationStatus: 'signed' as const, confirmedAt: '2026-10-01T03:00:00Z', now: '2026-10-01T05:00:00Z' };
+  it('approve_job: approved is fine, and so is a job confirm could not move; repairing is not', () => {
+    expect(canUndoConfirm({ ...base, jobStatus: 'approved', outcome: 'approve_job' })).toEqual({ ok: true });
+    expect(canUndoConfirm({ ...base, jobStatus: 'inspecting', outcome: 'approve_job' })).toEqual({ ok: true });
+    expect(canUndoConfirm({ ...base, jobStatus: 'repairing', outcome: 'approve_job' })).toEqual({ ok: false, code: 'job_moved_on' });
+  });
+  it('keep_quoted (D5, all declined): the job must still be quoted', () => {
+    expect(canUndoConfirm({ ...base, jobStatus: 'quoted', outcome: 'keep_quoted' })).toEqual({ ok: true });
+    expect(canUndoConfirm({ ...base, jobStatus: 'rejected', outcome: 'keep_quoted' })).toEqual({ ok: false, code: 'job_moved_on' });
+    expect(canUndoConfirm({ ...base, jobStatus: 'approved', outcome: 'keep_quoted' })).toEqual({ ok: false, code: 'job_moved_on' });
+  });
+  it('without an outcome the original rule stands', () => {
+    expect(canUndoConfirm({ ...base, jobStatus: 'quoted' })).toEqual({ ok: false, code: 'job_moved_on' });
+  });
+});

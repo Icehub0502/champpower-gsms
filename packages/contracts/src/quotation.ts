@@ -85,6 +85,10 @@ export const QuotationLine = z
     // The agreed amount for a set with pieces cut. "ราคาเสนอ lineTotal -> ตกลง approvedAmount".
     approvedAmount: MoneyString.nullable(),
     warranty: LineWarranty.nullable(),
+    // Revision only: the line of the superseded quotation whose decision this line still carries
+    // (item, qty, unit price and warranty unchanged — owner Q2). null = ask the customer again
+    // (new or changed line) or not a revision. The screen shows "ตกลงไว้แล้ว" vs "ต้องถามใหม่".
+    decisionCarriedFrom: uuid.nullable(),
   })
   .strict();
 export type QuotationLine = z.infer<typeof QuotationLine>;

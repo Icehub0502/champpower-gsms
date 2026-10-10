@@ -6,11 +6,12 @@
  * frozen at issue and read as-is; approved_total is read as-is once signed.
  */
 import {
-  canUndoConfirm, confirmReadiness, isClosedByJob, quoteTotals, quoteTotalsDecimal,
+  canUndoConfirm, confirmReadiness, decisionCarries, formatSatang, isClosedByJob, quoteTotals, quoteTotalsDecimal, toSatang,
   type DeclineReason, type QuotationStatus as DomainQuotationStatus,
 } from '@champpower/domain'
 import type { Quotation, QuotationLine } from '@gsms/contracts/index.js'
 import type { DocumentRow, LineRow } from '../repositories/quotation.js'
+import { sourceIdentityOf } from './quotation.js'
 
 function toLine(r: LineRow): QuotationLine {
   return {
@@ -37,7 +38,22 @@ function toLine(r: LineRow): QuotationLine {
     warranty: r.warranty_term_id
       ? { termId: r.warranty_term_id, name: r.warranty_name!, days: r.warranty_days, maxKm: r.warranty_max_km }
       : null,
+    decisionCarriedFrom: carriedFrom(r),
   }
+}
+
+/**
+ * Owner Q2: "ตกลงไว้แล้ว" vs "ต้องถามใหม่". A line carries its decision when it was
+ * copied from the superseded revision, is still decided, was NOT re-decided on
+ * this revision (same decided_at as its source), and still matches the source
+ * on item, qty, unit price and warranty.
+ */
+function carriedFrom(r: LineRow): string | null {
+  const src = sourceIdentityOf(r)
+  if (!src || r.approval_status === 'pending' || r.source_line_id === null) return null
+  if (!r.decided_at || !r.src_decided_at || r.decided_at.getTime() !== r.src_decided_at.getTime()) return null
+  const cur = { catalogItemId: r.catalog_item_id, name: r.name_snapshot, lineType: r.line_type, qty: r.qty, unitPrice: r.unit_price, warrantyTermId: r.warranty_term_id, warrantyDays: r.warranty_days, warrantyMaxKm: r.warranty_max_km }
+  return decisionCarries(src, cur) ? r.source_line_id : null
 }
 
 export function buildQuotationView(doc: DocumentRow, lineRows: LineRow[], jobStatus: string | null): Quotation {
@@ -47,7 +63,18 @@ export function buildQuotationView(doc: DocumentRow, lineRows: LineRow[], jobSta
     approvedAmount: r.approved_amount,
   }))
   const totalsRaw = quoteTotals(lines, doc.discount)
-  const totals = quoteTotalsDecimal(totalsRaw)
+  const computed = quoteTotalsDecimal(totalsRaw)
+  // A NUMBERED document is read from what was frozen on it, never recomputed (CLAUDE.md §4.4): the
+  // stored net totals and discount are the truth. Subtotals come from the (immutable) lines, and the
+  // applied discount is derived from stored net, so the five numbers can never disagree.
+  const totals = doc.number === null ? computed : {
+    ...computed,
+    discount: doc.discount,
+    offeredTotal: doc.offered_total,
+    approvedTotal: doc.approved_total,
+    offeredDiscount: formatSatang(Math.max(0, totalsRaw.offeredSubtotal - toSatang(doc.offered_total))),
+    approvedDiscount: formatSatang(Math.max(0, totalsRaw.approvedSubtotal - toSatang(doc.approved_total))),
+  }
   const readiness = confirmReadiness(lines.map((l) => ({
     id: l.id, parentLineId: l.parentLineId, approvalStatus: l.approvalStatus, declineReason: null, declineNote: null, approvedAmount: l.approvedAmount,
   })))

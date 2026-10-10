@@ -709,7 +709,9 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(
         const c = await confirm(j.jobId, { adjustments: { discount: { amount: '5000.00', reason: 'ทดสอบ' } } })
         expect(c.totals.approvedTotal).toBe('0.00')
         expect(c.totals.approvedDiscount).toBe('1000.00')
-        expect(c.totals.offeredDiscount).toBe('1400.00')
+        // the offered side is frozen at issue (two-totals rule, CLAUDE.md §5.1 item 3): a discount set at confirm moves only the approved side
+        expect(c.totals.offeredDiscount).toBe('0.00')
+        expect(c.totals.offeredTotal).toBe('1400.00')
       })
     })
 
@@ -899,7 +901,7 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(
         const lineId = q.lines[0]!.id
         expect((await decideRaw(j.jobId, lineId, { decision: 'approved' })).body.error).toBe('quotation_not_issued')
         expect((await confirmRaw(j.jobId)).body.error).toBe('quotation_not_issued')
-        expect((await POST(`${base(j.jobId)}/confirm/undo`, { reason: 'x' })).body.error).toBe('quotation_not_issued')
+        expect((await POST(`${base(j.jobId)}/confirm/undo`, { reason: 'x' })).body.error).toBe('quotation_not_confirmed')
         const rev = await POST(`${base(j.jobId)}/revise`, {})
         expect(rev.status).toBe(409)
         expect(rev.body.error).toBe('quotation_frozen')
@@ -1122,6 +1124,8 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(
     // =========================================================================
     // Roles
     // =========================================================================
+    const woPath = (id: string): string => '/api/jobs/' + id + '/work-order'
+
     describe('roles (CLAUDE.md §12.1)', () => {
       it('the technician cannot create, edit, decide or confirm a quotation (403)', async () => {
         const { jobId } = await draftQuote()
@@ -1171,16 +1175,42 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(
         }
       })
 
-      it('the work order is empty until the quotation is confirmed (no undecided or draft line leaks to the lift)', async () => {
-        const { jobId } = await draftQuote()
-        await addFree(jobId, 'ลูกหมาก', '1000.00')
-        expect((await GET<WorkOrder>(`/api/jobs/${jobId}/work-order`, 'technician')).body.lines).toEqual([])
-        const v = await issue(jobId)
-        expect((await GET<WorkOrder>(`/api/jobs/${jobId}/work-order`, 'technician')).body.lines).toEqual([])
-        await approve(jobId, v.lines[0]!.id)
-        expect((await GET<WorkOrder>(`/api/jobs/${jobId}/work-order`, 'technician')).body.lines).toEqual([])
-        await confirm(jobId)
-        expect((await GET<WorkOrder>(`/api/jobs/${jobId}/work-order`, 'technician')).body.lines).toHaveLength(1)
+      // Owner ruling DECISION-2026-10-06 §1.
+      it('work order: no quotation -> 409 quotation_missing; draft or issued -> 409 quotation_not_confirmed; confirmed -> the approved lines', async () => {
+        const j = await checkIn()
+        await seedPath(j.jobId, ['inspecting', 'quoted'])
+        const none = await GET(woPath(j.jobId), 'technician')
+        expect(none.status, JSON.stringify(none.body)).toBe(409)
+        expect(none.body.error).toBe('quotation_missing')
+
+        await POST(base(j.jobId), {})
+        await addFree(j.jobId, 'ลูกหมาก', '1000.00')
+        const draft = await GET(woPath(j.jobId), 'technician')
+        expect(draft.status, JSON.stringify(draft.body)).toBe(409)
+        expect(draft.body.error).toBe('quotation_not_confirmed')
+
+        const v = await issue(j.jobId)
+        const issued = await GET(woPath(j.jobId), 'technician')
+        expect(issued.status, JSON.stringify(issued.body)).toBe(409)
+        expect(issued.body.error).toBe('quotation_not_confirmed')
+
+        await approve(j.jobId, v.lines[0]!.id)
+        expect((await GET(woPath(j.jobId), 'technician')).body.error).toBe('quotation_not_confirmed')
+        await confirm(j.jobId)
+        const ok = await GET<WorkOrder>(woPath(j.jobId), 'technician')
+        expect(ok.status).toBe(200)
+        expect(ok.body.lines).toHaveLength(1)
+      })
+
+      it('work order: a confirmed quotation with every line declined is 200 with an empty list', async () => {
+        const j = await draftQuote()
+        await addFree(j.jobId, 'ลูกหมาก', '1000.00')
+        const v = await issue(j.jobId)
+        await decline(j.jobId, v.lines[0]!.id, 'too_expensive')
+        await confirm(j.jobId)
+        const r = await GET<WorkOrder>(woPath(j.jobId), 'technician')
+        expect(r.status, JSON.stringify(r.body)).toBe(200)
+        expect(r.body.lines).toEqual([])
       })
     })
 
@@ -1321,9 +1351,9 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(
       it('B\'s tokens work on B: the same endpoints succeed for its own data (the 404s above are isolation, not a broken route)', async () => {
         const r = await view(b.jobId, 'owner', fx.shopB)
         expect(r.status).toBe('draft')
-        const w = await GET<WorkOrder>(`/api/jobs/${b.jobId}/work-order`, 'owner', fx.shopB)
-        expect(w.status).toBe(200)
-        expect(w.body.lines).toEqual([])
+        const w = await GET(`/api/jobs/${b.jobId}/work-order`, 'owner', fx.shopB)
+        expect(w.status).toBe(409) // its own job, a draft quotation: not confirmed (not a 404)
+        expect(w.body.error).toBe('quotation_not_confirmed')
       })
 
       it("numbering is per shop: shop B's counter is not shop A's", async () => {

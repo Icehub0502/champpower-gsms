@@ -40,6 +40,11 @@ function withWarranty(trx: ScopedTx) {
     .leftJoin('warranty_terms as wt', 'wt.id', 'ci.warranty_term_id')
 }
 
+/** Escape LIKE/ILIKE wildcards so what staff type is matched literally (security L6). */
+export function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (ch) => '\\' + ch)
+}
+
 export async function getItemById(trx: ScopedTx, itemId: string): Promise<CatalogItemRow | undefined> {
   return withWarranty(trx).select(ITEM_COLUMNS).where('ci.id', '=', itemId).executeTakeFirst()
 }
@@ -64,35 +69,61 @@ export async function searchItemsByName(
   return withWarranty(trx)
     .select(ITEM_COLUMNS)
     .where('ci.is_active', '=', true)
-    .where('ci.name', 'ilike', `%${q}%`)
+    .where('ci.name', 'ilike', `%${escapeLike(q)}%`)
     .orderBy('ci.is_set', 'desc')
     .orderBy('ci.name', 'asc')
     .limit(limit)
     .execute()
 }
 
-export interface FrequentItemRow extends CatalogItemRow {
-  use_count: number
+/** How many document lines ever used each of these items (the "most used" rank in search). One query for all hits. */
+export async function useCounts(trx: ScopedTx, itemIds: readonly string[]): Promise<Map<string, number>> {
+  if (itemIds.length === 0) return new Map()
+  const rows = await trx
+    .selectFrom('document_lines')
+    .select(['catalog_item_id', (eb) => eb.fn.countAll().as('n')])
+    .where('catalog_item_id', 'in', itemIds)
+    .groupBy('catalog_item_id')
+    .execute()
+  return new Map(rows.map((r) => [r.catalog_item_id!, Number(r.n)]))
 }
 
-/** The shop's most-used items, by how many document lines ever referenced them. */
-export async function mostUsedItems(trx: ScopedTx, limit: number): Promise<FrequentItemRow[]> {
+/** Number of components per set, for all sets at once. */
+export async function componentCounts(trx: ScopedTx, setIds: readonly string[]): Promise<Map<string, number>> {
+  if (setIds.length === 0) return new Map()
   const rows = await trx
-    .selectFrom('document_lines as dl')
-    .innerJoin('catalog_items as ci', 'ci.id', 'dl.catalog_item_id')
-    .leftJoin('warranty_terms as wt', 'wt.id', 'ci.warranty_term_id')
-    .select([
-      ...ITEM_COLUMNS,
-      (eb) => eb.fn.countAll().as('use_count'),
-    ])
-    .where('ci.is_active', '=', true)
-    .groupBy(['ci.id', 'ci.category', 'ci.name', 'ci.line_type', 'ci.unit', 'ci.default_qty',
-      'ci.is_set', 'ci.base_price', 'ci.warranty_term_id', 'ci.is_active', 'ci.merged_into_id',
-      'wt.name', 'wt.days', 'wt.max_km'])
-    .orderBy('use_count', 'desc')
-    .limit(limit)
+    .selectFrom('catalog_set_components')
+    .select(['set_item_id', (eb) => eb.fn.countAll().as('n')])
+    .where('set_item_id', 'in', setIds)
+    .groupBy('set_item_id')
     .execute()
-  return rows.map((r) => ({ ...r, use_count: Number(r.use_count) }))
+  return new Map(rows.map((r) => [r.set_item_id, Number(r.n)]))
+}
+
+/** This car model's price for each of these items, in one query. */
+export async function modelPricesFor(trx: ScopedTx, itemIds: readonly string[], vehicleModelId: string): Promise<Map<string, { id: string; price: string }>> {
+  if (itemIds.length === 0) return new Map()
+  const rows = await trx
+    .selectFrom('catalog_model_prices')
+    .select(['id', 'item_id', 'price'])
+    .where('vehicle_model_id', '=', vehicleModelId)
+    .where('item_id', 'in', itemIds)
+    .execute()
+  return new Map(rows.map((r) => [r.item_id, { id: r.id, price: r.price }]))
+}
+
+/** Follow merged_into_id to the surviving item (domain resolveCatalogItem's DB twin; chains are short and bounded). */
+export async function getSurvivingItem(trx: ScopedTx, itemId: string): Promise<CatalogItemRow | undefined> {
+  let cur = await getItemById(trx, itemId)
+  for (let hops = 0; cur && cur.merged_into_id && hops < 32; hops++) {
+    cur = await getItemById(trx, cur.merged_into_id)
+  }
+  return cur
+}
+
+export async function getVehicleModelId(trx: ScopedTx, vehicleId: string): Promise<string | null | undefined> {
+  const row = await trx.selectFrom('vehicles').select('vehicle_model_id').where('id', '=', vehicleId).executeTakeFirst()
+  return row ? row.vehicle_model_id : undefined
 }
 
 export interface SetComponentRow {
@@ -321,7 +352,8 @@ export interface VehicleModelRow {
 export async function searchVehicleModels(trx: ScopedTx, q: string | undefined, limit: number, offset: number): Promise<{ rows: VehicleModelRow[]; total: number }> {
   let base = trx.selectFrom('vehicle_models')
   if (q) {
-    base = base.where((eb) => eb.or([eb('brand', 'ilike', `%${q}%`), eb('name', 'ilike', `%${q}%`)]))
+    const like = `%${escapeLike(q)}%`
+    base = base.where((eb) => eb.or([eb('brand', 'ilike', like), eb('name', 'ilike', like)]))
   }
   const [rows, countRow] = await Promise.all([
     base.select(['id', 'brand', 'name', 'year_range']).orderBy('brand', 'asc').orderBy('name', 'asc').limit(limit).offset(offset).execute(),

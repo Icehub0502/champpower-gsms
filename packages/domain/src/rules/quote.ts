@@ -465,16 +465,29 @@ export type UndoConfirmCheck =
   | { ok: true }
   | { ok: false; code: 'not_signed' | 'different_day' | 'job_moved_on' };
 
-/** Undo is allowed the same Bangkok day, while the job is still 'approved' (owner decision 6). */
+/**
+ * Undo is allowed the same Bangkok day while the job has not moved past what
+ * confirm left it at (owner decision 6, widened 6 Oct 2026):
+ *   - confirm approved the job   -> still 'approved' (or still received /
+ *     inspecting, where confirm could not move it)
+ *   - confirm approved nothing (D5, all declined) -> still 'quoted'
+ * `outcome` omitted keeps the original rule: the job must be 'approved'.
+ * Anything else is job_moved_on.
+ */
 export function canUndoConfirm(input: {
   quotationStatus: QuotationStatus;
   confirmedAt: Date | string;
   now: Date | string;
   jobStatus: string;
+  outcome?: 'approve_job' | 'keep_quoted';
 }): UndoConfirmCheck {
   if (input.quotationStatus !== 'signed') return { ok: false, code: 'not_signed' };
   if (bangkokDayKey(input.confirmedAt) !== bangkokDayKey(input.now)) return { ok: false, code: 'different_day' };
-  if (input.jobStatus !== 'approved') return { ok: false, code: 'job_moved_on' };
+  const allowed =
+    input.outcome === 'keep_quoted' ? ['quoted']
+    : input.outcome === 'approve_job' ? ['approved', 'received', 'inspecting']
+    : ['approved'];
+  if (!allowed.includes(input.jobStatus)) return { ok: false, code: 'job_moved_on' };
   return { ok: true };
 }
 
@@ -609,4 +622,47 @@ export function offeredItemLineIds(lines: readonly QuoteLineDecisionState[]): st
  */
 export function jobStatusOnIssue(current: string): 'quoted' | null {
   return current === 'received' || current === 'inspecting' ? 'quoted' : null;
+}
+
+// -----------------------------------------------------------------------------
+// Decisions carried into a revision (owner Q2, 6 Oct 2026)
+// -----------------------------------------------------------------------------
+
+/** What the customer actually decided on: the offer, not the name. */
+export interface LineIdentity {
+  catalogItemId: string | null;
+  name: string;
+  lineType: string;
+  qty: string;
+  unitPrice: string;
+  warrantyTermId: string | null;
+  warrantyDays: number | null;
+  warrantyMaxKm: number | null;
+}
+
+/**
+ * Does the customer's earlier decision on `prev` still hold for `next`?
+ * Only when the item, quantity, unit price and warranty are all the same. A
+ * decision is made on one offer; if the offer changed — price UP or DOWN — it
+ * cannot be recorded as approved, because the customer never saw this one.
+ * Display order, the internal note, price_source and list_price are the shop's
+ * data, not what the customer agreed to, so they are not compared.
+ * Amounts compare as numbers ("1" equals "1.00"); anything unparsable does not
+ * carry (fails safe to "ask again").
+ */
+export function decisionCarries(prev: LineIdentity, next: LineIdentity): boolean {
+  try {
+    return (
+      prev.catalogItemId === next.catalogItemId &&
+      prev.name.trim() === next.name.trim() &&
+      prev.lineType === next.lineType &&
+      toQtyCenti(prev.qty) === toQtyCenti(next.qty) &&
+      toSatang(prev.unitPrice) === toSatang(next.unitPrice) &&
+      prev.warrantyTermId === next.warrantyTermId &&
+      prev.warrantyDays === next.warrantyDays &&
+      prev.warrantyMaxKm === next.warrantyMaxKm
+    );
+  } catch {
+    return false;
+  }
 }

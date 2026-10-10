@@ -39,13 +39,13 @@ function warrantyOf(row: { warranty_term_id: string | null; warranty_name: strin
     : null
 }
 
-async function priceFor(trx: ScopedTx, itemId: string, basePrice: string | null, vehicleModelId: string | null) {
-  const modelPrice = vehicleModelId ? await catalogRepo.getModelPrice(trx, itemId, vehicleModelId) : undefined
-  const resolved = resolvePrice({ modelPrice: modelPrice?.price ?? null, basePrice })
-  return { price: resolved.price, priceSource: resolved.source, priceRefId: resolved.source === 'model' ? (modelPrice?.id ?? null) : null }
-}
-
-/** Sets first, then the shop's most-used items, then this vehicle's offered items, then the rest — owner decision 16. */
+/**
+ * Search, ranked the way owner decision 16 says: sets first, then the shop's
+ * most-used items, then this vehicle's offered items, then the rest. The hits
+ * are fetched wider than the page (the rank is applied before the cut) and
+ * every per-hit lookup — set sizes, model prices, use counts — is ONE query for
+ * all hits, not one query per hit.
+ */
 export async function searchCatalog(
   trx: ScopedTx,
   input: { q: string; jobId: string; limit: number },
@@ -53,37 +53,51 @@ export async function searchCatalog(
   const job = await quotationRepo.jobWithVehicle(trx, input.jobId)
   const vehicleModelId = job?.vehicle_model_id ?? null
 
-  const byName = await catalogRepo.searchItemsByName(trx, input.q, input.limit)
-  const seen = new Set(byName.map((r) => r.id))
+  const byName = await catalogRepo.searchItemsByName(trx, input.q, Math.min(100, input.limit * 4))
+  const ids = byName.map((r) => r.id)
+  const [counts, uses, modelPrices] = await Promise.all([
+    catalogRepo.componentCounts(trx, byName.filter((r) => r.is_set).map((r) => r.id)),
+    catalogRepo.useCounts(trx, ids),
+    vehicleModelId ? catalogRepo.modelPricesFor(trx, ids, vehicleModelId) : Promise.resolve(new Map<string, { id: string; price: string }>()),
+  ])
 
-  const out: SearchHit[] = []
-  for (const row of byName) {
-    const componentCount = row.is_set ? (await catalogRepo.getSetComponents(trx, row.id)).length : 0
-    const p = await priceFor(trx, row.id, row.base_price, vehicleModelId)
-    out.push({
-      section: row.is_set ? 'set' : 'other',
+  const ranked: Array<SearchHit & { _uses: number }> = byName.map((row) => {
+    const modelPrice = modelPrices.get(row.id)
+    const resolved = resolvePrice({ modelPrice: modelPrice?.price ?? null, basePrice: row.base_price })
+    const used = uses.get(row.id) ?? 0
+    return {
+      section: row.is_set ? 'set' : used > 0 ? 'frequent' : 'other',
       itemId: row.id, offeredItemId: null,
       category: row.category, name: row.name, lineType: row.line_type, unit: row.unit,
-      defaultQty: row.default_qty, isSet: row.is_set, componentCount,
-      price: p.price, priceSource: p.priceSource, priceRefId: p.priceRefId,
-      warranty: warrantyOf(row),
-    })
-  }
+      defaultQty: row.default_qty, isSet: row.is_set, componentCount: counts.get(row.id) ?? 0,
+      price: resolved.price, priceSource: resolved.source,
+      priceRefId: resolved.source === 'model' ? (modelPrice?.id ?? null) : null,
+      warranty: warrantyOf(row), _uses: used,
+    }
+  })
+  const order = { set: 0, frequent: 1, offered: 2, other: 3 } as const
+  ranked.sort((a, b) => order[a.section] - order[b.section] || b._uses - a._uses || a.name.localeCompare(b.name, 'th'))
+
+  const out: SearchHit[] = ranked.map(({ _uses, ...hit }) => hit)
 
   if (job) {
+    const seen = new Set(ids)
     const offered = await quotationRepo.listOfferedItems(trx, job.vehicle_id, 10, 0)
+    const offeredHits: SearchHit[] = []
     for (const o of offered.rows) {
       if (o.catalog_item_id && seen.has(o.catalog_item_id)) continue
-      out.push({
+      offeredHits.push({
         section: 'offered', itemId: o.catalog_item_id, offeredItemId: o.id,
-        category: null, name: o.name, lineType: o.line_type, unit: null, defaultQty: o.qty,
+        category: null, name: o.name, lineType: o.line_type as SearchHit['lineType'], unit: null, defaultQty: o.qty,
         isSet: false, componentCount: 0, price: o.unit_price, priceSource: 'none', priceRefId: null,
         warranty: null,
       })
     }
+    // offered sits between the most-used and the rest
+    const firstOther = out.findIndex((h) => h.section === 'other')
+    out.splice(firstOther === -1 ? out.length : firstOther, 0, ...offeredHits)
   }
 
-  out.sort((a, b) => (a.section === 'set' && b.section !== 'set' ? -1 : b.section === 'set' && a.section !== 'set' ? 1 : 0))
   return { items: out.slice(0, input.limit), vehicleModelLinked: vehicleModelId !== null }
 }
 
@@ -120,7 +134,8 @@ export async function writeFirstPrice(
       return { ok: true, priceId: written.id, itemId: input.itemId, scope: 'model', price: written.price }
     }
     const existing = await catalogRepo.getModelPrice(trx, input.itemId, job.vehicle_model_id)
-    return { ok: false, existingPrice: existing!.price, scope: 'model' }
+    if (!existing) return { ok: false, notFound: true } // the row vanished between the conflict and the read
+    return { ok: false, existingPrice: existing.price, scope: 'model' }
   }
 
   // No controlled model for this car — fall back to the item's base price,
@@ -137,7 +152,8 @@ export async function writeFirstPrice(
     }
   }
   const fresh = await catalogRepo.getItemById(trx, input.itemId)
-  return { ok: false, existingPrice: fresh!.base_price!, scope: 'base' }
+  if (!fresh || fresh.base_price === null) return { ok: false, notFound: true }
+  return { ok: false, existingPrice: fresh.base_price, scope: 'base' }
 }
 
 /** manager+ — checked by the route. Mandatory reason; audit keeps old -> new. */

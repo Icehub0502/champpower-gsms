@@ -7,13 +7,27 @@
  * — this file never computes a total or a decision cascade itself, it only
  * reads rows, calls domain, and writes exactly the columns migration 0022
  * allows for the document's current status. CLAUDE.md §4/§5/§5.1.
+ *
+ * LOCK ORDER (CLAUDE.md §4.x): jobs -> documents -> document_lines, always.
+ * A path that needs both takes the job FIRST (lockJobThenDocument); a path
+ * that only needs the document never touches the job afterwards.
+ *
+ * DATABASE CHECKs HAVE A DOMAIN CHECK IN FRONT (CLAUDE.md §4.y): a line is run
+ * through validateQuoteLine (and a money overflow guard) before any write, so
+ * a bad value is a 400 with a field error, never a CHECK violation as a 500.
+ *
+ * Reminder for every function below that returns err() AFTER writing: the
+ * request still COMMITS the transaction (a returned error is not a throw), so
+ * any write that precedes an err() must be harmless on its own. Validate first,
+ * write after.
  */
 import {
-  applySetDecision, approvedLineSatang, bangkokDayKey, blocksJobBackToQuoted,
-  canUndoConfirm, checkApprovedAmount, confirmReadiness, formatSatang, isTrueDecline,
-  jobOutcomeAtConfirm, jobStatusOnIssue, lineTotalSatang, offeredItemLineIds, planQuotationClose, quoteTotals,
-  quoteTotalsDecimal, setsNeedingAmount, toSatang, warrantySnapshotOf, workOrderLineIds,
-  subStateAfterMove, type DeclineReason, type QuoteLineDecisionState, type QuoteLineMoney,
+  MoneyError, applySetDecision, blocksJobBackToQuoted, canUndoConfirm, checkApprovedAmount,
+  confirmReadiness, decisionCarries, formatSatang, jobOutcomeAtConfirm, jobStatusOnIssue,
+  lineTotalSatang, offeredItemLineIds, planQuotationClose, quoteTotals, quoteTotalsDecimal,
+  setsNeedingAmount, subStateAfterMove, toSatang, validateQuoteLine, warrantySnapshotOf,
+  workOrderLineIds, type DeclineReason, type LineIdentity, type QuoteLineDecisionState,
+  type QuoteLineMoney,
 } from '@champpower/domain'
 import type { ScopedTx } from '@gsms/db/client.js'
 import * as catalogRepo from '../repositories/catalog.js'
@@ -22,22 +36,44 @@ import * as jobsRepo from '../repositories/jobs.js'
 import { writeAudit } from './audit.js'
 import { createItem, findSimilar } from './catalogPricing.js'
 
+/** A job in one of these can no longer take a new quotation, revision or issue. */
+const ENDED_JOB_STATUSES = ['rejected', 'carout', 'delivered']
+
 // -----------------------------------------------------------------------------
-// Line <-> domain shape
+// Line <-> domain shapes (one mapping each, used everywhere)
 // -----------------------------------------------------------------------------
 
 type FullLine = QuoteLineMoney & QuoteLineDecisionState
 
-function toDomainLine(r: quotationRepo.LineRow): FullLine {
+function decisionState(r: quotationRepo.LineRow): QuoteLineDecisionState {
   return {
     id: r.id,
     parentLineId: r.parent_line_id,
-    qty: r.qty,
-    unitPrice: r.unit_price,
     approvalStatus: r.approval_status as FullLine['approvalStatus'],
-    approvedAmount: r.approved_amount,
     declineReason: r.decline_reason as DeclineReason | null,
     declineNote: r.decline_note,
+  }
+}
+
+function toDomainLine(r: quotationRepo.LineRow): FullLine {
+  return { ...decisionState(r), qty: r.qty, unitPrice: r.unit_price, approvedAmount: r.approved_amount }
+}
+
+function identityOf(r: quotationRepo.LineRow): LineIdentity {
+  return {
+    catalogItemId: r.catalog_item_id, name: r.name_snapshot, lineType: r.line_type, qty: r.qty,
+    unitPrice: r.unit_price, warrantyTermId: r.warranty_term_id, warrantyDays: r.warranty_days,
+    warrantyMaxKm: r.warranty_max_km,
+  }
+}
+
+/** The superseded revision's line this one came from, as it was. null for a new line or a rev 1 line. */
+export function sourceIdentityOf(r: quotationRepo.LineRow): LineIdentity | null {
+  if (r.source_line_id === null || r.src_name === null || r.src_line_type === null || r.src_qty === null || r.src_unit_price === null) return null
+  return {
+    catalogItemId: r.src_catalog_item_id, name: r.src_name, lineType: r.src_line_type, qty: r.src_qty,
+    unitPrice: r.src_unit_price, warrantyTermId: r.src_warranty_term_id, warrantyDays: r.src_warranty_days,
+    warrantyMaxKm: r.src_warranty_max_km,
   }
 }
 
@@ -48,7 +84,10 @@ function toDomainLine(r: quotationRepo.LineRow): FullLine {
 
 export type QuotationError =
   | { code: 'job_not_found' }
+  | { code: 'job_not_open' }
   | { code: 'quotation_not_found' }
+  | { code: 'quotation_missing' }
+  | { code: 'quotation_not_confirmed' }
   | { code: 'quotation_exists' }
   | { code: 'quotation_not_draft' }
   | { code: 'quotation_not_issued' }
@@ -57,6 +96,8 @@ export type QuotationError =
   | { code: 'quotation_line_not_found' }
   | { code: 'catalog_item_not_found' }
   | { code: 'offered_item_not_found' }
+  | { code: 'invalid_line'; fields: Record<string, string[]> }
+  | { code: 'amount_out_of_range' }
   | { code: 'decisions_incomplete'; lineIds: string[] }
   | { code: 'set_amount_required'; lineIds: string[] }
   | { code: 'approved_amount_not_allowed'; lineId: string }
@@ -75,16 +116,97 @@ export type Result<T> = { ok: true; value: T } | { ok: false; error: QuotationEr
 const err = (error: QuotationError): { ok: false; error: QuotationError } => ({ ok: false, error })
 const ok = <T>(value: T): { ok: true; value: T } => ({ ok: true, value })
 
+/** The document's decision columns say nothing yet, and the DB says the same: field errors for a line, or null when it is fine. */
+function lineFieldErrors(input: { lineType: string; qty: string; unitPrice: string; isVatable: boolean }): Record<string, string[]> | null {
+  const fields: Record<string, string[]> = {}
+  const issues = validateQuoteLine({ ...input, lineType: input.lineType as 'part' | 'labor' | 'fee' })
+  for (const i of issues) (fields[i.field] ??= []).push(i.code)
+  if (issues.length === 0) {
+    try {
+      lineTotalSatang(input.qty, input.unitPrice)
+    } catch (e) {
+      if (!(e instanceof MoneyError)) throw e
+      fields.unitPrice = ['out_of_range']
+    }
+  }
+  return Object.keys(fields).length > 0 ? fields : null
+}
+
+/**
+ * Would the document's totals still fit numeric(12,2) with this line added (or
+ * this line's qty/price changed)? A draft whose total cannot be stored must
+ * never exist: it could not be shown, issued or priced. Checked BEFORE the write.
+ */
+function totalFits(rows: quotationRepo.LineRow[], line: { id: string; qty: string; unitPrice: string; isChild?: boolean }): boolean {
+  try {
+    const others = rows.filter((r) => r.id !== line.id).map(toDomainLine)
+    quoteTotals(
+      [...others, { id: line.id, parentLineId: line.isChild ? 'x' : null, qty: line.qty, unitPrice: line.unitPrice, approvalStatus: 'pending', approvedAmount: null }],
+      '0',
+    )
+    return true
+  } catch (e) {
+    if (e instanceof MoneyError) return false
+    throw e
+  }
+}
+
+/** Job first, then the document (CLAUDE.md §4.x). The unlocked read only learns which job to lock. */
+async function lockJobThenDocument(trx: ScopedTx, documentId: string) {
+  const pre = await quotationRepo.getDocument(trx, documentId)
+  if (!pre) return null
+  const job = pre.job_id ? await quotationRepo.lockJob(trx, pre.job_id) : undefined
+  const doc = await quotationRepo.lockDocument(trx, documentId)
+  if (!doc) return null
+  return { doc, job }
+}
+
+/**
+ * A set that is not cut any more must not keep an agreed amount (v3 §3.3).
+ * Only valid while the lines may be written (draft / issued). Returns the rows
+ * as they are after the clear.
+ */
+async function clearStaleAgreedAmounts(trx: ScopedTx, rows: quotationRepo.LineRow[]): Promise<quotationRepo.LineRow[]> {
+  const needing = new Set(setsNeedingAmount(rows.map(decisionState)))
+  const out: quotationRepo.LineRow[] = []
+  for (const r of rows) {
+    if (r.approved_amount !== null && !needing.has(r.id)) {
+      await quotationRepo.setApprovedAmount(trx, r.id, null)
+      out.push({ ...r, approved_amount: null })
+    } else out.push(r)
+  }
+  return out
+}
+
+/** checkApprovedAmount on every line that carries an agreed amount; the first refusal, or null. */
+function agreedAmountRefusal(rows: quotationRepo.LineRow[]): QuotationError | null {
+  for (const r of rows) {
+    if (r.approved_amount === null) continue
+    const offered = lineTotalSatang(r.qty, r.unit_price)
+    const check = checkApprovedAmount(offered, toSatang(r.approved_amount))
+    if (check.ok) continue
+    if (check.code === 'over_double') return { code: 'amount_over_2x', lineId: r.id, offered: formatSatang(offered), max: formatSatang(offered * 2) }
+    if (check.code === 'free_set') return { code: 'amount_above_offer_free_set', lineId: r.id }
+    return { code: 'approved_amount_not_allowed', lineId: r.id }
+  }
+  return null
+}
+
 // -----------------------------------------------------------------------------
 // Draft
 // -----------------------------------------------------------------------------
 
 export async function createDraft(trx: ScopedTx, shopId: string, jobId: string): Promise<Result<quotationRepo.DocumentRow>> {
-  const job = await quotationRepo.jobWithVehicle(trx, jobId)
+  // Job lock first: concurrent creates for one job queue here, so the second
+  // one sees the first one's draft and answers quotation_exists.
+  const job = await quotationRepo.lockJob(trx, jobId)
   if (!job) return err({ code: 'job_not_found' })
+  if (ENDED_JOB_STATUSES.includes(job.status)) return err({ code: 'job_not_open' })
+  const withVehicle = await quotationRepo.jobWithVehicle(trx, jobId)
+  if (!withVehicle) return err({ code: 'job_not_found' })
   const existing = await quotationRepo.findLiveQuotation(trx, jobId)
   if (existing) return err({ code: 'quotation_exists' })
-  const doc = await quotationRepo.insertDraftQuotation(trx, { shopId, jobId, customerId: job.customer_id })
+  const doc = await quotationRepo.insertDraftQuotation(trx, { shopId, jobId, customerId: withVehicle.customer_id })
   return ok(doc)
 }
 
@@ -115,7 +237,8 @@ async function nextSortOrder(trx: ScopedTx, documentId: string): Promise<number>
  * Add a line to a draft: item, set (server expands the children), free text
  * (optionally added to the catalog, D12), or a re-add from "เคยเสนอไว้".
  * Every path goes through warrantySnapshotOf() exactly once — the ONE
- * function every line-creating path uses (v3 §5).
+ * function every line-creating path uses (v3 §5). A merged item is resolved
+ * to its survivor first (D12), so a line never points at a retired item.
  */
 export async function addLine(
   trx: ScopedTx,
@@ -131,13 +254,17 @@ export async function addLine(
   let sortOrder = await nextSortOrder(trx, documentId)
 
   if (input.kind === 'item' || input.kind === 'set') {
-    const item = await catalogRepo.getItemById(trx, input.itemId)
+    const item = await catalogRepo.getSurvivingItem(trx, input.itemId)
     if (!item) return err({ code: 'catalog_item_not_found' })
     const modelPrice = job?.vehicle_model_id ? await catalogRepo.getModelPrice(trx, item.id, job.vehicle_model_id) : undefined
     const listPrice = modelPrice?.price ?? item.base_price
     const priceSource: 'model' | 'base' | null = modelPrice ? 'model' : item.base_price !== null ? 'base' : null
     const unitPrice = input.unitPrice ?? listPrice ?? '0'
     const qty = input.qty ?? item.default_qty
+    const isVatable = item.line_type === 'part'
+    const fields = lineFieldErrors({ lineType: item.line_type, qty, unitPrice, isVatable })
+    if (fields) return err({ code: 'invalid_line', fields })
+    if (!totalFits(await quotationRepo.getLines(trx, documentId), { id: 'new', qty, unitPrice })) return err({ code: 'invalid_line', fields: { unitPrice: ['out_of_range'] } })
     const warranty = warrantySnapshotOf(
       item.warranty_term_id ? { id: item.warranty_term_id, name: item.warranty_name!, days: item.warranty_days, maxKm: item.warranty_max_km } : null,
     )
@@ -145,7 +272,7 @@ export async function addLine(
       shopId, documentId, parentLineId: null, sortOrder: sortOrder++,
       lineType: item.line_type, catalogItemId: item.id, nameSnapshot: item.name, brandSnapshot: null,
       qty, unit: item.unit, unitPrice, listPrice, priceSource, priceRefId: modelPrice?.id ?? null,
-      isVatable: item.line_type === 'part', lineTotal: formatSatang(lineTotalSatang(qty, unitPrice)),
+      isVatable, lineTotal: formatSatang(lineTotalSatang(qty, unitPrice)),
       warrantyTermId: warranty.warrantyTermId, warrantyName: warranty.warrantyName,
       warrantyDays: warranty.warrantyDays, warrantyMaxKm: warranty.warrantyMaxKm,
     }
@@ -179,15 +306,19 @@ export async function addLine(
 
   if (input.kind === 'offered') {
     const row = await quotationRepo.getOfferedItem(trx, input.offeredItemId)
-    if (!row) return err({ code: 'offered_item_not_found' })
-    const item = row.catalog_item_id ? await catalogRepo.getItemById(trx, row.catalog_item_id) : undefined
+    // Only a still-declined item of THIS job's own vehicle can be re-added (security L4).
+    if (!row || !job || row.vehicle_id !== job.vehicle_id || row.status !== 'declined') return err({ code: 'offered_item_not_found' })
+    const item = row.catalog_item_id ? await catalogRepo.getSurvivingItem(trx, row.catalog_item_id) : undefined
     const warranty = warrantySnapshotOf(
       item?.warranty_term_id ? { id: item.warranty_term_id, name: item.warranty_name!, days: item.warranty_days, maxKm: item.warranty_max_km } : null,
     )
     const qty = input.qty ?? row.qty
+    const fields = lineFieldErrors({ lineType: row.line_type, qty, unitPrice: row.unit_price, isVatable: row.line_type === 'part' })
+    if (fields) return err({ code: 'invalid_line', fields })
+    if (!totalFits(await quotationRepo.getLines(trx, documentId), { id: 'new', qty, unitPrice: row.unit_price })) return err({ code: 'invalid_line', fields: { unitPrice: ['out_of_range'] } })
     const [id] = await quotationRepo.insertLines(trx, [{
       shopId, documentId, parentLineId: null, sortOrder: sortOrder++,
-      lineType: row.line_type, catalogItemId: row.catalog_item_id, nameSnapshot: row.name, brandSnapshot: null,
+      lineType: row.line_type, catalogItemId: item?.id ?? null, nameSnapshot: row.name, brandSnapshot: null,
       qty, unit: null, unitPrice: row.unit_price, listPrice: row.unit_price, priceSource: null, priceRefId: null,
       isVatable: row.line_type === 'part', lineTotal: formatSatang(lineTotalSatang(qty, row.unit_price)),
       warrantyTermId: warranty.warrantyTermId, warrantyName: warranty.warrantyName,
@@ -197,16 +328,19 @@ export async function addLine(
     return ok(lines.filter((l) => l.id === id))
   }
 
-  // free text. Validate every foreign-able id BEFORE any write; a missing and another shop's id look the same.
+  // free text. Validate EVERYTHING (line, ids) before any write; a missing and another shop's id look the same.
+  const isVatable = input.isVatable ?? (input.lineType === 'part')
+  const fields = lineFieldErrors({ lineType: input.lineType, qty: input.qty, unitPrice: input.unitPrice, isVatable })
+  if (fields) return err({ code: 'invalid_line', fields })
+  if (!totalFits(await quotationRepo.getLines(trx, documentId), { id: 'new', qty: input.qty, unitPrice: input.unitPrice })) return err({ code: 'invalid_line', fields: { unitPrice: ['out_of_range'] } })
   let catalogItemId: string | null = null
   const term = input.warrantyTermId ? await catalogRepo.getWarrantyTerm(trx, input.warrantyTermId) : undefined
   if (input.warrantyTermId && !term) return err({ code: 'warranty_term_not_found' })
-  if (input.addToCatalog && input.useExistingItemId && !(await catalogRepo.getItemById(trx, input.useExistingItemId))) {
-    return err({ code: 'catalog_item_not_found' })
-  }
+  const existing = input.addToCatalog && input.useExistingItemId ? await catalogRepo.getSurvivingItem(trx, input.useExistingItemId) : undefined
+  if (input.addToCatalog && input.useExistingItemId && !existing) return err({ code: 'catalog_item_not_found' })
   if (input.addToCatalog) {
-    if (input.useExistingItemId) {
-      catalogItemId = input.useExistingItemId
+    if (existing) {
+      catalogItemId = existing.id
     } else if (!input.confirmNotSimilar && input.category) {
       const similar = await findSimilar(trx, input.category, input.name)
       if (similar.length > 0) return err({ code: 'similar_item_found', similar: similar.map(({ id, category, name }) => ({ id, category, name })) })
@@ -226,7 +360,7 @@ export async function addLine(
     shopId, documentId, parentLineId: null, sortOrder: sortOrder++,
     lineType: input.lineType, catalogItemId, nameSnapshot: input.name, brandSnapshot: input.brand ?? null,
     qty: input.qty, unit: input.unit ?? null, unitPrice: input.unitPrice, listPrice: null, priceSource: 'manual', priceRefId: null,
-    isVatable: input.isVatable ?? (input.lineType === 'part'), lineTotal: formatSatang(lineTotalSatang(input.qty, input.unitPrice)),
+    isVatable, lineTotal: formatSatang(lineTotalSatang(input.qty, input.unitPrice)),
     warrantyTermId: warranty.warrantyTermId, warrantyName: warranty.warrantyName,
     warrantyDays: warranty.warrantyDays, warrantyMaxKm: warranty.warrantyMaxKm,
   }])
@@ -234,17 +368,64 @@ export async function addLine(
   return ok(lines.filter((l) => l.id === id))
 }
 
-export async function patchLine(trx: ScopedTx, documentId: string, lineId: string, patch: quotationRepo.PatchLine & { qty?: string; unitPrice?: string }): Promise<Result<void>> {
+export interface PatchLineInput {
+  name?: string
+  brand?: string | null
+  lineType?: string
+  qty?: string
+  unit?: string | null
+  unitPrice?: string
+  isVatable?: boolean
+  /** A term id re-snapshots the warranty; null clears it; omitted leaves it alone. */
+  warrantyTermId?: string | null
+  sortOrder?: number
+}
+
+export async function patchLine(trx: ScopedTx, documentId: string, lineId: string, patch: PatchLineInput): Promise<Result<void>> {
   const doc = await quotationRepo.lockDocument(trx, documentId)
   if (!doc) return err({ code: 'quotation_not_found' })
   if (doc.status !== 'draft') return err({ code: 'quotation_not_draft' })
-  const lines = await quotationRepo.getLines(trx, documentId)
-  const line = lines.find((l) => l.id === lineId)
+  const line = await quotationRepo.getLine(trx, documentId, lineId)
   if (!line) return err({ code: 'quotation_line_not_found' })
+
+  const lineType = patch.lineType ?? line.line_type
   const qty = patch.qty ?? line.qty
   const unitPrice = patch.unitPrice ?? line.unit_price
+  const isVatable = patch.isVatable ?? line.is_vatable
+  const fields = lineFieldErrors({ lineType, qty, unitPrice, isVatable })
+  if (fields) return err({ code: 'invalid_line', fields })
+  if (line.parent_line_id === null && !totalFits(await quotationRepo.getLines(trx, documentId), { id: lineId, qty, unitPrice })) {
+    return err({ code: 'invalid_line', fields: { unitPrice: ['out_of_range'] } })
+  }
+
+  let warranty: ReturnType<typeof warrantySnapshotOf> | undefined
+  if (patch.warrantyTermId !== undefined) {
+    if (patch.warrantyTermId === null) warranty = warrantySnapshotOf(null)
+    else {
+      const term = await catalogRepo.getWarrantyTerm(trx, patch.warrantyTermId)
+      if (!term) return err({ code: 'warranty_term_not_found' })
+      warranty = warrantySnapshotOf({ id: term.id, name: term.name, days: term.days, maxKm: term.max_km })
+    }
+  }
+
   const lineTotal = line.parent_line_id === null ? formatSatang(lineTotalSatang(qty, unitPrice)) : '0.00'
-  await quotationRepo.updateLineContent(trx, documentId, lineId, { ...patch, lineTotal })
+  await quotationRepo.updateLineContent(trx, documentId, lineId, {
+    nameSnapshot: patch.name, brandSnapshot: patch.brand, lineType: patch.lineType, qty: patch.qty, unit: patch.unit,
+    unitPrice: patch.unitPrice, isVatable: patch.isVatable, sortOrder: patch.sortOrder, lineTotal,
+    ...(warranty ? {
+      warrantyTermId: warranty.warrantyTermId, warrantyName: warranty.warrantyName,
+      warrantyDays: warranty.warrantyDays, warrantyMaxKm: warranty.warrantyMaxKm,
+    } : {}),
+  })
+
+  // Owner Q2: on a revision draft, a line that no longer matches what the
+  // customer decided on forgets that decision. Compared with the line it was
+  // copied from; a new line (no source) has nothing carried.
+  if (line.source_line_id !== null && line.approval_status !== 'pending') {
+    const after = await quotationRepo.getLine(trx, documentId, lineId)
+    const src = after ? sourceIdentityOf(after) : null
+    if (after && (!src || !decisionCarries(src, identityOf(after)))) await quotationRepo.resetDecision(trx, lineId)
+  }
   return ok(undefined)
 }
 
@@ -264,21 +445,38 @@ export async function removeLine(trx: ScopedTx, documentId: string, lineId: stri
 // -----------------------------------------------------------------------------
 
 export async function issue(trx: ScopedTx, shopId: string, documentId: string, actorId: string): Promise<Result<quotationRepo.DocumentRow>> {
-  const doc = await quotationRepo.lockDocument(trx, documentId)
-  if (!doc) return err({ code: 'quotation_not_found' })
+  const locked = await lockJobThenDocument(trx, documentId)
+  if (!locked) return err({ code: 'quotation_not_found' })
+  const { doc, job } = locked
   if (doc.status !== 'draft') return err({ code: 'quotation_not_draft' })
+  if (job && ENDED_JOB_STATUSES.includes(job.status)) return err({ code: 'job_not_open' })
+
   const lineRows = await quotationRepo.getLines(trx, documentId)
   if (lineRows.length === 0) return err({ code: 'quotation_empty' })
 
-  const lines = lineRows.map(toDomainLine)
-  const totals = quoteTotalsDecimal(quoteTotals(lines, doc.discount))
+  // Validate before numbering. On a REVISION the lines carry decisions and agreed
+  // amounts from the superseded document: drop an amount whose set is whole
+  // again, and re-run the 3-tier rule on the rest (a draft is writable).
+  const rows = await clearStaleAgreedAmounts(trx, lineRows)
+  let totals: ReturnType<typeof quoteTotalsDecimal>
+  try {
+    const refusal = agreedAmountRefusal(rows)
+    if (refusal) return err(refusal)
+    totals = quoteTotalsDecimal(quoteTotals(rows.map(toDomainLine), doc.discount))
+  } catch (e) {
+    if (e instanceof MoneyError) return err({ code: 'amount_out_of_range' })
+    throw e
+  }
+
   const number = await quotationRepo.allocateQuotationNumber(trx, shopId)
+  // approved_total is what the carried decisions approve (0 for a fresh rev 1).
   await quotationRepo.markIssued(trx, documentId, {
-    number, offeredTotal: totals.offeredTotal, approvedTotal: '0.00', discount: totals.discount, grandTotal: totals.offeredTotal, issuedBy: actorId,
+    number, offeredTotal: totals.offeredTotal, approvedTotal: totals.approvedTotal, discount: totals.discount,
+    grandTotal: totals.offeredTotal, issuedBy: actorId,
   })
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_issued', entityType: 'documents', entityId: documentId,
-    after: { number, offeredTotal: totals.offeredTotal },
+    after: { number, offeredTotal: totals.offeredTotal, approvedTotal: totals.approvedTotal },
   })
 
   // Owner decision (3 Oct 2026): issuing moves the job to 'quoted', in this SAME
@@ -286,20 +484,18 @@ export async function issue(trx: ScopedTx, shopId: string, documentId: string, a
   // the status together. jobStatusOnIssue deliberately bypasses the manual-move
   // table (received -> quoted is ONE step, no invented 'inspecting'); it is used
   // here and nowhere else. The write goes through the same repository functions
-  // the kanban status route uses, so there is no second status path.
-  if (doc.job_id) {
-    const job = await jobsRepo.lockForStatusChange(trx, doc.job_id)
-    const to = job ? jobStatusOnIssue(job.status) : null
-    if (job && to) {
-      const subState = subStateAfterMove(to, job.sub_state)
-      await jobsRepo.applyStatus(trx, { jobId: doc.job_id, status: to, subState })
-      const history = await jobsRepo.recordStatusHistory(trx, shopId, doc.job_id, to, actorId, 'ออกใบเสนอราคา')
-      await writeAudit(trx, {
-        shopId, actorId, action: 'job_status_changed', entityType: 'jobs', entityId: doc.job_id,
-        before: { status: job.status, sub_state: job.sub_state },
-        after: { status: to, sub_state: subState, status_history_id: history.id },
-      })
-    }
+  // the kanban status route uses, so there is no second status path. The job row
+  // is already locked (lockJobThenDocument).
+  const to = job ? jobStatusOnIssue(job.status) : null
+  if (job && doc.job_id && to) {
+    const subState = subStateAfterMove(to, job.sub_state)
+    await jobsRepo.applyStatus(trx, { jobId: doc.job_id, status: to, subState })
+    const history = await jobsRepo.recordStatusHistory(trx, shopId, doc.job_id, to, actorId, 'ออกใบเสนอราคา')
+    await writeAudit(trx, {
+      shopId, actorId, action: 'job_status_changed', entityType: 'jobs', entityId: doc.job_id,
+      before: { status: job.status, sub_state: job.sub_state },
+      after: { status: to, sub_state: subState, status_history_id: history.id },
+    })
   }
   return ok((await quotationRepo.getDocument(trx, documentId))!)
 }
@@ -310,6 +506,7 @@ export async function issue(trx: ScopedTx, shopId: string, documentId: string, a
 
 export async function decideLine(
   trx: ScopedTx,
+  shopId: string,
   documentId: string,
   lineId: string,
   decision: { decision: 'approved' | 'declined'; reason?: DeclineReason; note?: string },
@@ -319,11 +516,7 @@ export async function decideLine(
   if (!doc) return err({ code: 'quotation_not_found' })
   if (doc.status !== 'issued') return err({ code: 'quotation_not_issued' })
   const lineRows = await quotationRepo.getLines(trx, documentId)
-  const domainLines: QuoteLineDecisionState[] = lineRows.map((r) => ({
-    id: r.id, parentLineId: r.parent_line_id, approvalStatus: r.approval_status as FullLine['approvalStatus'],
-    declineReason: r.decline_reason as DeclineReason | null, declineNote: r.decline_note,
-  }))
-  const result = applySetDecision(domainLines, { lineId, decision: decision.decision, reason: decision.reason, note: decision.note })
+  const result = applySetDecision(lineRows.map(decisionState), { lineId, decision: decision.decision, reason: decision.reason, note: decision.note })
   if (!result.ok) {
     if (result.code === 'line_not_found') return err({ code: 'quotation_line_not_found' })
     return err({ code: result.code })
@@ -332,15 +525,28 @@ export async function decideLine(
     lineId: c.lineId, approvalStatus: c.approvalStatus, declineReason: c.declineReason, declineNote: c.declineNote, decidedBy: actorId,
   })))
 
-  const moneyLines = lineRows.map(toDomainLine)
+  // The decision may have made a cut set whole again: drop its stale agreed amount.
   const changedById = new Map(result.changes.map((c) => [c.lineId, c]))
-  const updatedMoney = moneyLines.map((l) => {
-    const c = changedById.get(l.id)
-    return c ? { ...l, approvalStatus: c.approvalStatus } : l
-  })
-  const totals = quoteTotalsDecimal(quoteTotals(updatedMoney, doc.discount))
+  const afterRows = await clearStaleAgreedAmounts(trx, lineRows.map((r) => {
+    const c = changedById.get(r.id)
+    return c ? { ...r, approval_status: c.approvalStatus, decline_reason: c.declineReason, decline_note: c.declineNote } : r
+  }))
+  const totals = quoteTotalsDecimal(quoteTotals(afterRows.map(toDomainLine), doc.discount))
   await quotationRepo.updateApprovedTotal(trx, documentId, totals.approvedTotal)
 
+  // Audit WITHOUT the free-text note (security M2): line ids and statuses only.
+  const target = lineRows.find((r) => r.id === lineId)!
+  await writeAudit(trx, {
+    shopId, actorId, action: 'quotation_line_decided', entityType: 'document_lines', entityId: lineId,
+    before: { approvalStatus: target.approval_status, declineReason: target.decline_reason },
+    after: {
+      documentId, approvalStatus: decision.decision, declineReason: decision.reason ?? null,
+      // set members moved by the same decision (D10 cascade)
+      cascade: result.changes.filter((c) => c.lineId !== lineId).map((c) => ({
+        lineId: c.lineId, from: lineRows.find((r) => r.id === c.lineId)?.approval_status, to: c.approvalStatus,
+      })),
+    },
+  })
   return ok(await quotationRepo.getLines(trx, documentId))
 }
 
@@ -367,82 +573,80 @@ export async function confirm(
   adjustments: ConfirmAdjustments | undefined,
   actorId: string,
 ): Promise<Result<ConfirmOutcome>> {
-  const doc = await quotationRepo.lockDocument(trx, documentId)
-  if (!doc) return err({ code: 'quotation_not_found' })
+  const locked = await lockJobThenDocument(trx, documentId)
+  if (!locked) return err({ code: 'quotation_not_found' })
+  const { doc, job } = locked
   if (doc.status !== 'issued') return err({ code: 'quotation_not_issued' })
 
-  const lineRows = await quotationRepo.getLines(trx, documentId)
+  const lineRows = await clearStaleAgreedAmounts(trx, await quotationRepo.getLines(trx, documentId))
   const setLineIds = (adjustments?.setLines ?? []).map((a) => a.lineId)
-  const linesForReadiness = lineRows.map((r) => ({ ...toDomainLine(r), approvedAmount: r.approved_amount }))
+  const linesForReadiness = lineRows.map((r) => ({ ...decisionState(r), approvedAmount: r.approved_amount }))
   const readiness = confirmReadiness(linesForReadiness, setLineIds)
   if (readiness.undecidedLineIds.length > 0) return err({ code: 'decisions_incomplete', lineIds: readiness.undecidedLineIds })
   if (readiness.setsMissingAmount.length > 0) return err({ code: 'set_amount_required', lineIds: readiness.setsMissingAmount })
 
+  // Validate EVERY adjustment before writing any (all-or-nothing).
   const byId = new Map(lineRows.map((r) => [r.id, r]))
+  const needing = new Set(setsNeedingAmount(lineRows.map(decisionState)))
   for (const a of adjustments?.setLines ?? []) {
     const line = byId.get(a.lineId)
     if (!line) return err({ code: 'quotation_line_not_found' })
-    if (!setsNeedingAmount(linesForReadiness).includes(a.lineId) && line.approved_amount === null) {
-      return err({ code: 'approved_amount_not_allowed', lineId: a.lineId })
-    }
+    // Only a set that is really cut may carry an agreed amount (v3 §3.3 item 5).
+    if (!needing.has(a.lineId)) return err({ code: 'approved_amount_not_allowed', lineId: a.lineId })
     const offeredSatang = lineTotalSatang(line.qty, line.unit_price)
-    const agreedSatang = toSatang(a.approvedAmount)
-    const check = checkApprovedAmount(offeredSatang, agreedSatang)
+    const check = checkApprovedAmount(offeredSatang, toSatang(a.approvedAmount))
     if (!check.ok) {
       if (check.code === 'over_double') return err({ code: 'amount_over_2x', lineId: a.lineId, offered: formatSatang(offeredSatang), max: formatSatang(offeredSatang * 2) })
       if (check.code === 'free_set') return err({ code: 'amount_above_offer_free_set', lineId: a.lineId })
       return err({ code: 'approved_amount_not_allowed', lineId: a.lineId })
     }
   }
-  // Everything validated above; only now write, so no refusal can leave a partial adjustment behind.
   for (const a of adjustments?.setLines ?? []) {
     await quotationRepo.setApprovedAmount(trx, a.lineId, a.approvedAmount)
   }
 
   const discount = adjustments?.discount?.amount ?? doc.discount
   const refreshedRows = await quotationRepo.getLines(trx, documentId)
-  const refreshedLines = refreshedRows.map(toDomainLine)
-  const totals = quoteTotalsDecimal(quoteTotals(refreshedLines, discount))
+  const totals = quoteTotalsDecimal(quoteTotals(refreshedRows.map(toDomainLine), discount))
 
   await quotationRepo.markSigned(trx, documentId, totals.approvedTotal, totals.discount)
 
   const auditAfter: Record<string, unknown> = { approvedTotal: totals.approvedTotal, discount: totals.discount }
   if (adjustments?.discount) auditAfter.discountReason = adjustments.discount.reason
   if (adjustments?.setLines?.length) auditAfter.setLines = adjustments.setLines.map((a) => ({ lineId: a.lineId, approvedAmount: a.approvedAmount, reason: a.reason }))
-  // The free-text reasons below (discount / agreed set amount) go into audit_logs.after on purpose: CLAUDE.md §9 requires the reason of a money adjustment to be audited and documents has no column for it. Unlike undo-delivered, whose reason lives on the job_status_history row, so audit keeps only the row id.
+  // The free-text reasons below (discount / agreed set amount) go into audit_logs.after on purpose:
+  // CLAUDE.md §9 requires the reason of a money adjustment to be audited and documents has no column
+  // for it. Unlike undo-delivered, whose reason lives on the job_status_history row, so audit keeps
+  // only the row id there. Reviewed by security (6 Oct 2026): accepted.
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_confirmed', entityType: 'documents', entityId: documentId,
     before: { discount: doc.discount }, after: auditAfter,
   })
 
   // Offered items (D3/D13): next_time declines only, parent not children.
-  const declineStates: QuoteLineDecisionState[] = refreshedRows.map((r) => ({
-    id: r.id, parentLineId: r.parent_line_id, approvalStatus: r.approval_status as FullLine['approvalStatus'],
-    declineReason: r.decline_reason as DeclineReason | null, declineNote: r.decline_note,
-  }))
+  const declineStates = refreshedRows.map(decisionState)
   const offeredIds = new Set(offeredItemLineIds(declineStates))
   if (offeredIds.size > 0 && doc.job_id) {
-    const job = await quotationRepo.jobWithVehicle(trx, doc.job_id)
-    if (job) {
+    const withVehicle = await quotationRepo.jobWithVehicle(trx, doc.job_id)
+    if (withVehicle) {
       for (const r of refreshedRows) {
         if (!offeredIds.has(r.id)) continue
-        await quotationRepo.insertOfferedItem(trx, { shopId, vehicleId: job.vehicle_id, documentLineId: r.id, name: r.name_snapshot })
+        await quotationRepo.insertOfferedItem(trx, { shopId, vehicleId: withVehicle.vehicle_id, documentLineId: r.id, name: r.name_snapshot, catalogItemId: r.catalog_item_id })
       }
     }
   }
 
   const outcome = jobOutcomeAtConfirm(declineStates)
   let jobStatusUnchanged: { currentStatus: string } | null = null
-  if (doc.job_id && outcome === 'approve_job') {
-    const job = await quotationRepo.lockJob(trx, doc.job_id)
-    if (job && job.status === 'quoted') {
-      await jobsRepo.applyStatus(trx, { jobId: doc.job_id!, status: 'approved', subState: null })
-      const history = await jobsRepo.recordStatusHistory(trx, shopId, doc.job_id!, 'approved', actorId)
+  if (doc.job_id && job && outcome === 'approve_job') {
+    if (job.status === 'quoted') {
+      await jobsRepo.applyStatus(trx, { jobId: doc.job_id, status: 'approved', subState: null })
+      const history = await jobsRepo.recordStatusHistory(trx, shopId, doc.job_id, 'approved', actorId)
       await writeAudit(trx, {
         shopId, actorId, action: 'job_status_changed', entityType: 'jobs', entityId: doc.job_id,
         before: { status: 'quoted' }, after: { status: 'approved', statusHistoryId: history.id },
       })
-    } else if (job && (job.status === 'received' || job.status === 'inspecting')) {
+    } else if (job.status === 'received' || job.status === 'inspecting') {
       // Before 'quoted': do not skip silently. Past 'quoted' skipping is correct.
       jobStatusUnchanged = { currentStatus: job.status }
     }
@@ -456,24 +660,34 @@ export async function confirm(
 // -----------------------------------------------------------------------------
 
 export async function undoConfirm(trx: ScopedTx, shopId: string, documentId: string, reason: string, actorId: string): Promise<Result<quotationRepo.DocumentRow>> {
-  const doc = await quotationRepo.lockDocument(trx, documentId)
-  if (!doc) return err({ code: 'quotation_not_found' })
-  if (doc.status !== 'signed') return err({ code: 'quotation_not_issued' })
-  const job = doc.job_id ? await quotationRepo.lockJob(trx, doc.job_id) : undefined
+  const locked = await lockJobThenDocument(trx, documentId)
+  if (!locked) return err({ code: 'quotation_not_found' })
+  const { doc, job } = locked
+  if (doc.status !== 'signed') return err({ code: 'quotation_not_confirmed' })
+  const lineRows = await quotationRepo.getLines(trx, documentId)
+  const outcome = jobOutcomeAtConfirm(lineRows.map(decisionState))
   const check = canUndoConfirm({
-    quotationStatus: 'signed', confirmedAt: doc.signed_at ?? new Date(), now: new Date(), jobStatus: job?.status ?? 'approved',
+    quotationStatus: 'signed', confirmedAt: doc.signed_at ?? new Date(), now: new Date(),
+    jobStatus: job?.status ?? 'approved', outcome: outcome === 'keep_quoted' ? 'keep_quoted' : 'approve_job',
   })
   if (!check.ok) {
+    if (check.code === 'not_signed') return err({ code: 'quotation_not_confirmed' })
     if (check.code === 'different_day') return err({ code: 'undo_confirm_different_day' })
     return err({ code: 'undo_confirm_job_moved_on' })
   }
   await quotationRepo.markUnsigned(trx, documentId)
   await quotationRepo.deleteOfferedItemsOfDocument(trx, documentId)
-  if (doc.job_id && job) {
-    await jobsRepo.applyStatus(trx, { jobId: doc.job_id!, status: 'quoted', subState: null })
-    await jobsRepo.recordStatusHistory(trx, shopId, doc.job_id!, 'quoted', actorId)
+  // Only a job that confirm moved to 'approved' goes back; a job confirm left alone (D5, or before quoted) stays.
+  if (doc.job_id && job && job.status === 'approved') {
+    await jobsRepo.applyStatus(trx, { jobId: doc.job_id, status: 'quoted', subState: null })
+    const history = await jobsRepo.recordStatusHistory(trx, shopId, doc.job_id, 'quoted', actorId)
+    await writeAudit(trx, {
+      shopId, actorId, action: 'job_status_changed', entityType: 'jobs', entityId: doc.job_id,
+      before: { status: 'approved' }, after: { status: 'quoted', statusHistoryId: history.id },
+    })
   }
-  // Reason kept in audit_logs.after on purpose (see quotation_confirmed above): no history row exists for a document to hold it, unlike undo-delivered.
+  // Reason kept in audit_logs.after on purpose (see quotation_confirmed above): there is no history
+  // row for a document to hold it, unlike undo-delivered.
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_confirm_undone', entityType: 'documents', entityId: documentId,
     before: { status: 'signed' }, after: { status: 'issued', reason },
@@ -486,55 +700,50 @@ export async function undoConfirm(trx: ScopedTx, shopId: string, documentId: str
 // -----------------------------------------------------------------------------
 
 export async function revise(trx: ScopedTx, shopId: string, documentId: string, actorId: string, reason?: string): Promise<Result<quotationRepo.DocumentRow>> {
-  const doc = await quotationRepo.lockDocument(trx, documentId)
-  if (!doc) return err({ code: 'quotation_not_found' })
+  const locked = await lockJobThenDocument(trx, documentId)
+  if (!locked) return err({ code: 'quotation_not_found' })
+  const { doc, job } = locked
   if (doc.status !== 'issued' && doc.status !== 'signed') return err({ code: 'quotation_frozen' })
   if (!doc.job_id) return err({ code: 'job_not_found' })
+  if (job && ENDED_JOB_STATUSES.includes(job.status)) return err({ code: 'job_not_open' })
 
   // Supersede FIRST: uq_live_quotation_per_job allows one draft/issued/signed quotation per job, so the new draft cannot exist while the old one is still live.
   await quotationRepo.markSuperseded(trx, doc.id)
   const newDoc = await quotationRepo.insertRevision(trx, {
     shopId, jobId: doc.job_id, customerId: doc.customer_id, revision: doc.revision + 1, supersedesDocumentId: doc.id,
+    discount: doc.discount,
   })
+  // The superseded document's "เคยเสนอไว้" rows stay: rev 2 may never be confirmed, and a declined item may be re-added during the revision. Confirm de-duplicates instead (security M1).
+
   const oldLines = await quotationRepo.getLines(trx, doc.id)
   const idMap = new Map<string, string>()
-  const topLevel = oldLines.filter((l) => l.parent_line_id === null)
-  const children = oldLines.filter((l) => l.parent_line_id !== null)
-
-  for (const l of topLevel) {
-    const [newId] = await quotationRepo.insertLines(trx, [lineToNewLine(shopId, newDoc.id, l, null)])
-    idMap.set(l.id, newId!)
-  }
-  for (const l of children) {
-    const newParent = idMap.get(l.parent_line_id!)
-    if (!newParent) continue
-    const [newId] = await quotationRepo.insertLines(trx, [lineToNewLine(shopId, newDoc.id, l, newParent)])
-    idMap.set(l.id, newId!)
-  }
-  // D7: copy decisions onto the new lines (insertLines does not carry them).
-  for (const l of oldLines) {
-    const newId = idMap.get(l.id)
-    if (!newId || l.approval_status === 'pending') continue
-    await quotationRepo.applyDecisions(trx, [{
-      lineId: newId, approvalStatus: l.approval_status, declineReason: l.decline_reason, declineNote: l.decline_note, decidedBy: l.decided_by ?? actorId,
+  const copy = async (l: quotationRepo.LineRow, parentLineId: string | null) => {
+    const [newId] = await quotationRepo.insertLines(trx, [{
+      shopId, documentId: newDoc.id, parentLineId, sortOrder: l.sort_order, lineType: l.line_type, catalogItemId: l.catalog_item_id,
+      nameSnapshot: l.name_snapshot, brandSnapshot: l.brand_snapshot, qty: l.qty, unit: l.unit, unitPrice: l.unit_price,
+      listPrice: l.list_price, priceSource: l.price_source, priceRefId: l.price_ref_id, isVatable: l.is_vatable, lineTotal: l.line_total,
+      warrantyTermId: l.warranty_term_id, warrantyName: l.warranty_name, warrantyDays: l.warranty_days, warrantyMaxKm: l.warranty_max_km,
+      sourceLineId: l.id,
+      // D7 / Q2: an unchanged line keeps its decision AS IT WAS (same decided_at / decided_by); changes reset it later, on edit.
+      decision: l.approval_status === 'pending' ? null : {
+        approvalStatus: l.approval_status, decidedAt: l.decided_at, decidedBy: l.decided_by,
+        declineReason: l.decline_reason, declineNote: l.decline_note, approvedAmount: l.approved_amount,
+      },
     }])
-    if (l.approved_amount !== null) await quotationRepo.setApprovedAmount(trx, newId, l.approved_amount)
+    idMap.set(l.id, newId!)
+  }
+  for (const l of oldLines.filter((x) => x.parent_line_id === null)) await copy(l, null)
+  for (const l of oldLines.filter((x) => x.parent_line_id !== null)) {
+    const newParent = idMap.get(l.parent_line_id!)
+    if (newParent) await copy(l, newParent)
   }
 
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_revised', entityType: 'documents', entityId: newDoc.id,
+    // `reason` is staff free text kept here on purpose, like the confirm adjustments: documents has no column for it.
     before: { supersedes: doc.id, reason: reason ?? null }, after: { revision: newDoc.revision },
   })
   return ok(newDoc)
-}
-
-function lineToNewLine(shopId: string, documentId: string, l: quotationRepo.LineRow, parentLineId: string | null): quotationRepo.NewLine {
-  return {
-    shopId, documentId, parentLineId, sortOrder: l.sort_order, lineType: l.line_type, catalogItemId: l.catalog_item_id,
-    nameSnapshot: l.name_snapshot, brandSnapshot: l.brand_snapshot, qty: l.qty, unit: l.unit, unitPrice: l.unit_price,
-    listPrice: l.list_price, priceSource: l.price_source, priceRefId: l.price_ref_id, isVatable: l.is_vatable, lineTotal: l.line_total,
-    warrantyTermId: l.warranty_term_id, warrantyName: l.warranty_name, warrantyDays: l.warranty_days, warrantyMaxKm: l.warranty_max_km,
-  }
 }
 
 // -----------------------------------------------------------------------------
@@ -545,7 +754,10 @@ export async function voidQuotation(trx: ScopedTx, shopId: string, documentId: s
   const doc = await quotationRepo.lockDocument(trx, documentId)
   if (!doc) return err({ code: 'quotation_not_found' })
   if (doc.status === 'superseded' || doc.status === 'void') return err({ code: 'quotation_frozen' })
+  // A draft has no number: ck_number_when_issued forbids voiding it, and there is nothing to void.
+  if (doc.status === 'draft') return err({ code: 'quotation_not_issued' })
   await quotationRepo.markVoid(trx, documentId, { reason, voidedBy: actorId })
+  // The reason is staff free text kept in audit on purpose (documents has no column for it).
   await writeAudit(trx, {
     shopId, actorId, action: 'document_voided', entityType: 'documents', entityId: documentId,
     before: { status: doc.status }, after: { status: 'void', reason },
@@ -555,7 +767,8 @@ export async function voidQuotation(trx: ScopedTx, shopId: string, documentId: s
 
 // -----------------------------------------------------------------------------
 // Job ending without a repair (Q1) — called from the job-status-change route,
-// inside the SAME transaction, BEFORE the job row is updated.
+// inside the SAME transaction, AFTER it locked the job row (so: jobs ->
+// documents -> document_lines, CLAUDE.md §4.x) and BEFORE the job row is updated.
 // -----------------------------------------------------------------------------
 
 export type CloseCheck =
@@ -572,22 +785,20 @@ export async function closeQuotationForJobEnd(
   declineNote: string | undefined,
   actorId: string,
 ): Promise<CloseCheck> {
-  const doc = await quotationRepo.findLiveQuotation(trx, jobId)
+  const live = await quotationRepo.findLiveQuotation(trx, jobId)
+  if (!live) return { action: 'none' }
+  // Lock the document (job is already ours), then judge the locked row, not the unlocked read.
+  const doc = await quotationRepo.lockDocument(trx, live.id)
   if (!doc) return { action: 'none' }
   const lineRows = await quotationRepo.getLines(trx, doc.id)
-  const lines: QuoteLineDecisionState[] = lineRows.map((r) => ({
-    id: r.id, parentLineId: r.parent_line_id, approvalStatus: r.approval_status as FullLine['approvalStatus'],
-    declineReason: r.decline_reason as DeclineReason | null, declineNote: r.decline_note,
-  }))
-  const plan = planQuotationClose({ targetStatus, quotation: { status: doc.status as 'draft' | 'issued' | 'signed', lines }, declineReason, declineNote })
+  const plan = planQuotationClose({
+    targetStatus, quotation: { status: doc.status as 'draft' | 'issued' | 'signed' | 'superseded' | 'void', lines: lineRows.map(decisionState) },
+    declineReason, declineNote,
+  })
   if (plan.action === 'refuse') return { action: 'refuse', code: plan.code }
   if (plan.action === 'none') return { action: 'none' }
 
-  if (plan.declineLineIds.length > 0) {
-    await quotationRepo.applyDecisions(trx, plan.declineLineIds.map((lineId) => ({
-      lineId, approvalStatus: 'declined', declineReason: plan.reason!, declineNote: plan.note, decidedBy: actorId,
-    })))
-  }
+  await quotationRepo.declinePending(trx, plan.declineLineIds, { declineReason: plan.reason!, declineNote: plan.note, decidedBy: actorId })
   // System close: void_reason = 'job_closed', voided_by = NULL (not a person pressing void).
   await quotationRepo.markVoid(trx, doc.id, { reason: 'job_closed', voidedBy: null })
   return { action: 'close', documentId: doc.id, documentStatusBefore: doc.status }
@@ -617,20 +828,21 @@ export async function jobBackToQuotedBlocked(trx: ScopedTx, jobId: string): Prom
 }
 
 // -----------------------------------------------------------------------------
-// Work order — approved lines only, no prices, served from a SIGNED quotation.
+// Work order — approved lines only, no prices, served from a SIGNED quotation
+// (owner Q1, 6 Oct 2026): no quotation -> quotation_missing (409); draft or
+// issued -> quotation_not_confirmed (409); signed with every line declined ->
+// 200 and an empty list, which is the real answer.
 // -----------------------------------------------------------------------------
 
 export async function workOrder(trx: ScopedTx, jobId: string): Promise<Result<{ job: quotationRepo.JobWithVehicleRow; lines: quotationRepo.WorkOrderLineRow[] }>> {
   const job = await quotationRepo.jobWithVehicle(trx, jobId)
   if (!job) return err({ code: 'job_not_found' })
   const doc = await quotationRepo.findLiveQuotation(trx, jobId)
-  if (!doc || doc.status !== 'signed') return ok({ job, lines: [] })
+  if (!doc) return err({ code: 'quotation_missing' })
+  if (doc.status !== 'signed') return err({ code: 'quotation_not_confirmed' })
   const approved = await quotationRepo.getApprovedLines(trx, doc.id)
   const ids = new Set(workOrderLineIds(approved.map((l) => ({
     id: l.id, parentLineId: l.parent_line_id, approvalStatus: 'approved', declineReason: null, declineNote: null,
   }))))
   return ok({ job, lines: approved.filter((l) => ids.has(l.id)) })
 }
-
-// re-exports used by the route layer for totals/next-state display
-export { approvedLineSatang, bangkokDayKey, isTrueDecline, quoteTotals, quoteTotalsDecimal, setsNeedingAmount, confirmReadiness }

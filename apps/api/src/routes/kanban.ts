@@ -281,6 +281,7 @@ kanbanRouter.patch(
       | { kind: 'quotation_confirmed' }
       | { kind: 'decline_reason_required' }
       | { kind: 'decline_note_required' }
+      | { kind: 'decline_reason_not_allowed' }
 
     const outcome = await withShop(db, auth.shop, async (trx): Promise<Outcome> => {
       const job = await jobsRepo.lockForStatusChange(trx, jobId)
@@ -326,8 +327,9 @@ kanbanRouter.patch(
         if (close.action === 'refuse') {
           if (close.code === 'decline_reason_required') return { kind: 'decline_reason_required' }
           if (close.code === 'decline_note_required') return { kind: 'decline_note_required' }
-          // 'decline_reason_not_allowed' cannot be reached here: the contract
-          // (UpdateJobStatusInput.declineReason) never accepts chose_alternative.
+          // The contract never accepts chose_alternative here, but if it ever reaches this
+          // point it must stop the move, not fall through and move the job.
+          return { kind: 'decline_reason_not_allowed' }
         } else if (close.action === 'close') {
           closed = close
         }
@@ -418,6 +420,13 @@ kanbanRouter.patch(
           error: 'invalid_request',
           message: 'กรุณาเลือกเหตุผลที่ลูกค้าไม่เอา ก่อนปิดงาน',
           fields: { declineReason: ['required'] },
+        })
+        return
+      case 'decline_reason_not_allowed':
+        res.status(400).json({
+          error: 'invalid_request',
+          message: 'เหตุผลนี้ใช้ปิดงานไม่ได้',
+          fields: { declineReason: ['not_allowed'] },
         })
         return
       case 'decline_note_required':
