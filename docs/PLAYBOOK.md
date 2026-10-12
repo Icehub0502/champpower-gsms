@@ -123,6 +123,27 @@
   (Ice รับความเสี่ยงเรื่องราคาแรกโดยมีหน้าจอนี้เป็นตัวควบคุม · `DECISION-2026-10-07.md`)
 ```
 
+### P3.1 backlog ฝั่ง API — ข้อที่รีวิวรอบ 2–3 เลื่อนไว้ (merge แล้วที่ `dd920fa` · 12 ต.ค.)
+
+```
+ต้องปิดก่อนหน้าจอใบเสนอราคาใช้งานจริงที่ร้าน (แตะผลตัดสินของลูกค้า):
+- [MEDIUM-1] services/quotation.ts ~:451 — บน revision ถ้าแก้ identity ของหัวชุดที่ยัง pending
+  ลูกที่ตัดสินไว้แล้วไม่ถูก reset ตาม → ให้หัวชุดเรียก resetSetDecisions เสมอเมื่อ identity เปลี่ยน
+  (ไม่ขึ้นกับ approval_status) + เทส: revise จาก issued ที่ลูก declined/หัว pending แล้วแก้ราคาหัว → ทุกบรรทัด pending
+- [LOW-1 code] ~:455 — audit set_decision_reset ของเส้นทางหัวไม่มี id หัว → ให้ resetSetDecisions reset หัวเอง + assert audit ใน FIX1(b2)
+- [L1 security] repositories/quotation.ts resetDecision — เพิ่ม .where('document_id', '=', documentId) กันหลายชั้น
+
+ทำเมื่อสะดวก:
+- [LOW-2 code] undo อ่าน jobAdvancedFrom จาก audit_logs (hidden coupling) → ย้ายเป็นคอลัมน์บน documents
+  (ต้องผ่าน migration-safety) หรืออย่างน้อยจดใน ARCHITECTURE ว่าห้าม prune แถว quotation_confirmed
+- [LOW-3 code] latestConfirmAfter orderBy('at') ไม่มีตัวตัดสินเมื่อเวลาเท่ากัน — หายไปเองถ้าทำ LOW-2
+- [LOW-4 code / L2 security] เอกสารที่ confirm ก่อน 122b462 ไม่มี jobAdvancedFrom → undo ไม่ถอยงาน (fail-safe ตั้งใจ · มีแค่ใน dev DB)
+- [L3 security] shopId ใน patchLine/removeLine ใช้แค่ audit — ต้องมาจาก auth.shop เท่านั้น (ปัจจุบันถูกแล้ว ห้ามเปลี่ยน)
+- [L9] unique index ของ vehicle_models (มี task chip แล้ว)
+- [L11] แตกไฟล์ services/quotation.ts (มี task chip แล้ว · ทำโดย refactorer หลังเทสครบ)
+- รอ Ice: §4.x ตามตัวอักษร (route อ่านเอกสารแบบไม่ล็อกก่อน lockJobThenDocument) — ไม่มี deadlock จริง แต่ผิดตัวอักษรกฎ
+```
+
 ## P3.2 — ใบสั่งงาน + ใบเสร็จ + ปิดบิล + สรุปยอดรายวัน + พิมพ์ A4
 
 > **ข้อสังเกตจาก WO-006 (7 ต.ค.):** `catalog_items` (0020) ยังไม่เชื่อมกับ `skus` (0006) — ต้องมี migration ใหม่เพิ่ม `catalog_items.sku_id` เป็น FK แบบผูกสาขา (composite `shop_id`) ถ้า P3.2 ต้องแตะ `catalog_items` อยู่แล้ว ให้ทำไปพร้อมกัน (ผ่าน migration-safety ตามปกติ) ไม่ต้องรอ WO-006
