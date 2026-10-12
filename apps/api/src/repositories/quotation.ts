@@ -328,11 +328,15 @@ export async function latestConfirmAfter(trx: ScopedTx, documentId: string): Pro
   return { jobAdvancedFrom: row.job_advanced_from }
 }
 
-/** Draft only: a changed line forgets what the customer decided about the old offer (owner Q2). */
-export async function resetDecision(trx: ScopedTx, lineId: string): Promise<void> {
+/**
+ * Draft only: a changed line forgets what the customer decided about the old offer (owner Q2).
+ * The document_id predicate is defence in depth: a line id from another document is not touched.
+ */
+export async function resetDecision(trx: ScopedTx, documentId: string, lineId: string): Promise<void> {
   await trx
     .updateTable('document_lines')
     .set({ approval_status: 'pending', decided_at: null, decided_by: null, decline_reason: null, decline_note: null, approved_amount: null })
+    .where('document_id', '=', documentId)
     .where('id', '=', lineId)
     .execute()
 }
