@@ -1,0 +1,145 @@
+import { useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
+import type { CreateQuotationInput, JobDetail, Quotation, Role } from '@gsms/contracts/index.js';
+import { Icon } from '../../components/ui/Icon';
+import { PlateBadge } from '../../components/ui/PlateBadge';
+import { useDocument } from '../../hooks/useDocument';
+import { api } from '../../lib/api/client';
+import { CatalogPanel } from './CatalogPanel';
+import { QuoteActions } from './QuoteActions';
+import { QuoteLines } from './QuoteLines';
+import { QuoteTotalsPanel } from './QuoteTotalsPanel';
+import { canReadQuote, canWriteQuote, QUOTATION_STATUS_LABEL } from './quoteLabels';
+import type { QuoteFailure } from './quoteErrors';
+import { quotationPath, useQuotation } from './useQuotation';
+
+/** The route element: /jobs/:jobId/quote. */
+export function QuoteRoute({ role }: { role: Role | null }) {
+  const { jobId } = useParams<{ jobId: string }>();
+  if (!canReadQuote(role)) {
+    // A technician sees no money at all (CLAUDE.md §12.1) — not even a page
+    // that fetches it. He has the work order instead. The API refuses him too.
+    return (
+      <div className="empty-state" role="alert">
+        หน้านี้มีราคา จึงเปิดได้เฉพาะหน้าร้านและผู้จัดการ
+        <div><Link className="btn secondary" to="/today">กลับหน้างานวันนี้</Link></div>
+      </div>
+    );
+  }
+  if (!jobId) return null;
+  // Keyed on the job: moving to another job's quote starts clean.
+  return <QuotePage key={jobId} jobId={jobId} canWrite={canWriteQuote(role)} />;
+}
+
+function JobHeader({ job, quotation }: { job: JobDetail | null; quotation: Quotation | null }) {
+  const car = job ? [job.brand, job.model, job.color].filter(Boolean).join(' ') : '';
+  return (
+    <header className="qt-header">
+      <div className="qt-header-main">
+        <Link className="back-link" to="/today"><Icon name="back" size={15} /> งานวันนี้</Link>
+        <h1>ใบเสนอราคา {quotation?.number ? <span className="mono">{quotation.number}</span> : null}</h1>
+        {job && (
+          <p className="page-sub">
+            {job.jobNumber}{job.queueNo !== null && ` · คิว ${job.queueNo}`} · {car || 'ไม่ระบุรุ่น'}
+            {job.customerName && ` · ${job.customerName}`} · สถานะงาน {job.statusLabel}
+          </p>
+        )}
+      </div>
+      <div className="qt-header-side">
+        {job?.plate && <PlateBadge plate={job.plate} province={job.province ?? undefined} size="md" />}
+        {quotation && (
+          <span className="pill pill-muted">
+            ฉบับที่ {quotation.revision} · {quotation.closedByJob ? 'ปิดเพราะงานจบแล้ว' : QUOTATION_STATUS_LABEL[quotation.status]}
+          </span>
+        )}
+      </div>
+    </header>
+  );
+}
+
+/**
+ * ใบเสนอราคา — panel A of the prototype (D14): car/customer on top, the
+ * decision row, the chosen lines with their totals, then the picker. One tree
+ * at every width — only CSS changes between 390 / 820 / 1180 / 1440 — so
+ * rotating a tablet mid-entry never remounts a half-typed field.
+ */
+export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolean }) {
+  const job = useDocument<JobDetail>(`/api/jobs/${encodeURIComponent(jobId)}`, 'job:changed');
+  const { load, busy, reload, run, guard } = useQuotation(jobId);
+  const [createFailure, setCreateFailure] = useState<QuoteFailure | null>(null);
+  const [discountFailure, setDiscountFailure] = useState<QuoteFailure | null>(null);
+  const quotation = load.phase === 'ready' ? load.quotation : null;
+
+  async function create() {
+    setCreateFailure(null);
+    const body: CreateQuotationInput = {};
+    const result = await run('create', () => api.post<Quotation>(quotationPath(jobId), body));
+    if (!result.ok && !result.failure.cancelled) setCreateFailure(result.failure);
+  }
+
+  async function saveDiscount(amount: string) {
+    setDiscountFailure(null);
+    const result = await run('discount', () => api.patch<Quotation>(quotationPath(jobId), { discount: amount }));
+    if (!result.ok && !result.failure.cancelled) setDiscountFailure(result.failure);
+  }
+
+  return (
+    <div className="qt-page">
+      <JobHeader job={job.data} quotation={quotation} />
+
+      {load.phase === 'loading' && <div className="page-loading">กำลังโหลดใบเสนอราคา...</div>}
+
+      {load.phase === 'error' && (
+        <div className="empty-state" role="alert">
+          โหลดใบเสนอราคาไม่สำเร็จ
+          <div><button type="button" className="btn secondary" onClick={() => void reload()}>ลองใหม่</button></div>
+        </div>
+      )}
+
+      {load.phase === 'missing' && (
+        <div className="empty-state">
+          งานนี้ยังไม่มีใบเสนอราคา
+          {createFailure && <p className="ci-form-error" role="alert">{createFailure.text}</p>}
+          {canWrite && (
+            <div>
+              <button type="button" className="btn hazard" disabled={busy !== null} onClick={() => void create()}>
+                {busy === 'create' ? 'กำลังสร้าง...' : 'สร้างใบเสนอราคา'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {quotation && (
+        <div className="qt-layout">
+          <div className="qt-main">
+            {quotation.closedByJob && (
+              <p className="ci-nomatch">ใบนี้ถูกระบบปิดเพราะงานจบแล้ว (ไม่ใช่การยกเลิกเอกสาร) — เก็บไว้เป็นบันทึกว่าเสนออะไรไปบ้าง</p>
+            )}
+            <QuoteActions jobId={jobId} quotation={quotation} canWrite={canWrite} busy={busy} run={run} />
+            <section className="card qt-lines-card" aria-label="รายการในใบเสนอราคา">
+              <h3>รายการ ({quotation.lines.filter((l) => l.parentLineId === null).length})</h3>
+              <QuoteLines jobId={jobId} quotation={quotation} canWrite={canWrite} busy={busy} run={run} />
+              <QuoteTotalsPanel
+                totals={quotation.totals}
+                discountEditable={canWrite && quotation.next.canEditContent}
+                busy={busy !== null}
+                saving={busy === 'discount'}
+                discountError={discountFailure ? discountFailure.fields.discount ?? discountFailure.text : null}
+                onSaveDiscount={(amount) => void saveDiscount(amount)}
+              />
+            </section>
+          </div>
+          {canWrite && quotation.next.canEditContent && (
+            <aside className="qt-side">
+              {/* The model picker needs the car's id, which no read contract carries
+                  yet (JobDetail / Quotation have no vehicleId) — see the P3.1 screen
+                  report. Until then the notice shows without the buttons. */}
+              <CatalogPanel jobId={jobId} busyKey={busy} run={run} guard={guard} modelPicker={null} />
+            </aside>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
