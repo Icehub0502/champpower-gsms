@@ -36,7 +36,7 @@ import {
 import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
 import { asyncRouter } from '../middleware/asyncHandler.js'
-import { fieldErrorsOf } from '../lib/fieldErrors.js'
+import { fieldErrorsOf, nestedFieldErrorsOf } from '../lib/fieldErrors.js'
 import { isCatalogNameConflict, isLiveQuotationConflict, sendPgError } from '../lib/pgError.js'
 import * as catalogRepo from '../repositories/catalog.js'
 import { BOARD_READ_ROLES, INTAKE_WRITE_ROLES } from './queue.js'
@@ -103,6 +103,16 @@ function sendServiceError(res: Response, error: quotationSvc.QuotationError): vo
   }
 }
 
+/** What the view needs from the job row and the caller (the caller's role comes from the JWT, never the request). */
+function viewJobOf(job: Awaited<ReturnType<typeof quotationRepo.jobWithVehicle>>, auth: AuthedRequest['auth']) {
+  return {
+    status: job?.status ?? null,
+    vehicleId: job?.vehicle_id ?? null,
+    vehicleModelLinked: job?.vehicle_model_id != null,
+    callerMayDecide: (INTAKE_WRITE_ROLES as readonly string[]).includes(auth!.role),
+  }
+}
+
 type QuotationView = Awaited<ReturnType<typeof loadView>>
 
 async function loadView(jobId: string, auth: AuthedRequest['auth']) {
@@ -111,7 +121,7 @@ async function loadView(jobId: string, auth: AuthedRequest['auth']) {
     if (!doc) return null
     const lines = await quotationRepo.getLines(trx, doc.id)
     const job = doc.job_id ? await quotationRepo.jobWithVehicle(trx, doc.job_id) : undefined
-    return buildQuotationView(doc, lines, job?.status ?? null)
+    return buildQuotationView(doc, lines, viewJobOf(job, auth))
   })
 }
 
@@ -121,7 +131,7 @@ async function loadViewByDocument(documentId: string, auth: AuthedRequest['auth'
     if (!doc) return null
     const lines = await quotationRepo.getLines(trx, doc.id)
     const job = doc.job_id ? await quotationRepo.jobWithVehicle(trx, doc.job_id) : undefined
-    return buildQuotationView(doc, lines, job?.status ?? null)
+    return buildQuotationView(doc, lines, viewJobOf(job, auth))
   })
 }
 
@@ -340,7 +350,8 @@ quotationRouter.post(
     const params = jobIdParam.safeParse(req.params)
     const body = ConfirmInput.safeParse(req.body)
     if (!params.success) { res.status(404).json({ error: 'quotation_not_found' }); return }
-    if (!body.success) { badRequest(res, body.error, 'ข้อมูลการยืนยันไม่ถูกต้อง'); return }
+    // Confirm is the one door whose errors belong on a row of a list, so its fields are keyed by full path.
+    if (!body.success) { invalid(res, 'ข้อมูลการยืนยันไม่ถูกต้อง', nestedFieldErrorsOf(body.error, req.body)); return }
     const auth = req.auth!
     const result = await withShop(db, auth.shop, async (trx) => {
       const doc = await quotationRepo.findLiveQuotation(trx, params.data.jobId)

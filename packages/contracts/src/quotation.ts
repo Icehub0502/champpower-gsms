@@ -114,6 +114,9 @@ export const QuotationNext = z
     canIssue: z.boolean(),
     canDecide: z.boolean(), // issued
     canConfirm: z.boolean(),
+    // The confirm dialog may be opened: issued, caller may decide, no line undecided. True even when
+    // cut sets still lack an agreed amount (the dialog collects it). canConfirm stays the stricter test.
+    canOpenConfirm: z.boolean(),
     canUndoConfirm: z.boolean(),
     canRevise: z.boolean(),
     // Top-level lines still pending (blocks confirm).
@@ -128,6 +131,10 @@ export const Quotation = z
   .object({
     id: uuid,
     jobId: uuid,
+    // The job's vehicle, for PUT /api/vehicles/:id/model; null if the job has none.
+    vehicleId: uuid.nullable(),
+    // The vehicle is already linked to a catalog model (so the screen need not search to find out).
+    vehicleModelLinked: z.boolean(),
     revision: z.number().int().min(1),
     status: QuotationStatus,
     // null while draft.

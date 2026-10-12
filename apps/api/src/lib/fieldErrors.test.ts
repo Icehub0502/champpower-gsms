@@ -7,8 +7,8 @@
  * the real contract schemas and assert that none of it appears in the result.
  */
 import { describe, expect, it } from 'vitest'
-import { ArriveInput, CheckInInput } from '@gsms/contracts/index.js'
-import { fieldErrorsOf } from './fieldErrors.js'
+import { ArriveInput, CheckInInput, ConfirmInput } from '@gsms/contracts/index.js'
+import { fieldErrorsOf, nestedFieldErrorsOf } from './fieldErrors.js'
 
 const required = { plate: 'บบ 1234', customerName: 'ชื่อ', brand: 'Toyota', model: 'Vios' }
 
@@ -53,5 +53,23 @@ describe('fieldErrorsOf', () => {
     for (const codes of Object.values(fields)) {
       for (const c of codes) expect(c, `"${c}" is not a value-free code`).toMatch(/^[a-z][a-z0-9_]*$/)
     }
+  })
+})
+
+describe('nestedFieldErrorsOf', () => {
+  const lineId = '11111111-1111-4111-8111-111111111111'
+  it('keys by full path, using the row lineId when it is a uuid, and never echoes input', () => {
+    const body = { adjustments: { setLines: [{ lineId, approvedAmount: 'ECHO-CANARY', reason: '' }] } }
+    const r = ConfirmInput.safeParse(body)
+    if (r.success) throw new Error('expected failure')
+    const f = nestedFieldErrorsOf(r.error, body)
+    expect(Object.keys(f).sort()).toEqual([`adjustments.setLines.${lineId}.approvedAmount`, `adjustments.setLines.${lineId}.reason`].sort())
+    expect(JSON.stringify(f)).not.toContain('ECHO-CANARY')
+  })
+  it('falls back to the index when the row has no usable lineId', () => {
+    const body = { adjustments: { setLines: [{ lineId: 'x', approvedAmount: '1.00', reason: 'r' }] } }
+    const r = ConfirmInput.safeParse(body)
+    if (r.success) throw new Error('expected failure')
+    expect(Object.keys(nestedFieldErrorsOf(r.error, body))).toEqual(['adjustments.setLines.0.lineId'])
   })
 })

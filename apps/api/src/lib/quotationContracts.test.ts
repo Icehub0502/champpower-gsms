@@ -12,6 +12,7 @@ import {
   ConfirmInput,
   DecideLineInput,
   PatchLineInput,
+  QuotationBody,
   QuotationRefusal,
   UndoConfirmInput,
   UpdateJobStatusInput,
@@ -144,5 +145,12 @@ describe('error codes are strict schemas', () => {
   })
   it('refuses a code nobody registered', () => {
     expect(QuotationRefusal.safeParse({ error: 'something_else', message: 'm' }).success).toBe(false)
+  })
+})
+
+describe('QuotationBody carries the freeze refusals', () => {
+  it.each(['document_frozen', 'document_line_frozen'])('parses %s', (code) => {
+    const r = QuotationBody.safeParse({ error: code, message: 'm' })
+    expect(r.success).toBe(true)
   })
 })

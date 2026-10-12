@@ -478,5 +478,7 @@ export const QuotationBody = z.union([
   JobNotOpenError,
   QuotationMissingError,
   QuotationNotConfirmedError,
+  DocumentFrozenError,
+  DocumentLineFrozenError,
 ]);
 export type QuotationBody = z.infer<typeof QuotationBody>;

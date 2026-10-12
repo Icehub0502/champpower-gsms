@@ -1370,5 +1370,68 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(
         expect(n(vb.number)).toBeLessThan(n(va.number))
       })
     })
+
+    // =========================================================================
+    // Quotation screen contract additions (vehicleId, canOpenConfirm, nested confirm errors)
+    // =========================================================================
+    describe('screen additions to the view', () => {
+      it('carries vehicleId and vehicleModelLinked, read from the job row', async () => {
+        const j = await draftQuote()
+        // check-in may auto-link a catalog model; start from an unlinked vehicle
+        await withShop(db, fx.shopA, (trx) => sql`update vehicles set vehicle_model_id = null where id = ${j.vehicleId}`.execute(trx))
+        const v0 = await view(j.jobId)
+        expect(v0.vehicleId).toBe(j.vehicleId)
+        expect(v0.vehicleModelLinked).toBe(false)
+        await withShop(db, fx.shopA, (trx) => sql`update vehicles set vehicle_model_id = ${seeds[fx.shopA]!.vehicleModel} where id = ${j.vehicleId}`.execute(trx))
+        const v1 = await view(j.jobId)
+        expect(v1.vehicleId).toBe(j.vehicleId)
+        expect(v1.vehicleModelLinked).toBe(true)
+      })
+
+      it("a foreign shop's job id gives 404 (no vehicleId leaks), and its own job gives its own vehicle", async () => {
+        const a = await draftQuote()
+        const b = await draftQuote(fx.shopB)
+        const foreign = await GET(base(a.jobId), 'owner', fx.shopB)
+        expect(foreign.status).toBe(404)
+        expect(JSON.stringify(foreign.body)).not.toContain(a.vehicleId)
+        expect((await view(b.jobId, 'owner', fx.shopB)).vehicleId).toBe(b.vehicleId)
+      })
+
+      it('the technician is still refused the view (price gate unchanged)', async () => {
+        const j = await draftQuote()
+        expect((await GET(base(j.jobId), 'technician')).status).toBe(403)
+      })
+
+      it('canOpenConfirm: false while a line is pending, true once decided even if a cut set still lacks its amount', async () => {
+        const s = await issuedSet()
+        expect(s.view.next.canOpenConfirm).toBe(false)
+        await decline(s.jobId, s.children[2]!.id, 'not_needed_yet')
+        expect((await view(s.jobId)).next.canOpenConfirm).toBe(false) // the set header is still pending
+        await approve(s.jobId, s.parentId)
+        const v = await view(s.jobId)
+        expect(v.next.setsNeedingAmountLineIds).toEqual([s.parentId])
+        expect(v.next.canConfirm).toBe(false)
+        expect(v.next.canOpenConfirm).toBe(true)
+        // a caller who may not decide is not offered the dialog
+        expect((await view(s.jobId, 'viewer')).next.canOpenConfirm).toBe(false)
+        // draft and signed are not openable
+        const d = await draftQuote()
+        expect((await view(d.jobId)).next.canOpenConfirm).toBe(false)
+        const done = await confirm(s.jobId, { adjustments: { setLines: [{ lineId: s.parentId, approvedAmount: '5200.00', reason: 'ตัดออก 1 รายการ' }] } })
+        expect(done.next.canOpenConfirm).toBe(false)
+      })
+
+      it('a confirm body that fails validation names the failing row by its full path', async () => {
+        const s = await issuedSet()
+        const bad = await confirmRaw(s.jobId, { adjustments: { setLines: [{ lineId: s.parentId, approvedAmount: '5200.00', reason: '' }] } })
+        expect(bad.status).toBe(400)
+        expect(bad.body.error).toBe('invalid_request')
+        expect(bad.body.fields[`adjustments.setLines.${s.parentId}.reason`]).toBeTruthy()
+        const idx = await confirmRaw(s.jobId, { adjustments: { setLines: [{ lineId: 'not-a-uuid-ECHO', approvedAmount: '1.00', reason: 'x' }] } })
+        expect(idx.status).toBe(400)
+        expect(idx.body.fields['adjustments.setLines.0.lineId']).toBeTruthy()
+        expect(JSON.stringify(idx.body)).not.toContain('ECHO')
+      })
+    })
   },
 )

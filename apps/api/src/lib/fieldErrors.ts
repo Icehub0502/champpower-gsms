@@ -57,3 +57,43 @@ export function fieldErrorsOf(error: ZodError): Record<string, string[]> {
   }
   return out
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** The element at `path` inside the submitted body, or undefined when the path does not walk into it. */
+function valueAt(raw: unknown, path: ReadonlyArray<string | number>): unknown {
+  let cur = raw
+  for (const key of path) {
+    if (cur === null || typeof cur !== 'object') return undefined
+    cur = (cur as Record<string | number, unknown>)[key]
+  }
+  return cur
+}
+
+/**
+ * Like fieldErrorsOf, but keyed by the FULL path (`adjustments.setLines.<lineId>.reason`)
+ * instead of the top-level key — for bodies where the screen must put the error on one
+ * row of a list (confirm). Same no-echo rule: codes only.
+ *
+ * An array index directly under `setLines` is replaced by that row's `lineId` when the
+ * row carries a well-formed uuid there, so the screen can find its row without counting.
+ * Only a uuid is ever substituted (never free text), and it is an id the caller already
+ * sent, so nothing user-typed is reflected. Otherwise the plain index stays.
+ */
+export function nestedFieldErrorsOf(error: ZodError, raw?: unknown): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const issue of error.issues) {
+    const parts = issue.path.map((seg, i) => {
+      if (typeof seg === 'number' && issue.path[i - 1] === 'setLines') {
+        const id = (valueAt(raw, issue.path.slice(0, i + 1)) as { lineId?: unknown } | undefined)?.lineId
+        if (typeof id === 'string' && UUID_RE.test(id)) return id
+      }
+      return String(seg)
+    })
+    const field = parts.length > 0 ? parts.join('.') : '_'
+    const code = codeOf(issue)
+    const list = out[field] ?? (out[field] = [])
+    if (!list.includes(code)) list.push(code)
+  }
+  return out
+}
