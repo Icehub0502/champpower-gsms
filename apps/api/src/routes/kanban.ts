@@ -48,6 +48,7 @@ import { writeAudit } from '../services/audit.js'
 import { fieldErrorsOf } from '../lib/fieldErrors.js'
 import { roleMayMove, STATUS_WRITE_ROLES } from '../lib/statusAuthz.js'
 import { BOARD_READ_ROLES } from './queue.js'
+import { auditClosedByJob, closeQuotationForJobEnd, jobBackToQuotedBlocked, type CloseCheck } from '../services/quotation.js'
 
 export const kanbanRouter = asyncRouter()
 
@@ -277,6 +278,10 @@ kanbanRouter.patch(
       | { kind: 'not_found' }
       | { kind: 'status_changed'; current: string }
       | { kind: 'illegal'; from: string }
+      | { kind: 'quotation_confirmed' }
+      | { kind: 'decline_reason_required' }
+      | { kind: 'decline_note_required' }
+      | { kind: 'decline_reason_not_allowed' }
 
     const outcome = await withShop(db, auth.shop, async (trx): Promise<Outcome> => {
       const job = await jobsRepo.lockForStatusChange(trx, jobId)
@@ -300,11 +305,47 @@ kanbanRouter.patch(
       )
       if (!legal) return { kind: 'illegal', from: job.status }
 
+      // P3.1 owner decision 8: approved -> quoted (the "undo yes") is refused
+      // while the job's quotation is confirmed ("signed") — a new revision or
+      // an explicit undo-confirm is the way back, never a silent recompute.
+      // packages/domain's canMoveTo above knows nothing about quotations, so
+      // this is checked here, one level up, same as every other P3.1 rule
+      // layered onto the existing job-status transition table.
+      if (fromStatus === 'approved' && to === 'quoted' && await jobBackToQuotedBlocked(trx, jobId)) {
+        return { kind: 'quotation_confirmed' }
+      }
+
+      // P3.1 Q1: a job ending without a repair closes its own live quotation,
+      // in this SAME transaction. `rejected` with an issued quotation that
+      // still has undecided lines additionally REQUIRES a reason — checked
+      // here, before any write, so a refusal here leaves nothing half-done.
+      let closed: Extract<CloseCheck, { action: 'close' }> | null = null
+      if (to === 'rejected' || to === 'carout') {
+        const close = await closeQuotationForJobEnd(
+          trx, auth.shop, jobId, to, parsed.data.declineReason, parsed.data.declineNote, auth.sub,
+        )
+        if (close.action === 'refuse') {
+          if (close.code === 'decline_reason_required') return { kind: 'decline_reason_required' }
+          if (close.code === 'decline_note_required') return { kind: 'decline_note_required' }
+          // The contract never accepts chose_alternative here, but if it ever reaches this
+          // point it must stop the move, not fall through and move the job.
+          return { kind: 'decline_reason_not_allowed' }
+        } else if (close.action === 'close') {
+          closed = close
+        }
+      }
+
       // A label that described the old status does not survive the move.
       const subState = subStateAfterMove(to, job.sub_state)
 
       await jobsRepo.applyStatus(trx, { jobId, status: to, subState })
       const historyRow = await jobsRepo.recordStatusHistory(trx, auth.shop, jobId, to, auth.sub, reason)
+      if (closed && (to === 'rejected' || to === 'carout')) {
+        await auditClosedByJob(trx, {
+          shopId: auth.shop, documentId: closed.documentId, documentStatusBefore: closed.documentStatusBefore,
+          jobId, targetStatus: to, statusHistoryId: historyRow.id, movedBy: auth.sub,
+        })
+      }
 
       await writeAudit(trx, {
         shopId: auth.shop,
@@ -366,6 +407,33 @@ kanbanRouter.patch(
         res.status(409).json({
           error: 'illegal_status_move',
           message: `ย้ายงานจาก "${statusOf(outcome.from).label}" ไป "${statusOf(to).label}" ไม่ได้`,
+        })
+        return
+      case 'quotation_confirmed':
+        res.status(409).json({
+          error: 'quotation_confirmed',
+          message: 'ใบเสนอราคายืนยันผลแล้ว ถอยกลับ "เสนอราคา" ไม่ได้ ต้องถอยการยืนยันหรือออกใบฉบับใหม่',
+        })
+        return
+      case 'decline_reason_required':
+        res.status(400).json({
+          error: 'invalid_request',
+          message: 'กรุณาเลือกเหตุผลที่ลูกค้าไม่เอา ก่อนปิดงาน',
+          fields: { declineReason: ['required'] },
+        })
+        return
+      case 'decline_reason_not_allowed':
+        res.status(400).json({
+          error: 'invalid_request',
+          message: 'เหตุผลนี้ใช้ปิดงานไม่ได้',
+          fields: { declineReason: ['not_allowed'] },
+        })
+        return
+      case 'decline_note_required':
+        res.status(400).json({
+          error: 'invalid_request',
+          message: 'กรุณาพิมพ์เหตุผลเพิ่มเติม',
+          fields: { declineNote: ['required'] },
         })
         return
       default:

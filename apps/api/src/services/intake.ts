@@ -19,6 +19,7 @@ import { bangkokToday } from '../lib/bangkokDate.js'
 import * as customersRepo from '../repositories/customers.js'
 import * as vehiclesRepo from '../repositories/vehicles.js'
 import * as baysRepo from '../repositories/bays.js'
+import * as catalogRepo from '../repositories/catalog.js'
 import * as jobsRepo from '../repositories/jobs.js'
 import { writeAudit } from './audit.js'
 
@@ -510,7 +511,12 @@ async function resolveCar(
 
   // W4: held-deposit lookup by phone
 
+  // Link the car to the controlled model ONLY on an exact single match of what
+  // was typed (plan v3 §4.2): never a guess, and a miss never blocks check-in.
+  const matchedModel = await catalogRepo.findExactVehicleModel(trx, input.brand!, input.model!)
+
   const created = await vehiclesRepo.create(trx, {
+    vehicleModelId: matchedModel?.id ?? null,
     shopId: input.shopId,
     customerId,
     plate: input.plate!,

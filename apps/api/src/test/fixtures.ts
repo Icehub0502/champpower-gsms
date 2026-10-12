@@ -255,6 +255,38 @@ export async function patch<T = Record<string, unknown>>(
   }
 }
 
+export async function put<T = Record<string, unknown>>(
+  api: RunningApi, path: string, body: unknown, token?: string,
+): Promise<ApiResponse<T>> {
+  const res = await fetch(`${api.url}${path}`, {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body ?? {}),
+  })
+  return {
+    status: res.status,
+    body: (await res.json().catch(() => ({}))) as T,
+    cookies: parseSetCookies(res.headers),
+  }
+}
+
+export async function del<T = Record<string, unknown>>(
+  api: RunningApi, path: string, token?: string,
+): Promise<ApiResponse<T>> {
+  const res = await fetch(`${api.url}${path}`, {
+    method: 'DELETE',
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  })
+  return {
+    status: res.status,
+    body: (await res.json().catch(() => ({}))) as T,
+    cookies: parseSetCookies(res.headers),
+  }
+}
+
 export async function get<T = Record<string, unknown>>(
   api: RunningApi, path: string, token?: string,
 ): Promise<ApiResponse<T>> {

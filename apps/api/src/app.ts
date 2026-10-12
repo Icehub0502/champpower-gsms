@@ -13,6 +13,8 @@ import { filesRouter } from './routes/files.js'
 import { kanbanRouter } from './routes/kanban.js'
 import { jobDetailRouter } from './routes/jobDetail.js'
 import { publicBoardRouter } from './routes/publicBoard.js'
+import { catalogRouter } from './routes/catalog.js'
+import { quotationRouter } from './routes/quotation.js'
 
 export interface CreateAppOptions {
   /**
@@ -187,12 +189,16 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   // (/api/jobs/today, /api/jobs/:id/status, /api/jobs/:id/sub-state) rides on the
   // SAME mount so the write limiter runs once per request — two separate
   // app.use('/api', limiter, ...) lines would count every PATCH twice.
-  app.use('/api', intakeWriteLimiter, queueRouter, kanbanRouter)
+  app.use('/api', intakeWriteLimiter, queueRouter, kanbanRouter, catalogRouter, quotationRouter)
   // Read-only, so no write limiter. AFTER kanbanRouter: GET /api/jobs/today is
   // kanban's, and must never be taken for GET /api/jobs/:id.
   app.use('/api', jobDetailRouter)
   app.use('/api/bookings', intakeWriteLimiter, bookingsRouter)
   app.use('/api/checkin', intakeWriteLimiter, checkinRouter)
+  // Quotation + catalog (P3.1) are mounted on the SAME '/api' line as the queue and
+  // kanban routers above, so the write limiter runs once per request. A second
+  // app.use('/api', limiter, ...) would count every quotation write twice
+  // (code review, 6 Oct 2026).
 
   // Check-in photo upload/retrieval. Shares the intake write limiter — its
   // `skip: GET` means fetching an already-uploaded photo (routes/files.ts GET
