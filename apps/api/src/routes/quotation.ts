@@ -242,11 +242,11 @@ quotationRouter.patch(
     const result = await withShop(db, auth.shop, async (trx) => {
       const doc = await quotationRepo.findLiveQuotation(trx, params.data.jobId)
       if (!doc) return { ok: false as const, error: { code: 'quotation_not_found' as const } }
-      return quotationSvc.patchLine(trx, doc.id, params.data.lineId, {
+      return quotationSvc.patchLine(trx, auth.shop, doc.id, params.data.lineId, {
         name: body.data.name, brand: body.data.brand, lineType: body.data.lineType,
         qty: body.data.qty, unit: body.data.unit, unitPrice: body.data.unitPrice,
         isVatable: body.data.isVatable, warrantyTermId: body.data.warrantyTermId, sortOrder: body.data.sortOrder,
-      })
+      }, auth.sub)
     })
     if (!result.ok) { sendServiceError(res, result.error); return }
     const view = await loadView(params.data.jobId, auth)
@@ -267,7 +267,7 @@ quotationRouter.delete(
     const result = await withShop(db, auth.shop, async (trx) => {
       const doc = await quotationRepo.findLiveQuotation(trx, params.data.jobId)
       if (!doc) return { ok: false as const, error: { code: 'quotation_not_found' as const } }
-      return quotationSvc.removeLine(trx, doc.id, params.data.lineId)
+      return quotationSvc.removeLine(trx, auth.shop, doc.id, params.data.lineId, auth.sub)
     })
     if (!result.ok) { sendServiceError(res, result.error); return }
     const view = await loadView(params.data.jobId, auth)

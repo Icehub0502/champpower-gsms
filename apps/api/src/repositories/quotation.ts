@@ -305,6 +305,29 @@ export async function applyDecisions(trx: ScopedTx, changes: readonly DecisionWr
   }
 }
 
+/**
+ * What the current confirm of this document recorded about the job, read from the
+ * structured `after` of its newest `quotation_confirmed` audit row (never from any
+ * message text). `jobAdvancedFrom` is the status confirm moved the job FROM, or null
+ * when confirm left the job alone. undefined = no such row (confirmed before this
+ * field existed): the caller must then not move the job.
+ * Relies on idx_audit_entity (shop_id, entity_type, entity_id).
+ */
+export async function latestConfirmAfter(trx: ScopedTx, documentId: string): Promise<{ jobAdvancedFrom: string | null } | undefined> {
+  const row = await trx
+    .selectFrom('audit_logs')
+    .select(sql<string | null>`after ->> 'jobAdvancedFrom'`.as('job_advanced_from'))
+    .select(sql<boolean>`jsonb_exists(after, 'jobAdvancedFrom')`.as('has_field'))
+    .where('entity_type', '=', 'documents')
+    .where('entity_id', '=', documentId)
+    .where('action', '=', 'quotation_confirmed')
+    .orderBy('at', 'desc')
+    .limit(1)
+    .executeTakeFirst()
+  if (!row || !row.has_field) return undefined
+  return { jobAdvancedFrom: row.job_advanced_from }
+}
+
 /** Draft only: a changed line forgets what the customer decided about the old offer (owner Q2). */
 export async function resetDecision(trx: ScopedTx, lineId: string): Promise<void> {
   await trx

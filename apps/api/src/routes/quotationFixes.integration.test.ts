@@ -386,11 +386,116 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(tier2('P3.1 fix round — rev
     expect((await POST(`${Q(jobId)}/revise`, {})).status).toBe(201)
     expect(await offered(), 'revise must not delete "offer next time" data (rev 2 may never be confirmed)').toBe(1)
     expect((await POST(`${Q(jobId)}/issue`)).status).toBe(200)
+    const statusBeforeRev2Confirm = await jobStatus(jobId)
     expect((await POST(`${Q(jobId)}/confirm`)).status).toBe(200)
     expect(await offered(), 'same vehicle + same item must not be offered twice').toBe(1)
     // undo of rev 2's confirm removes only rows that confirm wrote: the rev-1 row stays
     expect((await POST(`${Q(jobId)}/confirm/undo`, { reason: 'ทดสอบ' })).status).toBe(200)
     expect(await offered(), 'undo must not remove the older row it never wrote').toBe(1)
+    expect(await jobStatus(jobId), 'undo puts the job back to what it was before THIS confirm').toBe(statusBeforeRev2Confirm)
+  })
+
+  it('FIX2: undo of a confirm that did not advance the job (already approved) leaves the job approved', async () => {
+    const jobId = await issued([freeLine('a', '100')])
+    const l = (await top(jobId))[0]
+    expect((await PATCH(`${Q(jobId)}/lines/${l.id}/decision`, { decision: 'approved' })).status).toBe(200)
+    // the job is already approved before this confirm runs
+    await admin((c) => c.query(`update jobs set status = 'approved' where id = $1`, [jobId]))
+    expect((await POST(`${Q(jobId)}/confirm`)).status).toBe(200)
+    expect(await jobStatus(jobId)).toBe('approved')
+    const undo = await POST(`${Q(jobId)}/confirm/undo`, { reason: 'ทดสอบ' })
+    expect(undo.status, JSON.stringify(undo.body)).toBe(200)
+    expect(await jobStatus(jobId), 'this confirm never moved the job, so undo must not move it').toBe('approved')
+  })
+
+  // ===========================================================================
+  // FIX1 — a set's decision does not survive an edit to any member of the set
+  // ===========================================================================
+  /** A confirmed rev 1 set with the 3rd piece declined and an agreed price, then rev 2 as a draft. */
+  async function revisionDraftWithCutSet(extraTop?: object) {
+    const jobId = await draft(extraTop ? [{ kind: 'set', itemId: setItem }, extraTop] : [{ kind: 'set', itemId: setItem }])
+    expect((await POST(`${Q(jobId)}/issue`)).status).toBe(200)
+    const lines = (await GET(Q(jobId))).body.lines
+    const header = lines.find((l: { parentLineId: string | null; name: string }) => l.parentLineId === null && l.name === 'ชุดทดสอบ')
+    const kids = lines.filter((l: { parentLineId: string | null }) => l.parentLineId === header.id)
+    expect((await PATCH(`${Q(jobId)}/lines/${header.id}/decision`, { decision: 'approved' })).status).toBe(200)
+    expect((await PATCH(`${Q(jobId)}/lines/${kids[2].id}/decision`, { decision: 'declined', reason: 'next_time' })).status).toBe(200)
+    if (extraTop) {
+      const other = lines.find((l: { parentLineId: string | null; name: string }) => l.parentLineId === null && l.name !== 'ชุดทดสอบ')
+      expect((await PATCH(`${Q(jobId)}/lines/${other.id}/decision`, { decision: 'approved' })).status).toBe(200)
+    }
+    const c = await POST(`${Q(jobId)}/confirm`, { adjustments: { setLines: [{ lineId: header.id, approvedAmount: '5000', reason: 'ตัดออก 1 ชิ้น' }] } })
+    expect(c.status, JSON.stringify(c.body)).toBe(200)
+    expect((await POST(`${Q(jobId)}/revise`, {})).status).toBe(201)
+    const q = (await GET(Q(jobId))).body
+    const h2 = q.lines.find((l: { parentLineId: string | null; name: string }) => l.parentLineId === null && l.name === 'ชุดทดสอบ')
+    const k2 = q.lines.filter((l: { parentLineId: string | null }) => l.parentLineId === h2.id)
+    expect(h2.decisionCarriedFrom, 'precondition: the set carries on rev 2').not.toBeNull()
+    expect(h2.approvedAmount).toBe('5000.00')
+    return { jobId, h2, k2 }
+  }
+  const expectSetReset = async (jobId: string, h2Id: string, expectedLines: number) => {
+    const q = (await GET(Q(jobId))).body
+    const members = q.lines.filter((l: { id: string; parentLineId: string | null }) => l.id === h2Id || l.parentLineId === h2Id)
+    expect(members).toHaveLength(expectedLines)
+    for (const m of members) {
+      expect(m, m.name).toMatchObject({ approvalStatus: 'pending', approvedAmount: null, decisionCarriedFrom: null, decidedAt: null })
+    }
+    return q
+  }
+  const setResetAudits = (jobId: string) => dbq(async (t) => {
+    const doc = await t.selectFrom('documents').select('id').where('job_id', '=', jobId).where('status', '=', 'draft').executeTakeFirstOrThrow()
+    return t.selectFrom('audit_logs').select(['actor_id', 'after']).where('action', '=', 'set_decision_reset').where('entity_id', '=', doc.id).execute()
+  })
+
+  it('FIX1(a): removing a declined child on a revision draft resets the head and every remaining child; the set is not charged', async () => {
+    const { jobId, h2, k2 } = await revisionDraftWithCutSet()
+    expect((await DEL(`${Q(jobId)}/lines/${k2[2].id}`)).status).toBe(200)
+    const q = await expectSetReset(jobId, h2.id, 3)
+    expect(q.totals.approvedTotal, 'the set was never re-decided, so it approves nothing').toBe('0.00')
+    const audits = await setResetAudits(jobId)
+    expect(audits).toHaveLength(1)
+    expect(audits[0]!.actor_id).toBe(fx.userId)
+    const a = audits[0]!.after as { reasonCode: string; lineIds: string[] }
+    expect(a.reasonCode).toBe('set_changed_decision_reset')
+    expect([...a.lineIds].sort()).toEqual([h2.id, k2[0].id, k2[1].id].sort())
+  })
+
+  it('FIX1(b): patching a child qty on a revision draft resets the whole set', async () => {
+    const { jobId, h2, k2 } = await revisionDraftWithCutSet()
+    expect((await PATCH(`${Q(jobId)}/lines/${k2[0].id}`, { qty: '2' })).status).toBe(200)
+    await expectSetReset(jobId, h2.id, 4)
+    expect(await setResetAudits(jobId)).toHaveLength(1)
+  })
+
+  it('FIX1(b3): a child patch that changes only sortOrder or brand (not identity) leaves the set decided', async () => {
+    const { jobId, h2, k2 } = await revisionDraftWithCutSet()
+    expect((await PATCH(`${Q(jobId)}/lines/${k2[0].id}`, { sortOrder: 99 })).status).toBe(200)
+    expect((await PATCH(`${Q(jobId)}/lines/${k2[1].id}`, { brand: 'BrandX' })).status).toBe(200)
+    const q = (await GET(Q(jobId))).body
+    expect(q.lines.find((l: { id: string }) => l.id === h2.id)).toMatchObject({ approvalStatus: 'approved', approvedAmount: '5000.00' })
+    expect(q.lines.find((l: { id: string }) => l.id === k2[0].id).approvalStatus).toBe('approved')
+    expect(q.lines.find((l: { id: string }) => l.id === k2[2].id).approvalStatus).toBe('declined')
+    expect(await setResetAudits(jobId)).toHaveLength(0)
+  })
+
+  it('FIX1(b2): patching the head price resets the head AND its children', async () => {
+    const { jobId, h2 } = await revisionDraftWithCutSet()
+    expect((await PATCH(`${Q(jobId)}/lines/${h2.id}`, { unitPrice: '5500' })).status).toBe(200)
+    await expectSetReset(jobId, h2.id, 4)
+  })
+
+  it('FIX1(c): editing an unrelated top-level line does NOT reset the set', async () => {
+    const { jobId, h2, k2 } = await revisionDraftWithCutSet(freeLine('อื่น', '100'))
+    const q0 = (await GET(Q(jobId))).body
+    const other = q0.lines.find((l: { parentLineId: string | null; name: string }) => l.parentLineId === null && l.name === 'อื่น')
+    expect((await PATCH(`${Q(jobId)}/lines/${other.id}`, { unitPrice: '150' })).status).toBe(200)
+    const q = (await GET(Q(jobId))).body
+    const head = q.lines.find((l: { id: string }) => l.id === h2.id)
+    expect(head).toMatchObject({ approvalStatus: 'approved', approvedAmount: '5000.00' })
+    expect(head.decisionCarriedFrom).not.toBeNull()
+    expect(q.lines.find((l: { id: string }) => l.id === k2[2].id).approvalStatus).toBe('declined')
+    expect(await setResetAudits(jobId)).toHaveLength(0)
   })
 
   // ===========================================================================

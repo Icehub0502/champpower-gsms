@@ -178,6 +178,25 @@ async function clearStaleAgreedAmounts(trx: ScopedTx, rows: quotationRepo.LineRo
   return out
 }
 
+/**
+ * Revision draft only: forget the customer's decision on a set (the head and every
+ * remaining child) because a member of it changed. Without this a cut set whose
+ * declined piece was removed looks whole, loses its agreed amount and is charged in
+ * full without being asked again. Re-reads the rows so it sees the state after the
+ * caller's write; audits only when something was actually reset. Runs under the
+ * document lock the caller already holds (lock order jobs -> documents -> lines).
+ */
+async function resetSetDecisions(trx: ScopedTx, shopId: string, documentId: string, headId: string, actorId: string): Promise<void> {
+  const members = (await quotationRepo.getLines(trx, documentId)).filter((l) => l.id === headId || l.parent_line_id === headId)
+  const decided = members.filter((l) => l.approval_status !== 'pending' || l.approved_amount !== null || l.decided_at !== null)
+  if (decided.length === 0) return
+  for (const m of decided) await quotationRepo.resetDecision(trx, m.id)
+  await writeAudit(trx, {
+    shopId, actorId, action: 'set_decision_reset', entityType: 'documents', entityId: documentId,
+    after: { reasonCode: 'set_changed_decision_reset', headLineId: headId, lineIds: decided.map((l) => l.id) },
+  })
+}
+
 /** checkApprovedAmount on every line that carries an agreed amount; the first refusal, or null. */
 function agreedAmountRefusal(rows: quotationRepo.LineRow[]): QuotationError | null {
   for (const r of rows) {
@@ -381,7 +400,7 @@ export interface PatchLineInput {
   sortOrder?: number
 }
 
-export async function patchLine(trx: ScopedTx, documentId: string, lineId: string, patch: PatchLineInput): Promise<Result<void>> {
+export async function patchLine(trx: ScopedTx, shopId: string, documentId: string, lineId: string, patch: PatchLineInput, actorId: string): Promise<Result<void>> {
   const doc = await quotationRepo.lockDocument(trx, documentId)
   if (!doc) return err({ code: 'quotation_not_found' })
   if (doc.status !== 'draft') return err({ code: 'quotation_not_draft' })
@@ -421,22 +440,39 @@ export async function patchLine(trx: ScopedTx, documentId: string, lineId: strin
   // Owner Q2: on a revision draft, a line that no longer matches what the
   // customer decided on forgets that decision. Compared with the line it was
   // copied from; a new line (no source) has nothing carried.
-  if (line.source_line_id !== null && line.approval_status !== 'pending') {
+  if (line.parent_line_id !== null) {
+    // A set decides as one: any edit to a member, on a revision, sends the whole set back to the customer.
+    // DECISION-2026-10-06 §2: display order, brand, unit, price_source, list_price are not a change; only the
+    // identity decisionCarries compares (item, name, type, qty, unit price, warranty) is.
+    const after = await quotationRepo.getLine(trx, documentId, lineId)
+    if (doc.supersedes_document_id !== null && after && !decisionCarries(identityOf(line), identityOf(after))) {
+      await resetSetDecisions(trx, shopId, documentId, line.parent_line_id, actorId)
+    }
+  } else if (line.source_line_id !== null && line.approval_status !== 'pending') {
     const after = await quotationRepo.getLine(trx, documentId, lineId)
     const src = after ? sourceIdentityOf(after) : null
-    if (after && (!src || !decisionCarries(src, identityOf(after)))) await quotationRepo.resetDecision(trx, lineId)
+    if (after && (!src || !decisionCarries(src, identityOf(after)))) {
+      await quotationRepo.resetDecision(trx, lineId)
+      // a head that changed takes its children's decisions with it (no-op for a line with no children)
+      await resetSetDecisions(trx, shopId, documentId, lineId, actorId)
+    }
   }
   return ok(undefined)
 }
 
-export async function removeLine(trx: ScopedTx, documentId: string, lineId: string): Promise<Result<void>> {
+export async function removeLine(trx: ScopedTx, shopId: string, documentId: string, lineId: string, actorId: string): Promise<Result<void>> {
   const doc = await quotationRepo.lockDocument(trx, documentId)
   if (!doc) return err({ code: 'quotation_not_found' })
   if (doc.status !== 'draft') return err({ code: 'quotation_not_draft' })
   // The line must be on THIS document (of this shop, via RLS); a foreign or missing line is the same 404.
   const lines = await quotationRepo.getLines(trx, documentId)
-  if (!lines.some((l) => l.id === lineId)) return err({ code: 'quotation_line_not_found' })
+  const target = lines.find((l) => l.id === lineId)
+  if (!target) return err({ code: 'quotation_line_not_found' })
   await quotationRepo.deleteLine(trx, documentId, lineId)
+  // Removing a member (e.g. the declined piece) must not leave the rest of the set looking decided.
+  if (target.parent_line_id !== null && doc.supersedes_document_id !== null) {
+    await resetSetDecisions(trx, shopId, documentId, target.parent_line_id, actorId)
+  }
   return ok(undefined)
 }
 
@@ -618,11 +654,6 @@ export async function confirm(
   // CLAUDE.md §9 requires the reason of a money adjustment to be audited and documents has no column
   // for it. Unlike undo-delivered, whose reason lives on the job_status_history row, so audit keeps
   // only the row id there. Reviewed by security (6 Oct 2026): accepted.
-  await writeAudit(trx, {
-    shopId, actorId, action: 'quotation_confirmed', entityType: 'documents', entityId: documentId,
-    before: { discount: doc.discount }, after: auditAfter,
-  })
-
   // Offered items (D3/D13): next_time declines only, parent not children.
   const declineStates = refreshedRows.map(decisionState)
   const offeredIds = new Set(offeredItemLineIds(declineStates))
@@ -638,8 +669,10 @@ export async function confirm(
 
   const outcome = jobOutcomeAtConfirm(declineStates)
   let jobStatusUnchanged: { currentStatus: string } | null = null
+  let jobAdvancedFrom: string | null = null
   if (doc.job_id && job && outcome === 'approve_job') {
     if (job.status === 'quoted') {
+      jobAdvancedFrom = 'quoted'
       await jobsRepo.applyStatus(trx, { jobId: doc.job_id, status: 'approved', subState: null })
       const history = await jobsRepo.recordStatusHistory(trx, shopId, doc.job_id, 'approved', actorId)
       await writeAudit(trx, {
@@ -651,6 +684,14 @@ export async function confirm(
       jobStatusUnchanged = { currentStatus: job.status }
     }
   }
+
+  // Written after the job move so the row records, as a structured field, whether THIS confirm
+  // advanced the job: undo reads it back instead of guessing from the job's current status.
+  auditAfter.jobAdvancedFrom = jobAdvancedFrom
+  await writeAudit(trx, {
+    shopId, actorId, action: 'quotation_confirmed', entityType: 'documents', entityId: documentId,
+    before: { discount: doc.discount }, after: auditAfter,
+  })
 
   return ok({ document: (await quotationRepo.getDocument(trx, documentId))!, jobOutcome: outcome === 'approve_job' ? 'approve_job' : 'keep_quoted', jobStatusUnchanged })
 }
@@ -678,7 +719,10 @@ export async function undoConfirm(trx: ScopedTx, shopId: string, documentId: str
   await quotationRepo.markUnsigned(trx, documentId)
   await quotationRepo.deleteOfferedItemsOfDocument(trx, documentId)
   // Only a job that confirm moved to 'approved' goes back; a job confirm left alone (D5, or before quoted) stays.
-  if (doc.job_id && job && job.status === 'approved') {
+  // The confirm's own audit row says whether it moved the job (structured field jobAdvancedFrom);
+  // a confirm that found the job already approved (or not yet quoted) must not pull it back.
+  const confirmRecord = await quotationRepo.latestConfirmAfter(trx, documentId)
+  if (doc.job_id && job && job.status === 'approved' && confirmRecord?.jobAdvancedFrom === 'quoted') {
     await jobsRepo.applyStatus(trx, { jobId: doc.job_id, status: 'quoted', subState: null })
     const history = await jobsRepo.recordStatusHistory(trx, shopId, doc.job_id, 'quoted', actorId)
     await writeAudit(trx, {
