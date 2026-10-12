@@ -4,6 +4,7 @@ import type { Quotation, QuotationLine, QuotationNext, QuotationTotals } from '@
 
 export const JOB_ID = '00000000-0000-4000-8000-0000000000a1';
 export const DOC_ID = '00000000-0000-4000-8000-0000000000d1';
+export const VEHICLE_ID = '00000000-0000-4000-8000-0000000000f1';
 
 let n = 0;
 export function uid(): string {
@@ -47,7 +48,7 @@ export function totals(over: Partial<QuotationTotals> = {}): QuotationTotals {
 
 export function next(over: Partial<QuotationNext> = {}): QuotationNext {
   return {
-    canEditContent: false, canIssue: false, canDecide: false, canConfirm: false, canUndoConfirm: false,
+    canEditContent: false, canIssue: false, canDecide: false, canConfirm: false, canOpenConfirm: false, canUndoConfirm: false,
     canRevise: false, undecidedLineIds: [], setsNeedingAmountLineIds: [], ...over,
   };
 }
@@ -64,6 +65,8 @@ export function quotation(over: Partial<Quotation> = {}): Quotation {
     confirmedAt: null,
     closedByJob: false,
     voidReason: null,
+    vehicleId: VEHICLE_ID,
+    vehicleModelLinked: true,
     totals: totals(),
     lines: [],
     next: next({ canDecide: true, canRevise: true }),
@@ -84,7 +87,7 @@ export function cutSetQuotation(): { q: Quotation; head: QuotationLine; cut: Quo
   const q = quotation({
     lines: [head, a, b, cut],
     totals: totals({ offeredSubtotal: '20000.00', approvedSubtotal: '20000.00', offeredTotal: '20000.00', approvedTotal: '20000.00' }),
-    next: next({ canDecide: true, canRevise: true, setsNeedingAmountLineIds: [head.id] }),
+    next: next({ canDecide: true, canOpenConfirm: true, canRevise: true, setsNeedingAmountLineIds: [head.id] }),
   });
   return { q, head, cut };
 }

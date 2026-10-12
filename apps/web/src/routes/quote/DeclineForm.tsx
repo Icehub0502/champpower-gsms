@@ -9,6 +9,9 @@ interface DeclineFormProps {
   fields: Record<string, string>;
   onSubmit: (reason: DeclineReason, note: string | undefined) => void;
   onCancel: () => void;
+  /** The reasons offered (default: every decline reason). Closing a job leaves out chose_alternative. */
+  options?: readonly DeclineReason[];
+  submitLabel?: string;
 }
 
 /**
@@ -17,7 +20,9 @@ interface DeclineFormProps {
  * misses the reason that matters most; free text alone cannot be counted).
  * "อื่น ๆ" requires the text, as the API does (DecideLineInput).
  */
-export function DeclineForm({ busy, saving, fields, onSubmit, onCancel }: DeclineFormProps) {
+export function DeclineForm({
+  busy, saving, fields, onSubmit, onCancel, options = DECLINE_REASON_OPTIONS, submitLabel = 'บันทึกว่าไม่อนุมัติ',
+}: DeclineFormProps) {
   const [reason, setReason] = useState<DeclineReason | ''>('');
   const [note, setNote] = useState('');
   const [touched, setTouched] = useState(false);
@@ -52,7 +57,7 @@ export function DeclineForm({ busy, saving, fields, onSubmit, onCancel }: Declin
           onChange={(e) => setReason(e.target.value as DeclineReason | '')}
         >
           <option value="">— เลือกเหตุผล —</option>
-          {DECLINE_REASON_OPTIONS.map((r) => (
+          {options.map((r) => (
             <option key={r} value={r}>{DECLINE_REASON_LABEL[r]}</option>
           ))}
         </select>
@@ -74,7 +79,7 @@ export function DeclineForm({ busy, saving, fields, onSubmit, onCancel }: Declin
       </label>
       <div className="row-flex">
         <button type="submit" className="btn danger small" disabled={busy}>
-          {saving ? 'กำลังบันทึก...' : 'บันทึกว่าไม่อนุมัติ'}
+          {saving ? 'กำลังบันทึก...' : submitLabel}
         </button>
         <button type="button" className="btn secondary small" disabled={busy} onClick={onCancel}>
           ยกเลิก

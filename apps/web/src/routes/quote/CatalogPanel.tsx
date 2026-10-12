@@ -20,7 +20,9 @@ interface CatalogPanelProps {
   busyKey: string | null;
   run: QuotationState['run'];
   guard: QuotationState['guard'];
-  /** Rendered under the "not matched to a model" notice (VehicleModelPicker), when the page can offer it. */
+  /** From the quotation view: false = the car is not matched to a controlled model yet. */
+  vehicleModelLinked: boolean;
+  /** "เลือกรุ่นรถ" / "เพิ่มรุ่นใหม่", shown under the notice when the car is not matched. */
   modelPicker: ReactNode;
 }
 
@@ -38,7 +40,7 @@ function addBody(hit: CatalogHit, unitPrice: string | undefined): AddLineInput |
  * line by hand (v2 §7). The order and the price for this car are the
  * server's; this panel never prices anything.
  */
-export function CatalogPanel({ jobId, busyKey, run, guard, modelPicker }: CatalogPanelProps) {
+export function CatalogPanel({ jobId, busyKey, run, guard, vehicleModelLinked, modelPicker }: CatalogPanelProps) {
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const [needPrice, setNeedPrice] = useState<(CatalogHit & { itemId: string }) | null>(null);
@@ -104,7 +106,7 @@ export function CatalogPanel({ jobId, busyKey, run, guard, modelPicker }: Catalo
         />
       </div>
 
-      {search.result && !search.result.vehicleModelLinked && (
+      {!vehicleModelLinked && (
         <div className="ci-nomatch qt-unlinked">
           รถคันนี้ยังไม่ได้จับคู่กับรุ่นในรายการ — ราคาที่เห็นเป็นราคากลางทั่วไป
           {modelPicker}

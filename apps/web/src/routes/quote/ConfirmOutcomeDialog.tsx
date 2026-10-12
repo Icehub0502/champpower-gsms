@@ -53,18 +53,38 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
   const discountSatang = typedSatang(discount);
   const discountChanged = discountSatang === null || discountSatang !== toSatang(quotation.totals.discount);
 
+  // A confirm 400 keys its fields by full path, the set by its line id:
+  // "adjustments.setLines.<lineId>.approvedAmount" / ".reason",
+  // "adjustments.discount.amount" / ".reason" (apps/api nestedFieldErrorsOf).
+  const serverField = (...keys: string[]): string | null => {
+    for (const k of keys) {
+      const t = failure?.fields[k];
+      if (t) return t;
+    }
+    return null;
+  };
+  const setKey = (lineId: string, f: string) => `adjustments.setLines.${lineId}.${f}`;
+
+  // The screen's own required-field check first (it is what blocks sending);
+  // otherwise what the server said about this exact box.
   function setError(s: QuotationLine): { amount: string | null; reason: string | null } {
     const typed = (amounts[s.id] ?? '').trim();
-    const server = failure?.lineIds.includes(s.id) ? failure.text : null;
-    let amount: string | null = server;
+    let amount: string | null =
+      serverField(setKey(s.id, 'approvedAmount'), setKey(s.id, 'amount')) ?? (failure?.lineIds.includes(s.id) ? failure.text : null);
     if (touched && typed === '' && setNeedsSending(s)) amount = 'กรอกยอดใหม่ของชุดนี้ก่อนยืนยัน';
     else if (touched && typed !== '' && typedSatang(typed) === null) amount = 'จำนวนเงินไม่ถูกต้อง — ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง';
-    const reason = touched && setNeedsSending(s) && (reasons[s.id] ?? '').trim() === '' ? 'กรอกเหตุผลที่ยอดชุดเปลี่ยน' : null;
+    const reason = touched && setNeedsSending(s) && (reasons[s.id] ?? '').trim() === ''
+      ? 'กรอกเหตุผลที่ยอดชุดเปลี่ยน'
+      : serverField(setKey(s.id, 'reason'));
     return { amount, reason };
   }
 
-  const discountError = touched && discountSatang === null ? 'จำนวนเงินไม่ถูกต้อง — ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง' : null;
-  const discountReasonError = touched && discountChanged && discountReason.trim() === '' ? 'เปลี่ยนส่วนลดต้องกรอกเหตุผล' : null;
+  const discountError = touched && discountSatang === null
+    ? 'จำนวนเงินไม่ถูกต้อง — ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง'
+    : serverField('adjustments.discount.amount');
+  const discountReasonError = touched && discountChanged && discountReason.trim() === ''
+    ? 'เปลี่ยนส่วนลดต้องกรอกเหตุผล'
+    : serverField('adjustments.discount.reason');
 
   // A preview of the approved total with what is typed, from the domain's one
   // totals function — so the counter can say the number to the customer. The

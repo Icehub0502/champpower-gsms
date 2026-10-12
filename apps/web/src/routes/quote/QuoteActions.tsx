@@ -20,9 +20,9 @@ type Dialog = 'confirm' | 'undo' | 'revise' | null;
 /**
  * Panel A's decision row, rebuilt on the server's `next` flags: what the
  * screen may offer is decided by the API from the quotation's real state, not
- * recomputed here. One exception, deliberately: "ยืนยันผลลูกค้า" opens when
- * every line is decided — `next.canConfirm` is false while a cut set still has
- * no amount, and entering that amount is exactly what the dialog is for.
+ * recomputed here. "ยืนยันผลลูกค้า" opens on `next.canOpenConfirm` (true while
+ * a cut set still lacks its amount — entering it is what the dialog is for);
+ * `next.canConfirm` would stay false until then.
  */
 export function QuoteActions({ jobId, quotation, canWrite, busy, run }: QuoteActionsProps) {
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -54,7 +54,6 @@ export function QuoteActions({ jobId, quotation, canWrite, busy, run }: QuoteAct
 
   if (!canWrite) return null;
 
-  const decidedAll = next.canDecide && next.undecidedLineIds.length === 0;
   const dialogFailure = failure && dialog !== null ? failure : null;
 
   return (
@@ -72,7 +71,7 @@ export function QuoteActions({ jobId, quotation, canWrite, busy, run }: QuoteAct
           </button>
         )}
         {next.canDecide && (
-          <button type="button" className="btn" disabled={anyBusy || !decidedAll} onClick={() => { setFailure(null); setDialog('confirm'); }}>
+          <button type="button" className="btn" disabled={anyBusy || !next.canOpenConfirm} onClick={() => { setFailure(null); setDialog('confirm'); }}>
             ยืนยันผลลูกค้า
           </button>
         )}

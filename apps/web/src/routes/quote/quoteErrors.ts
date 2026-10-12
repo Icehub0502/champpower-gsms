@@ -24,6 +24,8 @@ export interface QuoteFailure {
   stale: boolean;
   /** Logged out / switched user mid-request: show nothing. */
   cancelled: boolean;
+  /** The snake_case code (ApiError.message), for refusals from doors outside QuotationBody (the job-status door). */
+  code?: string;
 }
 
 export const GENERIC_QUOTE_FAILURE = 'บันทึกไม่สำเร็จ กรุณาลองใหม่ — ข้อมูลที่กรอกไว้ยังอยู่ครบ';
@@ -99,6 +101,9 @@ function textOf(body: QuotationBodyT): string {
     case 'job_not_open': return 'งานนี้จบไปแล้ว ทำใบเสนอราคาเพิ่มไม่ได้';
     case 'quotation_missing': return 'งานนี้ยังไม่มีใบเสนอราคา';
     case 'quotation_not_confirmed': return 'ใบเสนอราคายังไม่ได้ยืนยันผลลูกค้า — โหลดข้อมูลใหม่ให้แล้ว';
+    // GS002 from the freeze trigger (lib/pgError.ts), now in QuotationBody.
+    case 'document_frozen': return 'ใบเสนอราคานี้ถูกล็อกแล้ว แก้ไม่ได้ — โหลดข้อมูลใหม่ให้แล้ว';
+    case 'document_line_frozen': return 'รายการนี้ถูกล็อกแล้ว แก้ไม่ได้ — โหลดข้อมูลใหม่ให้แล้ว';
   }
 }
 
@@ -112,6 +117,7 @@ export function describeQuoteError(err: unknown): QuoteFailure {
   const empty: Pick<QuoteFailure, 'fields' | 'lineIds' | 'body'> = { fields: {}, lineIds: [], body: null };
   if (isSessionCancelled(err)) return { ...empty, text: '', stale: false, cancelled: true };
   if (!(err instanceof ApiError)) return { ...empty, text: GENERIC_QUOTE_FAILURE, stale: false, cancelled: false };
+  const code = err.message;
 
   const parsed = QuotationBody.safeParse(err.body);
   if (parsed.success) {
@@ -127,13 +133,10 @@ export function describeQuoteError(err: unknown): QuoteFailure {
       body,
       stale: STALE_CODES.has(body.error),
       cancelled: false,
+      code,
     };
   }
-  // GS002 from the freeze trigger (lib/pgError.ts) is not in QuotationBody; the code alone is enough.
-  if (err.message === 'document_frozen' || err.message === 'document_line_frozen') {
-    return { ...empty, text: 'ใบเสนอราคานี้ถูกล็อกแล้ว แก้ไม่ได้ — โหลดข้อมูลใหม่ให้แล้ว', stale: true, cancelled: false };
-  }
-  if (err.status === 403) return { ...empty, text: 'คุณไม่มีสิทธิ์ทำรายการนี้', stale: false, cancelled: false };
-  if (err.status === 429) return { ...empty, text: 'ทำรายการถี่เกินไป กรุณารอสักครู่แล้วลองใหม่', stale: false, cancelled: false };
-  return { ...empty, text: GENERIC_QUOTE_FAILURE, stale: false, cancelled: false };
+  if (err.status === 403) return { ...empty, text: 'คุณไม่มีสิทธิ์ทำรายการนี้', stale: false, cancelled: false, code };
+  if (err.status === 429) return { ...empty, text: 'ทำรายการถี่เกินไป กรุณารอสักครู่แล้วลองใหม่', stale: false, cancelled: false, code };
+  return { ...empty, text: GENERIC_QUOTE_FAILURE, stale: false, cancelled: false, code };
 }

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { statusOf } from '@champpower/domain';
 import type { CreateQuotationInput, JobDetail, Quotation, Role } from '@gsms/contracts/index.js';
 import { Icon } from '../../components/ui/Icon';
 import { PlateBadge } from '../../components/ui/PlateBadge';
@@ -9,6 +10,8 @@ import { CatalogPanel } from './CatalogPanel';
 import { QuoteActions } from './QuoteActions';
 import { QuoteLines } from './QuoteLines';
 import { QuoteTotalsPanel } from './QuoteTotalsPanel';
+import { RejectJobAction } from './RejectJobAction';
+import { VehicleModelPicker } from './VehicleModelPicker';
 import { canReadQuote, canWriteQuote, QUOTATION_STATUS_LABEL } from './quoteLabels';
 import type { QuoteFailure } from './quoteErrors';
 import { quotationPath, useQuotation } from './useQuotation';
@@ -31,7 +34,7 @@ export function QuoteRoute({ role }: { role: Role | null }) {
   return <QuotePage key={jobId} jobId={jobId} canWrite={canWriteQuote(role)} />;
 }
 
-function JobHeader({ job, quotation }: { job: JobDetail | null; quotation: Quotation | null }) {
+function JobHeader({ job, quotation, statusLabel }: { job: JobDetail | null; quotation: Quotation | null; statusLabel: string | null }) {
   const car = job ? [job.brand, job.model, job.color].filter(Boolean).join(' ') : '';
   return (
     <header className="qt-header">
@@ -41,7 +44,7 @@ function JobHeader({ job, quotation }: { job: JobDetail | null; quotation: Quota
         {job && (
           <p className="page-sub">
             {job.jobNumber}{job.queueNo !== null && ` · คิว ${job.queueNo}`} · {car || 'ไม่ระบุรุ่น'}
-            {job.customerName && ` · ${job.customerName}`} · สถานะงาน {job.statusLabel}
+            {job.customerName && ` · ${job.customerName}`} · สถานะงาน {statusLabel ?? job.statusLabel}
           </p>
         )}
       </div>
@@ -69,6 +72,9 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
   const [createFailure, setCreateFailure] = useState<QuoteFailure | null>(null);
   const [discountFailure, setDiscountFailure] = useState<QuoteFailure | null>(null);
   const quotation = load.phase === 'ready' ? load.quotation : null;
+  // Set once this page closed the job as ไม่อนุมัติ: the job read is not live, so the header says so from the server's answer.
+  const [closedLabel, setClosedLabel] = useState<string | null>(null);
+  const mayReject = canWrite && closedLabel === null && (job.data?.allowedMoves.includes('rejected') ?? false);
 
   async function create() {
     setCreateFailure(null);
@@ -85,7 +91,20 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
 
   return (
     <div className="qt-page">
-      <JobHeader job={job.data} quotation={quotation} />
+      <JobHeader job={job.data} quotation={quotation} statusLabel={closedLabel} />
+
+      {closedLabel && <p className="ci-match" role="status">ปิดงานเป็น “ไม่อนุมัติ” แล้ว — งานออกจากกระดานงานวันนี้</p>}
+      {mayReject && job.data && (
+        <div className="qt-reject">
+          <RejectJobAction
+            job={job.data}
+            quotation={quotation}
+            busyKey={busy}
+            guard={guard}
+            onRejected={(r) => { setClosedLabel(statusOf(r.status).label); void reload(); }}
+          />
+        </div>
+      )}
 
       {load.phase === 'loading' && <div className="page-loading">กำลังโหลดใบเสนอราคา...</div>}
 
@@ -132,10 +151,16 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
           </div>
           {canWrite && quotation.next.canEditContent && (
             <aside className="qt-side">
-              {/* The model picker needs the car's id, which no read contract carries
-                  yet (JobDetail / Quotation have no vehicleId) — see the P3.1 screen
-                  report. Until then the notice shows without the buttons. */}
-              <CatalogPanel jobId={jobId} busyKey={busy} run={run} guard={guard} modelPicker={null} />
+              <CatalogPanel
+                jobId={jobId}
+                busyKey={busy}
+                run={run}
+                guard={guard}
+                vehicleModelLinked={quotation.vehicleModelLinked}
+                modelPicker={quotation.vehicleId && !quotation.vehicleModelLinked ? (
+                  <VehicleModelPicker vehicleId={quotation.vehicleId} busyKey={busy} guard={guard} onAssigned={() => void reload()} />
+                ) : null}
+              />
             </aside>
           )}
         </div>

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import type { VehicleModel, VehicleModelCreateInput, VehicleModelPage } from '@gsms/contracts/index.js';
+import type {
+  VehicleModel, VehicleModelAssignInput, VehicleModelAssigned, VehicleModelCreateInput, VehicleModelPage,
+} from '@gsms/contracts/index.js';
 import { api } from '../../lib/api/client';
 import { isSessionCancelled } from '../../lib/api/sessionCancelled';
 import type { QuotationState } from './useQuotation';
@@ -7,12 +9,10 @@ import type { QuotationState } from './useQuotation';
 interface VehicleModelPickerProps {
   busyKey: string | null;
   guard: QuotationState['guard'];
-  /**
-   * Match THIS car to the chosen model (PUT /api/vehicles/:id/model). Supplied
-   * by the page only when it knows the car's id — see QuotePage for why it
-   * cannot today.
-   */
-  onAssign: (model: VehicleModel) => Promise<boolean>;
+  /** The car this job is for (Quotation.vehicleId). */
+  vehicleId: string;
+  /** Called after the car was matched — the page reloads so prices follow the model. */
+  onAssigned: () => void;
 }
 
 /**
@@ -22,7 +22,7 @@ interface VehicleModelPickerProps {
  * picker — type, pick. Adding a model goes to the shop's controlled list, then
  * is assigned the same way.
  */
-export function VehicleModelPicker({ busyKey, guard, onAssign }: VehicleModelPickerProps) {
+export function VehicleModelPicker({ vehicleId, busyKey, guard, onAssigned }: VehicleModelPickerProps) {
   const [open, setOpen] = useState<'pick' | 'add' | null>(null);
   const [q, setQ] = useState('');
   const [items, setItems] = useState<VehicleModel[]>([]);
@@ -30,6 +30,20 @@ export function VehicleModelPicker({ busyKey, guard, onAssign }: VehicleModelPic
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const busy = busyKey !== null;
+
+  // PUT /api/vehicles/:id/model — advisor+, audited on the server (v3 §4.2).
+  async function onAssign(model: VehicleModel): Promise<boolean> {
+    setError(null);
+    const body: VehicleModelAssignInput = { vehicleModelId: model.id };
+    const result = await guard('model-assign', () =>
+      api.put<VehicleModelAssigned>(`/api/vehicles/${encodeURIComponent(vehicleId)}/model`, body));
+    if (result.ok) {
+      onAssigned();
+      return true;
+    }
+    if (!result.failure.cancelled) setError(result.failure.text);
+    return false;
+  }
 
   useEffect(() => {
     if (open !== 'pick') return;
@@ -50,6 +64,12 @@ export function VehicleModelPicker({ busyKey, guard, onAssign }: VehicleModelPic
     const result = await guard('model-add', () => api.post<VehicleModel>('/api/vehicle-models', body));
     if (result.ok) { if (await onAssign(result.value)) setOpen(null); return; }
     if (result.failure.cancelled) return;
+    // Already in the list: use that one instead of making a near-duplicate (the R2 problem).
+    const refusal = result.failure.body;
+    if (refusal?.error === 'vehicle_model_exists') {
+      if (await onAssign({ id: refusal.vehicleModelId, brand: brand.trim(), name: name.trim(), yearRange: null })) setOpen(null);
+      return;
+    }
     setError(result.failure.text);
   }
 

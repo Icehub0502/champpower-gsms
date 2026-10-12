@@ -51,6 +51,8 @@ const BODIES: QuotationBody[] = [
   { error: 'job_not_open', message: 'x' },
   { error: 'quotation_missing', message: 'x' },
   { error: 'quotation_not_confirmed', message: 'x' },
+  { error: 'document_frozen', message: 'x' },
+  { error: 'document_line_frozen', message: 'x' },
 ];
 
 describe('describeQuoteError', () => {
@@ -84,6 +86,8 @@ describe('describeQuoteError', () => {
     expect(describeQuoteError(refusal(409, { error: 'quotation_not_draft', message: 'x' })).stale).toBe(true);
     expect(describeQuoteError(refusal(409, { error: 'price_already_set', message: 'x', existingPrice: '1.00', scope: 'base' })).stale).toBe(false);
     expect(describeQuoteError(new ApiError(409, 'document_line_frozen', { error: 'document_line_frozen', message: 'x' })).stale).toBe(true);
+    // Parsed through the contract now: a frozen body with a stray field is an unknown error, not trusted by its code.
+    expect(describeQuoteError(new ApiError(409, 'document_frozen', { error: 'document_frozen', message: 'x', table: 'documents' })).text).toBe(GENERIC_QUOTE_FAILURE);
   });
 
   it('a body that does not parse is an unknown error — nothing from it is shown', () => {

@@ -1873,3 +1873,4 @@ button:focus-visible, a:focus-visible {
 @media (pointer: coarse) {
   .qt-line-controls .btn, .qt-hit, .qt-actions .btn, .qt-price input { min-height: var(--touch-min); }
 }
+.qt-reject { display: flex; justify-content: flex-end; margin-bottom: 12px; }

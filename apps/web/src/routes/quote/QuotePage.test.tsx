@@ -12,11 +12,13 @@ import type { CatalogSearchResult, JobDetail, Quotation, Role } from '@gsms/cont
 const apiGet = vi.fn();
 const apiPost = vi.fn();
 const apiPatch = vi.fn();
+const apiPut = vi.fn();
 vi.mock('../../lib/api/client', () => ({
   api: {
     get: (...a: unknown[]) => apiGet(...a),
     post: (...a: unknown[]) => apiPost(...a),
     patch: (...a: unknown[]) => apiPatch(...a),
+    put: (...a: unknown[]) => apiPut(...a),
     del: vi.fn(),
   },
   ApiError: class ApiError extends Error {
@@ -33,14 +35,16 @@ vi.mock('../../lib/api/socket', () => ({ getSocket: () => ({ on: vi.fn(), off: v
 
 import { ApiError } from '../../lib/api/client';
 import { QuoteRoute } from './QuotePage';
-import { JOB_ID, line, next, quotation, totals } from './quoteFixtures';
+import { JOB_ID, VEHICLE_ID, cutSetQuotation, line, next, quotation, totals } from './quoteFixtures';
+
+const MODEL_ID = '00000000-0000-4000-8000-0000000000b9';
 import { button, buttons, click, field, flush, mount, type, type Mounted } from './quoteTestDom';
 
 const JOB: JobDetail = {
   jobId: JOB_ID, jobNumber: 'SV-00042', queueNo: 7, status: 'quoted', statusLabel: 'เสนอราคา', subState: null,
   jobType: 'normal', source: 'walk_in', plate: '9ขข 4242', province: 'สมุทรปราการ', brand: 'Toyota', model: 'Vios',
   color: null, customerName: 'สมศรี', bayName: null, createdAt: '2026-10-12T01:00:00.000Z',
-  statusChangedAt: '2026-10-12T02:00:00.000Z', onBoard: true, history: [], allowedMoves: [], movesNeedingReason: [],
+  statusChangedAt: '2026-10-12T02:00:00.000Z', onBoard: true, history: [], allowedMoves: ['approved', 'rejected', 'carout'], movesNeedingReason: [],
 };
 
 let current: Quotation | ApiError;
@@ -50,12 +54,14 @@ beforeEach(() => {
   apiGet.mockReset();
   apiPost.mockReset();
   apiPatch.mockReset();
+  apiPut.mockReset();
   apiGet.mockImplementation(async (path: string) => {
     if (path.endsWith('/quotation')) {
       if (current instanceof ApiError) throw current;
       return current;
     }
     if (path.startsWith('/api/catalog/search')) return search;
+    if (path.startsWith('/api/vehicle-models')) return { items: [{ id: MODEL_ID, brand: 'Chevrolet', name: 'Colorado', yearRange: null }], total: 1 };
     return JOB;
   });
 });
@@ -220,5 +226,97 @@ describe('adding from the catalog', () => {
     click(button(/ใช้ของเดิม/));
     await flush();
     expect(apiPost.mock.calls[1]![1]).toMatchObject({ kind: 'free', useExistingItemId: ITEM, addToCatalog: true });
+  });
+});
+
+describe('matching the car to a model (v3 §4.2)', () => {
+  const draft = (linked: boolean) =>
+    quotation({ status: 'draft', number: null, vehicleModelLinked: linked, next: next({ canEditContent: true }) });
+
+  it('no picker when the car is already matched', async () => {
+    current = draft(true);
+    await render('advisor');
+    expect(buttons('เลือกรุ่นรถ')).toHaveLength(0);
+    expect(document.body.textContent).not.toContain('ยังไม่ได้จับคู่กับรุ่น');
+  });
+
+  it('not matched: the picker shows, and choosing a model PUTs it on THIS car, then reloads', async () => {
+    current = draft(false);
+    await render('advisor');
+    expect(document.body.textContent).toContain('ยังไม่ได้จับคู่กับรุ่น');
+    click(button('เลือกรุ่นรถ'));
+    await flush(250);
+    apiPut.mockResolvedValueOnce({ vehicleId: VEHICLE_ID, vehicleModelId: MODEL_ID });
+    const getsBefore = apiGet.mock.calls.filter((c) => String(c[0]).endsWith('/quotation')).length;
+    click(button(/Chevrolet Colorado/));
+    await flush();
+    expect(apiPut).toHaveBeenCalledWith(`/api/vehicles/${VEHICLE_ID}/model`, { vehicleModelId: MODEL_ID });
+    expect(apiGet.mock.calls.filter((c) => String(c[0]).endsWith('/quotation')).length).toBe(getsBefore + 1);
+  });
+});
+
+describe('"ยืนยันผลลูกค้า" opens from next.canOpenConfirm', () => {
+  it('disabled while the server says no, even with every line decided', async () => {
+    const { q } = cutSetQuotation();
+    current = { ...q, next: { ...q.next, canOpenConfirm: false } };
+    await render('advisor');
+    expect(button('ยืนยันผลลูกค้า').disabled).toBe(true);
+  });
+
+  it('opens the dialog when canOpenConfirm is true — although a cut set still lacks its amount', async () => {
+    const { q } = cutSetQuotation(); // canConfirm false, canOpenConfirm true
+    current = q;
+    await render('advisor');
+    click(button('ยืนยันผลลูกค้า'));
+    expect(document.querySelector('.qt-confirm')).not.toBeNull();
+    expect(document.body.textContent).toContain('ยอดใหม่ของชุด');
+  });
+});
+
+describe('ไม่อนุมัติ (close the job) — Q1', () => {
+  it('with lines still unanswered, a reason is required before anything is sent, and chose_alternative is not offered', async () => {
+    const a = line({ name: 'โช้คหลัง', sortOrder: 1 });
+    current = quotation({ lines: [a], next: next({ canDecide: true, undecidedLineIds: [a.id] }) });
+    await render('advisor');
+    click(button('ไม่อนุมัติ (ปิดงาน)…'));
+    expect(document.body.textContent).toContain('ลูกค้ายังไม่ได้ตอบอีก 1 รายการ');
+    const select = field('ทำไมลูกค้าไม่เอา') as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).not.toContain('chose_alternative');
+
+    click(button('ยืนยันไม่อนุมัติ'));
+    await flush();
+    expect(apiPatch).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain('เลือกเหตุผลก่อน');
+
+    apiPatch.mockResolvedValueOnce({ jobId: JOB_ID, status: 'rejected', subState: null, column: null, statusChangedAt: '2026-10-12T05:00:00.000Z' });
+    type(select, 'too_expensive');
+    click(button('ยืนยันไม่อนุมัติ'));
+    await flush();
+    expect(apiPatch).toHaveBeenCalledWith(`/api/jobs/${JOB_ID}/status`, { to: 'rejected', fromStatus: 'quoted', declineReason: 'too_expensive' });
+    expect(document.body.textContent).toContain('ปิดงานเป็น “ไม่อนุมัติ” แล้ว');
+  });
+
+  it('the server’s "declineReason required" lands next to the reason box', async () => {
+    const a = line({ name: 'โช้คหลัง' });
+    current = quotation({ lines: [a], next: next({ canDecide: true, undecidedLineIds: [a.id] }) });
+    await render('advisor');
+    click(button('ไม่อนุมัติ (ปิดงาน)…'));
+    apiPatch.mockRejectedValueOnce(new ApiError(400, 'invalid_request', { error: 'invalid_request', message: 'x', fields: { declineNote: ['required'] } }));
+    type(field('ทำไมลูกค้าไม่เอา'), 'going_elsewhere');
+    click(button('ยืนยันไม่อนุมัติ'));
+    await flush();
+    const note = field('รายละเอียด').closest('label')!;
+    expect(note.querySelector('.ci-field-error')!.textContent).toBe('จำเป็นต้องกรอก');
+  });
+
+  it('nothing unanswered: no reason asked, just a confirmation', async () => {
+    current = quotation({ status: 'signed', lines: [line({ name: 'x', approvalStatus: 'declined', declineReason: 'next_time' })], next: next() });
+    await render('advisor');
+    click(button('ไม่อนุมัติ (ปิดงาน)…'));
+    expect(document.querySelector('select')).toBeNull();
+    apiPatch.mockResolvedValueOnce({ jobId: JOB_ID, status: 'rejected', subState: null, column: null, statusChangedAt: '2026-10-12T05:00:00.000Z' });
+    click(button('ยืนยันไม่อนุมัติ'));
+    await flush();
+    expect(apiPatch).toHaveBeenCalledWith(`/api/jobs/${JOB_ID}/status`, { to: 'rejected', fromStatus: 'quoted' });
   });
 });

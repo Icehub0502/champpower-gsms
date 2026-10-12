@@ -144,3 +144,35 @@ describe('amountHint', () => {
     expect(amountHint(2_000_000, '-5')).toBeNull();
   });
 });
+
+describe('server field errors keyed by full path (apps/api nestedFieldErrorsOf)', () => {
+  it('a set-row error lands under THAT set, and a discount error under the discount', async () => {
+    let headId = '';
+    const onSubmit = vi.fn(async (): Promise<QuoteFailure> => ({
+      text: 'ข้อมูลบางช่องไม่ถูกต้อง กรุณาตรวจช่องที่มีข้อความสีแดง',
+      fields: {
+        [`adjustments.setLines.${headId}.approvedAmount`]: 'จำนวนเงินไม่ถูกต้อง — ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง',
+        [`adjustments.setLines.${headId}.reason`]: 'ยาวเกินไป (ไม่เกิน 500 ตัวอักษร)',
+        'adjustments.discount.reason': 'จำเป็นต้องกรอก',
+      },
+      lineIds: [], body: null, stale: false, cancelled: false,
+    }));
+    const { head, set } = open(onSubmit);
+    headId = head.id;
+    type(field('ยอดใหม่ของชุด', set), '18000');
+    type(field('เหตุผล', set), 'x');
+    type(field('ส่วนลด'), '300');
+    type(field('เหตุผลที่เปลี่ยนส่วนลด'), 'y');
+    click(button('ยืนยันผลลูกค้า'));
+    await flush();
+
+    const amountLabel = field('ยอดใหม่ของชุด', set).closest('label')!;
+    const reasonLabel = field('เหตุผล', set).closest('label')!;
+    expect(amountLabel.querySelector('.ci-field-error')!.textContent).toContain('จำนวนเงินไม่ถูกต้อง');
+    expect(reasonLabel.querySelector('.ci-field-error')!.textContent).toContain('ยาวเกินไป');
+    const discountReason = field('เหตุผลที่เปลี่ยนส่วนลด').closest('label')!;
+    expect(discountReason.querySelector('.ci-field-error')!.textContent).toBe('จำเป็นต้องกรอก');
+    // The discount amount box itself has no error.
+    expect(field('ส่วนลด').closest('label')!.querySelector('.ci-field-error')).toBeNull();
+  });
+});
