@@ -190,7 +190,7 @@ async function resetSetDecisions(trx: ScopedTx, shopId: string, documentId: stri
   const members = (await quotationRepo.getLines(trx, documentId)).filter((l) => l.id === headId || l.parent_line_id === headId)
   const decided = members.filter((l) => l.approval_status !== 'pending' || l.approved_amount !== null || l.decided_at !== null)
   if (decided.length === 0) return
-  for (const m of decided) await quotationRepo.resetDecision(trx, m.id)
+  for (const m of decided) await quotationRepo.resetDecision(trx, documentId, m.id)
   await writeAudit(trx, {
     shopId, actorId, action: 'set_decision_reset', entityType: 'documents', entityId: documentId,
     after: { reasonCode: 'set_changed_decision_reset', headLineId: headId, lineIds: decided.map((l) => l.id) },
@@ -448,13 +448,21 @@ export async function patchLine(trx: ScopedTx, shopId: string, documentId: strin
     if (doc.supersedes_document_id !== null && after && !decisionCarries(identityOf(line), identityOf(after))) {
       await resetSetDecisions(trx, shopId, documentId, line.parent_line_id, actorId)
     }
-  } else if (line.source_line_id !== null && line.approval_status !== 'pending') {
+  } else if (doc.supersedes_document_id !== null) {
+    // A head's identity change sends its whole set back to the customer whatever the head's own
+    // approval_status is: applySetDecision lets children carry decisions while the head is still
+    // pending, so gating on the head's status left those children decided. Compared with the source
+    // line when there is one, otherwise before/after. resetSetDecisions resets the head itself
+    // (and is a no-op when nothing in the set was decided).
     const after = await quotationRepo.getLine(trx, documentId, lineId)
-    const src = after ? sourceIdentityOf(after) : null
-    if (after && (!src || !decisionCarries(src, identityOf(after)))) {
-      await quotationRepo.resetDecision(trx, lineId)
-      // a head that changed takes its children's decisions with it (no-op for a line with no children)
-      await resetSetDecisions(trx, shopId, documentId, lineId, actorId)
+    if (after) {
+      const src = line.source_line_id !== null ? sourceIdentityOf(after) : identityOf(line)
+      if (!src || !decisionCarries(src, identityOf(after))) {
+        const hasChildren = (await quotationRepo.getLines(trx, documentId)).some((l) => l.parent_line_id === lineId)
+        // A plain line is not a set: it resets quietly as before; only a set is audited as set_decision_reset.
+        if (hasChildren) await resetSetDecisions(trx, shopId, documentId, lineId, actorId)
+        else await quotationRepo.resetDecision(trx, documentId, lineId)
+      }
     }
   }
   return ok(undefined)

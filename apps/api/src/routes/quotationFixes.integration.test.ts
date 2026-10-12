@@ -480,9 +480,57 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(tier2('P3.1 fix round — rev
   })
 
   it('FIX1(b2): patching the head price resets the head AND its children', async () => {
-    const { jobId, h2 } = await revisionDraftWithCutSet()
+    const { jobId, h2, k2 } = await revisionDraftWithCutSet()
     expect((await PATCH(`${Q(jobId)}/lines/${h2.id}`, { unitPrice: '5500' })).status).toBe(200)
     await expectSetReset(jobId, h2.id, 4)
+    // LOW-1: the audit names the head itself as well as every child
+    const audits = await setResetAudits(jobId)
+    expect(audits).toHaveLength(1)
+    const a = audits[0]!.after as { headLineId: string; lineIds: string[] }
+    expect(a.headLineId).toBe(h2.id)
+    expect([...a.lineIds].sort()).toEqual([h2.id, ...k2.map((k: { id: string }) => k.id)].sort())
+  })
+
+  /** Make the head of the revision's set pending again while a child keeps its decision (applySetDecision allows this). */
+  const makeHeadPending = (headId: string) => dbq((t) => t.updateTable('document_lines')
+    .set({ approval_status: 'pending', approved_amount: null, decided_at: null, decided_by: null, decline_reason: null, decline_note: null })
+    .where('id', '=', headId).execute())
+
+  it('MEDIUM-1: editing the price of a PENDING head on a revision resets the children it had decided', async () => {
+    const { jobId, h2, k2 } = await revisionDraftWithCutSet()
+    await makeHeadPending(h2.id)
+    const before = (await GET(Q(jobId))).body.lines.find((l: { id: string }) => l.id === k2[2].id)
+    expect(before.approvalStatus, 'precondition: a child is still declined under a pending head').toBe('declined')
+    expect((await PATCH(`${Q(jobId)}/lines/${h2.id}`, { unitPrice: '5500' })).status).toBe(200)
+    await expectSetReset(jobId, h2.id, 4)
+    const audits = await setResetAudits(jobId)
+    expect(audits).toHaveLength(1)
+    expect((audits[0]!.after as { lineIds: string[] }).lineIds).toContain(k2[2].id)
+  })
+
+  it('MEDIUM-1b: a pending head edited only in sortOrder/brand does not reset its children (DECISION-2026-10-06 §2)', async () => {
+    const { jobId, h2, k2 } = await revisionDraftWithCutSet()
+    await makeHeadPending(h2.id)
+    expect((await PATCH(`${Q(jobId)}/lines/${h2.id}`, { sortOrder: 77, brand: 'BrandY' })).status).toBe(200)
+    const q = (await GET(Q(jobId))).body
+    expect(q.lines.find((l: { id: string }) => l.id === k2[2].id).approvalStatus).toBe('declined')
+    expect(await setResetAudits(jobId)).toHaveLength(0)
+  })
+
+  it('L1: resetDecision only touches a line of the document it is given', async () => {
+    const a = await revisionDraftWithCutSet()
+    const b = await revisionDraftWithCutSet()
+    const docOf = (jobId: string) => dbq(async (t) => (await t.selectFrom('documents').select('id').where('job_id', '=', jobId).where('status', '=', 'draft').executeTakeFirstOrThrow()).id)
+    const docA = await docOf(a.jobId)
+    const docB = await docOf(b.jobId)
+    // a line id from ANOTHER document is not reset
+    await dbq((t) => quotationRepo.resetDecision(t, docA, b.h2.id))
+    const stillB = (await GET(Q(b.jobId))).body.lines.find((l: { id: string }) => l.id === b.h2.id)
+    expect(stillB.approvalStatus).toBe('approved')
+    // positive control: the same call with its own document does reset
+    await dbq((t) => quotationRepo.resetDecision(t, docB, b.h2.id))
+    const nowB = (await GET(Q(b.jobId))).body.lines.find((l: { id: string }) => l.id === b.h2.id)
+    expect(nowB.approvalStatus).toBe('pending')
   })
 
   it('FIX1(c): editing an unrelated top-level line does NOT reset the set', async () => {
