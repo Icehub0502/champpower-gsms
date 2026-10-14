@@ -40,14 +40,14 @@ export function QuoteLines({ jobId, quotation, canWrite, busy, run }: QuoteLines
     return result.ok;
   }
 
-  const patch = (line: QuotationLine, body: PatchLineInput) =>
-    act(line, 'edit', () => api.patch<Quotation>(`${base}/lines/${encodeURIComponent(line.id)}`, body));
+  const patch = (line: QuotationLine, body: PatchLineInput, what = 'edit') =>
+    act(line, what, () => api.patch<Quotation>(`${base}/lines/${encodeURIComponent(line.id)}`, body));
   const decide = (line: QuotationLine, what: string, body: DecideLineInput) =>
     act(line, what, () => api.patch<Quotation>(`${base}/lines/${encodeURIComponent(line.id)}/decision`, body));
 
   const actions: LineActions = {
     onQty: (line, qty) => void patch(line, { qty }),
-    onPrice: (line, unitPrice) => void patch(line, { unitPrice }),
+    onPrice: (line, unitPrice) => patch(line, { unitPrice }, 'price'),
     onRemove: (line) => void act(line, 'remove', () => api.del<Quotation>(`${base}/lines/${encodeURIComponent(line.id)}`)),
     onApprove: (line) => void decide(line, 'approve', { decision: 'approved' }),
     onDecline: (line, reason, note) => decide(line, 'decline', note === undefined ? { decision: 'declined', reason } : { decision: 'declined', reason, note }),

@@ -13,6 +13,8 @@ interface QuoteActionsProps {
   canWrite: boolean;
   busy: string | null;
   run: QuotationState['run'];
+  /** Issue, confirm and undo-confirm move the JOB too: the page re-reads it (review M3). */
+  onJobMoved?: () => void;
 }
 
 type Dialog = 'confirm' | 'undo' | 'revise' | null;
@@ -24,7 +26,7 @@ type Dialog = 'confirm' | 'undo' | 'revise' | null;
  * a cut set still lacks its amount — entering it is what the dialog is for);
  * `next.canConfirm` would stay false until then.
  */
-export function QuoteActions({ jobId, quotation, canWrite, busy, run }: QuoteActionsProps) {
+export function QuoteActions({ jobId, quotation, canWrite, busy, run, onJobMoved }: QuoteActionsProps) {
   const [dialog, setDialog] = useState<Dialog>(null);
   const [failure, setFailure] = useState<QuoteFailure | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -45,6 +47,7 @@ export function QuoteActions({ jobId, quotation, canWrite, busy, run }: QuoteAct
     const result = await run('confirm', () => api.post<ConfirmResult>(`${base}/confirm`, input));
     if (!result.ok) return result.failure;
     setDialog(null);
+    onJobMoved?.();
     const unchanged = result.value.jobStatusUnchanged;
     setInfo(unchanged
       ? `ยืนยันผลแล้ว — แต่สถานะงานยังเป็น “${statusOf(unchanged.currentStatus).label}” (ยังไม่ได้ออกใบเสนอราคาตามขั้นตอน) ย้ายสถานะงานที่หน้างานวันนี้`
@@ -65,7 +68,7 @@ export function QuoteActions({ jobId, quotation, canWrite, busy, run }: QuoteAct
         {next.canEditContent && (
           <button
             type="button" className="btn hazard" disabled={anyBusy || !next.canIssue}
-            onClick={() => void act('issue', () => api.post<Quotation>(`${base}/issue`, {} satisfies IssueInput))}
+            onClick={() => void act('issue', () => api.post<Quotation>(`${base}/issue`, {} satisfies IssueInput)).then((r) => { if (r.ok) onJobMoved?.(); })}
           >
             {busy === 'issue' ? 'กำลังออกใบ...' : 'ออกใบเสนอราคา'}
           </button>
@@ -105,7 +108,7 @@ export function QuoteActions({ jobId, quotation, canWrite, busy, run }: QuoteAct
           onCancel={() => setDialog(null)}
           onConfirm={(reason) => {
             const body: UndoConfirmInput = { reason: reason ?? '' };
-            void act('undo', () => api.post<Quotation>(`${base}/confirm/undo`, body)).then((r) => { if (r.ok) setDialog(null); });
+            void act('undo', () => api.post<Quotation>(`${base}/confirm/undo`, body)).then((r) => { if (r.ok) { setDialog(null); onJobMoved?.(); } });
           }}
         >
           <p>ใบเสนอราคาจะกลับไปเป็น “รอลูกค้าตัดสินใจ” และงานกลับไปที่ “เสนอราคา” — ทำได้เฉพาะวันเดียวกับที่ยืนยัน</p>

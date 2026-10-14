@@ -11,7 +11,8 @@ export type RowMode = 'draft' | 'decide' | 'view';
 
 export interface LineActions {
   onQty: (line: QuotationLine, qty: string) => void;
-  onPrice: (line: QuotationLine, unitPrice: string) => void;
+  /** Resolves true when saved; a failed save keeps what was typed in the box. */
+  onPrice: (line: QuotationLine, unitPrice: string) => Promise<boolean>;
   onRemove: (line: QuotationLine) => void;
   onApprove: (line: QuotationLine) => void;
   /** Resolves true when the server accepted; the form stays open (with its errors) otherwise. */
@@ -81,8 +82,7 @@ export function QuoteLineRow({ line, isChild, childCount, mode, revision, needsA
 
   function savePrice() {
     if (priceDraft === null || priceInvalid) return;
-    actions.onPrice(line, priceDraft.trim());
-    setPriceDraft(null);
+    void actions.onPrice(line, priceDraft.trim()).then((ok) => { if (ok) setPriceDraft(null); });
   }
 
   return (
@@ -162,6 +162,9 @@ export function QuoteLineRow({ line, isChild, childCount, mode, revision, needsA
           >
             {busyKey === key('remove') ? 'กำลังลบ...' : 'ลบ'}
           </button>
+          {/* A tap that lands while the price (saved on blur) is on the wire is refused by the
+              page's one-at-a-time guard; this says why nothing happened, so it is tapped again. */}
+          {busyKey === key('price') && <span className="qt-line-sub" role="status">กำลังบันทึกราคา…</span>}
           {(priceError || qtyError) && <span className="ci-field-error">{priceError ?? qtyError}</span>}
         </div>
       )}

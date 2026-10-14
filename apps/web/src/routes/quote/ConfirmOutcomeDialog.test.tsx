@@ -176,3 +176,18 @@ describe('server field errors keyed by full path (apps/api nestedFieldErrorsOf)'
     expect(field('ส่วนลด').closest('label')!.querySelector('.ci-field-error')).toBeNull();
   });
 });
+
+describe('M1 — an amount the totals cannot hold', () => {
+  it('does not crash the dialog: the preview says "ยอดเกินที่ระบบรองรับ" and the typed values stay', () => {
+    const { q, head } = cutSetQuotation();
+    // A second approved line, so the sum overflows numeric(12,2) inside quoteTotals.
+    const extra = { ...q.lines[1]!, id: '00000000-0000-4000-8000-00000000ee01', parentLineId: null, name: 'ค่าแรง', unitPrice: '100.00', lineTotal: '100.00', sortOrder: 9 };
+    const q2 = { ...q, lines: [...q.lines, extra] };
+    m = mount(<ConfirmOutcomeDialog quotation={q2} busy={false} onSubmit={vi.fn()} onClose={() => {}} />);
+    const set = document.querySelector(`[data-set-id="${head.id}"]`) as HTMLElement;
+    type(field('ยอดใหม่ของชุด', set), '9999999999');
+    expect(document.querySelector('.qt-confirm')).not.toBeNull();
+    expect(document.querySelector('.qt-confirm-total')!.textContent).toContain('ยอดเกินที่ระบบรองรับ');
+    expect((field('ยอดใหม่ของชุด', set) as HTMLInputElement).value).toBe('9999999999');
+  });
+});

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api/client';
 import { getSocket } from '../lib/api/socket';
 import { isSessionCancelled } from '../lib/api/sessionCancelled';
@@ -6,6 +6,13 @@ import { isSessionCancelled } from '../lib/api/sessionCancelled';
 export interface DocumentState<T> {
   loading: boolean;
   data: T | null;
+  /**
+   * Fetch again now. For a screen whose own action changed the resource and
+   * which cannot wait for a socket event (none is emitted for some resources —
+   * e.g. a job moved by the quotation doors). Callers that ignore it behave
+   * exactly as before.
+   */
+  reload?: () => void;
 }
 
 function resourceSlug(path: string): string {
@@ -21,7 +28,10 @@ function resourceSlug(path: string): string {
  * of the exact payload shape the backend emits.
  */
 export function useDocument<T>(path: string, socketEvent?: string): DocumentState<T> {
-  const [state, setState] = useState<DocumentState<T>>({ loading: true, data: null });
+  const [state, setState] = useState<{ loading: boolean; data: T | null }>({ loading: true, data: null });
+  // The current effect's loader, so reload() always fetches the CURRENT path
+  // under the current effect's cancellation flag.
+  const loadRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     let cancelled = false;
@@ -38,6 +48,7 @@ export function useDocument<T>(path: string, socketEvent?: string): DocumentStat
         });
     }
 
+    loadRef.current = load;
     load();
 
     const event = socketEvent ?? `${resourceSlug(path)}:changed`;
@@ -45,9 +56,12 @@ export function useDocument<T>(path: string, socketEvent?: string): DocumentStat
     socket.on(event, load);
     return () => {
       cancelled = true;
+      loadRef.current = () => {};
       socket.off(event, load);
     };
   }, [path, socketEvent]);
 
-  return state;
+  const reload = useCallback(() => loadRef.current(), []);
+
+  return { ...state, reload };
 }

@@ -24,7 +24,7 @@ import { QuoteLines } from './QuoteLines';
 import { revisionMark } from './quoteView';
 import { QuoteTotalsPanel } from './QuoteTotalsPanel';
 import { cutSetQuotation, line, quotation, totals, next } from './quoteFixtures';
-import { mount, type Mounted } from './quoteTestDom';
+import { field, flush, mount, submit, type, type Mounted } from './quoteTestDom';
 
 let m: Mounted | null = null;
 afterEach(() => {
@@ -101,5 +101,17 @@ describe('a revision: carried decisions vs ask again', () => {
     expect(ask.textContent).not.toContain('ผ้าเบรกหน้า');
     expect(agreed.textContent).toContain('ผ้าเบรกหน้า');
     expect(agreed.textContent).toContain('ตกลงไว้แล้ว');
+  });
+});
+
+describe('a failed save keeps what was typed', () => {
+  it('discount: the box still holds the typed value after the server refused', async () => {
+    const onSave = vi.fn(async () => false);
+    m = mount(<QuoteTotalsPanel totals={totals({ discount: '0.00' })} discountEditable busy={false} onSaveDiscount={onSave} />);
+    type(field('ส่วนลดท้ายบิล'), '450');
+    submit(m.container.querySelector('form.qt-discount') as HTMLFormElement);
+    await flush();
+    expect(onSave).toHaveBeenCalledWith('450');
+    expect((field('ส่วนลดท้ายบิล') as HTMLInputElement).value).toBe('450');
   });
 });

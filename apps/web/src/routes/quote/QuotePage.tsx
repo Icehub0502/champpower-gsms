@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { statusOf } from '@champpower/domain';
 import type { CreateQuotationInput, JobDetail, Quotation, Role } from '@gsms/contracts/index.js';
+import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
 import { Icon } from '../../components/ui/Icon';
 import { PlateBadge } from '../../components/ui/PlateBadge';
 import { useDocument } from '../../hooks/useDocument';
@@ -30,8 +31,13 @@ export function QuoteRoute({ role }: { role: Role | null }) {
     );
   }
   if (!jobId) return null;
-  // Keyed on the job: moving to another job's quote starts clean.
-  return <QuotePage key={jobId} jobId={jobId} canWrite={canWriteQuote(role)} />;
+  // Keyed on the job: moving to another job's quote starts clean. The boundary
+  // turns a render error into a Thai panel instead of a white app (review M1).
+  return (
+    <ErrorBoundary key={jobId}>
+      <QuotePage jobId={jobId} canWrite={canWriteQuote(role)} />
+    </ErrorBoundary>
+  );
 }
 
 function JobHeader({ job, quotation, statusLabel }: { job: JobDetail | null; quotation: Quotation | null; statusLabel: string | null }) {
@@ -83,10 +89,12 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
     if (!result.ok && !result.failure.cancelled) setCreateFailure(result.failure);
   }
 
-  async function saveDiscount(amount: string) {
+  async function saveDiscount(amount: string): Promise<boolean> {
     setDiscountFailure(null);
     const result = await run('discount', () => api.patch<Quotation>(quotationPath(jobId), { discount: amount }));
     if (!result.ok && !result.failure.cancelled) setDiscountFailure(result.failure);
+    // The panel clears its typed draft only on true — so the box then shows the server's value.
+    return result.ok;
   }
 
   return (
@@ -101,7 +109,8 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
             quotation={quotation}
             busyKey={busy}
             guard={guard}
-            onRejected={(r) => { setClosedLabel(statusOf(r.status).label); void reload(); }}
+            onRejected={(r) => { setClosedLabel(statusOf(r.status).label); void reload(); job.reload?.(); }}
+            onStale={() => { void reload(); job.reload?.(); }}
           />
         </div>
       )}
@@ -135,7 +144,7 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
             {quotation.closedByJob && (
               <p className="ci-nomatch">ใบนี้ถูกระบบปิดเพราะงานจบแล้ว (ไม่ใช่การยกเลิกเอกสาร) — เก็บไว้เป็นบันทึกว่าเสนออะไรไปบ้าง</p>
             )}
-            <QuoteActions jobId={jobId} quotation={quotation} canWrite={canWrite} busy={busy} run={run} />
+            <QuoteActions jobId={jobId} quotation={quotation} canWrite={canWrite} busy={busy} run={run} onJobMoved={() => job.reload?.()} />
             <section className="card qt-lines-card" aria-label="รายการในใบเสนอราคา">
               <h3>รายการ ({quotation.lines.filter((l) => l.parentLineId === null).length})</h3>
               <QuoteLines jobId={jobId} quotation={quotation} canWrite={canWrite} busy={busy} run={run} />
@@ -145,7 +154,7 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
                 busy={busy !== null}
                 saving={busy === 'discount'}
                 discountError={discountFailure ? discountFailure.fields.discount ?? discountFailure.text : null}
-                onSaveDiscount={(amount) => void saveDiscount(amount)}
+                onSaveDiscount={saveDiscount}
               />
             </section>
           </div>

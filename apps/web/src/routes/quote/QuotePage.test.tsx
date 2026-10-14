@@ -5,6 +5,7 @@
  * not decide twice), that refusals arrive in Thai, and the two catalog
  * recoveries — "ราคานี้ถูกตั้งไปแล้วเป็น ฿X" and the similar-name warning.
  */
+import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { CatalogSearchResult, JobDetail, Quotation, Role } from '@gsms/contracts/index.js';
@@ -48,6 +49,7 @@ const JOB: JobDetail = {
 };
 
 let current: Quotation | ApiError;
+let currentJob: JobDetail;
 let search: CatalogSearchResult = { items: [], vehicleModelLinked: true };
 
 beforeEach(() => {
@@ -55,6 +57,7 @@ beforeEach(() => {
   apiPost.mockReset();
   apiPatch.mockReset();
   apiPut.mockReset();
+  currentJob = JOB;
   apiGet.mockImplementation(async (path: string) => {
     if (path.endsWith('/quotation')) {
       if (current instanceof ApiError) throw current;
@@ -62,7 +65,7 @@ beforeEach(() => {
     }
     if (path.startsWith('/api/catalog/search')) return search;
     if (path.startsWith('/api/vehicle-models')) return { items: [{ id: MODEL_ID, brand: 'Chevrolet', name: 'Colorado', yearRange: null }], total: 1 };
-    return JOB;
+    return currentJob;
   });
 });
 
@@ -318,5 +321,116 @@ describe('ไม่อนุมัติ (close the job) — Q1', () => {
     click(button('ยืนยันไม่อนุมัติ'));
     await flush();
     expect(apiPatch).toHaveBeenCalledWith(`/api/jobs/${JOB_ID}/status`, { to: 'rejected', fromStatus: 'quoted' });
+  });
+});
+
+describe('M3 — the job read is refreshed after a step that moves the job', () => {
+  it('after confirm, the header shows the job status the server now reports', async () => {
+    const a = line({ name: 'ผ้าเบรก', approvalStatus: 'approved', lineTotal: '1200.00', unitPrice: '1200.00' });
+    current = quotation({ lines: [a], next: next({ canDecide: true, canOpenConfirm: true, canConfirm: true }) });
+    await render('advisor');
+    expect(document.querySelector('.qt-header')!.textContent).toContain('สถานะงาน เสนอราคา');
+
+    // The confirm moved the job to approved on the server.
+    currentJob = { ...JOB, status: 'approved', statusLabel: 'อนุมัติ', allowedMoves: ['repairing'] };
+    apiPost.mockResolvedValueOnce({ ...quotation({ status: 'signed', lines: [a], next: next() }), jobStatusUnchanged: null });
+    click(button('ยืนยันผลลูกค้า'));
+    click(document.querySelector('.qt-confirm button[type="submit"]') as HTMLButtonElement); // the dialog's submit
+    await flush();
+    expect(document.querySelector('.qt-header')!.textContent).toContain('สถานะงาน อนุมัติ');
+    // allowedMoves came with it: rejecting is no longer offered.
+    expect(buttons('ไม่อนุมัติ (ปิดงาน)…')).toHaveLength(0);
+  });
+
+  it('a status_changed refusal on reject refetches the job too', async () => {
+    current = quotation({ status: 'signed', lines: [line({ name: 'x', approvalStatus: 'declined', declineReason: 'next_time' })], next: next() });
+    await render('advisor');
+    const before = apiGet.mock.calls.filter((c) => c[0] === `/api/jobs/${JOB_ID}`).length;
+    click(button('ไม่อนุมัติ (ปิดงาน)…'));
+    apiPatch.mockRejectedValueOnce(new ApiError(409, 'status_changed', { error: 'status_changed', message: 'x', currentStatus: 'approved' }));
+    click(button('ยืนยันไม่อนุมัติ'));
+    await flush();
+    expect(apiGet.mock.calls.filter((c) => c[0] === `/api/jobs/${JOB_ID}`).length).toBe(before + 1);
+    expect(document.body.textContent).toContain('มีคนเปลี่ยนสถานะงานนี้ไปแล้ว');
+  });
+});
+
+describe('M2 — the server asks for a reason the screen did not expect', () => {
+  it('a 400 declineReason opens the reason form with a note, and reloads the quotation', async () => {
+    // On screen: a stale draft — so the web thinks no reason is needed.
+    current = quotation({ status: 'draft', number: null, lines: [line({ name: 'โช้คหลัง' })], next: next({ canEditContent: true, canIssue: true }) });
+    await render('advisor');
+    click(button('ไม่อนุมัติ (ปิดงาน)…'));
+    expect(document.querySelector('select')).toBeNull();
+    const quoteGets = () => apiGet.mock.calls.filter((c) => String(c[0]).endsWith('/quotation')).length;
+    const before = quoteGets();
+
+    apiPatch.mockRejectedValueOnce(new ApiError(400, 'invalid_request', { error: 'invalid_request', message: 'x', fields: { declineReason: ['required'] } }));
+    click(button('ยืนยันไม่อนุมัติ'));
+    await flush();
+    expect(document.querySelector('select')).not.toBeNull();
+    expect(document.body.textContent).toContain('มีรายการที่ลูกค้ายังไม่ได้ตัดสิน กรุณาเลือกเหตุผล');
+    expect(quoteGets()).toBe(before + 1);
+
+    apiPatch.mockResolvedValueOnce({ jobId: JOB_ID, status: 'rejected', subState: null, column: null, statusChangedAt: '2026-10-12T05:00:00.000Z' });
+    type(field('ทำไมลูกค้าไม่เอา'), 'not_needed_yet');
+    click(button('ยืนยันไม่อนุมัติ'));
+    await flush();
+    expect(apiPatch.mock.calls[1]![1]).toEqual({ to: 'rejected', fromStatus: 'quoted', declineReason: 'not_needed_yet' });
+  });
+});
+
+describe('double tap in the same tick', () => {
+  it('two approve clicks before any re-render send ONE request (busyRef, not only state)', async () => {
+    const a = line({ name: 'ผ้าเบรกหน้า', sortOrder: 1 });
+    current = quotation({ lines: [a], next: next({ canDecide: true, undecidedLineIds: [a.id] }) });
+    await render('advisor');
+    apiPatch.mockReturnValue(new Promise(() => {}));
+    const approve = buttons('อนุมัติ')[0]!;
+    // Both clicks inside ONE act: React has not re-rendered, so the button is still enabled for the second.
+    act(() => {
+      approve.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      approve.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(apiPatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('discount save (draft)', () => {
+  it('after a successful save the box shows the server’s value, not the typed text', async () => {
+    current = quotation({ status: 'draft', number: null, lines: [line({ name: 'ผ้าเบรก', lineTotal: '1000.00', unitPrice: '1000.00' })], next: next({ canEditContent: true }) });
+    await render('advisor');
+    type(field('ส่วนลดท้ายบิล'), '450');
+    apiPatch.mockResolvedValueOnce(quotation({
+      status: 'draft', number: null, lines: [line({ name: 'ผ้าเบรก', lineTotal: '1000.00', unitPrice: '1000.00' })],
+      totals: totals({ discount: '450.00', offeredSubtotal: '1000.00', offeredDiscount: '450.00', offeredTotal: '550.00' }),
+      next: next({ canEditContent: true }),
+    }));
+    click(button('บันทึกส่วนลด'));
+    await flush();
+    expect(apiPatch).toHaveBeenCalledWith(`/api/jobs/${JOB_ID}/quotation`, { discount: '450' });
+    expect((field('ส่วนลดท้ายบิล') as HTMLInputElement).value).toBe('450.00');
+  });
+});
+
+describe('line price save (draft)', () => {
+  it('after a successful save the price box shows the server’s value; after a refusal it keeps the typed text', async () => {
+    const a = line({ name: 'ผ้าเบรก', lineTotal: '1000.00', unitPrice: '1000.00' });
+    current = quotation({ status: 'draft', number: null, lines: [a], next: next({ canEditContent: true }) });
+    await render('advisor');
+    const box = () => document.querySelector(`[data-line-id="${a.id}"] input[aria-label="ราคาต่อหน่วย"]`) as HTMLInputElement;
+
+    apiPatch.mockRejectedValueOnce(new ApiError(400, 'invalid_request', { error: 'invalid_request', message: 'x', fields: { unitPrice: ['out_of_range'] } }));
+    type(box(), '9999999999');
+    act(() => { box().dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
+    await flush();
+    expect(box().value).toBe('9999999999');
+
+    apiPatch.mockResolvedValueOnce(quotation({ status: 'draft', number: null, lines: [{ ...a, unitPrice: '1200.00', lineTotal: '1200.00' }], next: next({ canEditContent: true }) }));
+    type(box(), '1200');
+    act(() => { box().dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
+    await flush();
+    expect(box().value).toBe('1200.00');
   });
 });

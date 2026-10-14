@@ -70,7 +70,7 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
   function setError(s: QuotationLine): { amount: string | null; reason: string | null } {
     const typed = (amounts[s.id] ?? '').trim();
     let amount: string | null =
-      serverField(setKey(s.id, 'approvedAmount'), setKey(s.id, 'amount')) ?? (failure?.lineIds.includes(s.id) ? failure.text : null);
+      serverField(setKey(s.id, 'approvedAmount')) ?? (failure?.lineIds.includes(s.id) ? failure.text : null);
     if (touched && typed === '' && setNeedsSending(s)) amount = 'กรอกยอดใหม่ของชุดนี้ก่อนยืนยัน';
     else if (touched && typed !== '' && typedSatang(typed) === null) amount = 'จำนวนเงินไม่ถูกต้อง — ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง';
     const reason = touched && setNeedsSending(s) && (reasons[s.id] ?? '').trim() === ''
@@ -90,12 +90,21 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
   // totals function — so the counter can say the number to the customer. The
   // server recomputes it on confirm; this is never sent.
   const allTyped = sets.every((s) => typedSatang(amounts[s.id] ?? '') !== null) && discountSatang !== null;
-  const preview = allTyped
-    ? quoteTotals(lines.map((l) => {
-      const typed = sets.some((s) => s.id === l.id) ? (amounts[l.id] ?? '').trim() : null;
-      return { ...moneyStateOf(l), approvedAmount: typed ?? l.approvedAmount };
-    }), discount.trim()).approvedTotal
-    : null;
+  // A sum beyond numeric(12,2) makes the domain throw MoneyError — by design,
+  // it refuses to compute a number the database could not hold. Here that is
+  // a preview, so it must not take the dialog (and what was typed) down with it.
+  let preview: number | null = null;
+  let previewOverflow = false;
+  if (allTyped) {
+    try {
+      preview = quoteTotals(lines.map((l) => {
+        const typed = sets.some((s) => s.id === l.id) ? (amounts[l.id] ?? '').trim() : null;
+        return { ...moneyStateOf(l), approvedAmount: typed ?? l.approvedAmount };
+      }), discount.trim()).approvedTotal;
+    } catch {
+      previewOverflow = true;
+    }
+  }
 
   const approvedCount = lines.filter((l) => l.parentLineId === null && l.approvalStatus === 'approved').length;
   const declinedCount = lines.filter((l) => l.parentLineId === null && l.approvalStatus === 'declined').length;
@@ -190,6 +199,7 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
 
         <p className="qt-confirm-total">
           ยอดที่ลูกค้าอนุมัติหลังยืนยัน: <strong className="mono">{preview === null ? '—' : `฿${formatSatangText(preview)}`}</strong>
+          {previewOverflow && <span className="ci-field-error"> ยอดเกินที่ระบบรองรับ</span>}
         </p>
 
         <div className="row-flex">

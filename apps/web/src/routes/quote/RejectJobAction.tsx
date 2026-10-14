@@ -10,11 +10,16 @@ import type { QuotationState } from './useQuotation';
 
 type JobDeclineReason = NonNullable<UpdateJobStatusInput['declineReason']>;
 
+/** The job-status door takes every decline reason except chose_alternative (D13). */
+function isJobDeclineReason(r: DeclineReason): r is DeclineReason & JobDeclineReason {
+  return r !== 'chose_alternative';
+}
+
 /**
  * Closing a job as "ไม่อนุมัติ" is not a refusal of an alternative (D13), so
  * chose_alternative is not offered — the job-status door does not accept it.
  */
-const CLOSE_REASONS = DECLINE_REASON_OPTIONS.filter((r) => r !== 'chose_alternative');
+const CLOSE_REASONS = DECLINE_REASON_OPTIONS.filter(isJobDeclineReason);
 
 interface RejectJobActionProps {
   job: JobDetail;
@@ -22,6 +27,8 @@ interface RejectJobActionProps {
   busyKey: string | null;
   guard: QuotationState['guard'];
   onRejected: (result: UpdateJobStatusResult) => void;
+  /** The screen was out of date (status_changed, or the server wanted a reason we did not ask for): re-read job and quotation. */
+  onStale: () => void;
 }
 
 function failureText(f: QuoteFailure): string {
@@ -40,19 +47,23 @@ function failureText(f: QuoteFailure): string {
  * server then declines those lines with that reason and closes the quotation
  * (void_reason job_closed) in one transaction.
  */
-export function RejectJobAction({ job, quotation, busyKey, guard, onRejected }: RejectJobActionProps) {
+export function RejectJobAction({ job, quotation, busyKey, guard, onRejected, onStale }: RejectJobActionProps) {
   const [open, setOpen] = useState(false);
   const [failure, setFailure] = useState<QuoteFailure | null>(null);
   const busy = busyKey !== null;
   const pending = quotation?.status === 'issued' ? quotation.next.undecidedLineIds.length : 0;
-  const needsReason = pending > 0;
+  // The quotation on screen can be stale (null, or a draft someone has since
+  // issued elsewhere). The server is the judge: once it has asked for a reason,
+  // the form stays (review M2).
+  const [serverWantsReason, setServerWantsReason] = useState(false);
+  const needsReason = pending > 0 || serverWantsReason;
 
   async function reject(reason?: DeclineReason, note?: string): Promise<boolean> {
     setFailure(null);
     const body: UpdateJobStatusInput = {
       to: 'rejected',
       fromStatus: job.status,
-      ...(reason ? { declineReason: reason as JobDeclineReason } : {}),
+      ...(reason && isJobDeclineReason(reason) ? { declineReason: reason } : {}),
       ...(note ? { declineNote: note } : {}),
     };
     const result = await guard('reject', () =>
@@ -62,7 +73,14 @@ export function RejectJobAction({ job, quotation, busyKey, guard, onRejected }: 
       onRejected(result.value);
       return true;
     }
-    if (!result.failure.cancelled) setFailure(result.failure);
+    if (result.failure.cancelled) return false;
+    setFailure(result.failure);
+    if (result.failure.fields.declineReason) {
+      setServerWantsReason(true);
+      onStale();
+    } else if (result.failure.code === 'status_changed') {
+      onStale();
+    }
     return false;
   }
 
@@ -74,7 +92,7 @@ export function RejectJobAction({ job, quotation, busyKey, guard, onRejected }: 
 
   return (
     <>
-      <button type="button" className="btn danger" disabled={busy} onClick={() => { setFailure(null); setOpen(true); }}>
+      <button type="button" className="btn danger" disabled={busy} onClick={() => { setFailure(null); setServerWantsReason(false); setOpen(true); }}>
         ไม่อนุมัติ (ปิดงาน)…
       </button>
       {open && (
@@ -84,7 +102,9 @@ export function RejectJobAction({ job, quotation, busyKey, guard, onRejected }: 
               <strong>{job.jobNumber}</strong> {job.plate ?? ''} จะถูกปิดเป็น “ไม่อนุมัติ” และออกจากกระดาน ย้อนกลับไม่ได้
             </p>
             {needsReason && (
-              <p>ลูกค้ายังไม่ได้ตอบอีก <strong>{pending}</strong> รายการ — เลือกเหตุผลที่ลูกค้าไม่เอา ระบบจะบันทึกเหตุผลนี้ให้ทุกรายการที่ค้างอยู่</p>
+              pending > 0
+                ? <p>ลูกค้ายังไม่ได้ตอบอีก <strong>{pending}</strong> รายการ — เลือกเหตุผลที่ลูกค้าไม่เอา ระบบจะบันทึกเหตุผลนี้ให้ทุกรายการที่ค้างอยู่</p>
+                : <p>มีรายการที่ลูกค้ายังไม่ได้ตัดสิน กรุณาเลือกเหตุผล</p>
             )}
             {dialogText && <p className="ci-form-error" role="alert">{dialogText}</p>}
             {needsReason ? (

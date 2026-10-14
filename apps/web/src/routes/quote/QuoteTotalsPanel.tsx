@@ -12,7 +12,8 @@ interface QuoteTotalsPanelProps {
   saving?: boolean;
   /** Field error for the discount from the last save. */
   discountError?: string | null;
-  onSaveDiscount?: (amount: string) => void;
+  /** Resolves true when saved; a failed save keeps what was typed. */
+  onSaveDiscount?: (amount: string) => Promise<boolean>;
 }
 
 /**
@@ -29,8 +30,8 @@ export function QuoteTotalsPanel({ totals, discountEditable, busy, saving, disco
 
   function save() {
     if (draft === null || invalid) return;
-    onSaveDiscount?.(draft.trim());
-    setDraft(null);
+    const typed = draft.trim();
+    void onSaveDiscount?.(typed).then((ok) => { if (ok) setDraft(null); });
   }
 
   return (

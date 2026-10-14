@@ -57,6 +57,8 @@
   --sidebar-active: #26292E;
   --radius-lg: 16px;
   --radius-btn: 12px;
+  /* Text inputs and small form boxes — the 8px every .field input already uses. */
+  --radius-input: 8px;
 
   /* Elevation — flat bordered boxes read as dated; a soft two-layer shadow
      gives every card real depth without looking glossy. */
@@ -1817,7 +1819,7 @@ button:focus-visible, a:focus-visible {
 .qt-qty { display: inline-flex; align-items: center; gap: 6px; }
 .qt-qty .mono { min-width: 2.5em; text-align: center; }
 .qt-price { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); }
-.qt-price input { width: 110px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; font: inherit; text-align: right; }
+.qt-price input { width: 110px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-input); font: inherit; text-align: right; }
 .qt-price.has-error input { border: 2px solid var(--red); }
 .qt-decline-form { flex: 1 1 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 10px; padding: 10px 12px; background: var(--paper); border-radius: var(--radius); }
 .qt-decline-form .field { margin-bottom: 8px; }
@@ -1832,7 +1834,7 @@ button:focus-visible, a:focus-visible {
 .qt-discount { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
 .qt-discount .field { flex: 1 1 160px; margin-bottom: 0; }
 
-.qt-textarea { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font: inherit; font-size: 15px; color: var(--text); resize: vertical; }
+.qt-textarea { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-input); font: inherit; font-size: 15px; color: var(--text); resize: vertical; }
 .modal-card:has(.qt-confirm) { max-width: 560px; }
 .qt-confirm-set { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin: 0; }
 .qt-confirm-set legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 4px; font-weight: 700; font-size: 14px; }
@@ -1857,7 +1859,7 @@ button:focus-visible, a:focus-visible {
 .qt-free h4 { margin: 0 0 10px; font-size: 14px; }
 .qt-check { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 14px; font-weight: 600; }
 .qt-model-pick { position: relative; margin-top: 8px; }
-.qt-model-pick input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+.qt-model-pick input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-input); font: inherit; }
 .qt-model-list { position: static; margin-top: 4px; }
 .qt-model-list .prov-option { width: 100%; border: none; background: none; font: inherit; text-align: left; }
 
