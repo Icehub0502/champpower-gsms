@@ -80,6 +80,9 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
   const quotation = load.phase === 'ready' ? load.quotation : null;
   // Set once this page closed the job as ไม่อนุมัติ: the job read is not live, so the header says so from the server's answer.
   const [closedLabel, setClosedLabel] = useState<string | null>(null);
+  // Lives here, not in the reject dialog: the reload after a 409 status_changed can take
+  // "rejected" out of allowedMoves and unmount the dialog that would have said it.
+  const [jobMovedElsewhere, setJobMovedElsewhere] = useState(false);
   const mayReject = canWrite && closedLabel === null && (job.data?.allowedMoves.includes('rejected') ?? false);
 
   async function create() {
@@ -102,6 +105,12 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
       <JobHeader job={job.data} quotation={quotation} statusLabel={closedLabel} />
 
       {closedLabel && <p className="ci-match" role="status">ปิดงานเป็น “ไม่อนุมัติ” แล้ว — งานออกจากกระดานงานวันนี้</p>}
+      {job.error && job.data && (
+        <p className="ci-nomatch" role="status">โหลดข้อมูลงานล่าสุดไม่สำเร็จ แสดงข้อมูลเดิม</p>
+      )}
+      {jobMovedElsewhere && (
+        <p className="ci-form-error" role="alert">มีคนเปลี่ยนสถานะงานนี้ไปแล้ว — โหลดข้อมูลงานใหม่ให้แล้ว กรุณาตรวจอีกครั้งก่อนทำต่อ</p>
+      )}
       {mayReject && job.data && (
         <div className="qt-reject">
           <RejectJobAction
@@ -111,6 +120,7 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
             guard={guard}
             onRejected={(r) => { setClosedLabel(statusOf(r.status).label); void reload(); job.reload?.(); }}
             onStale={() => { void reload(); job.reload?.(); }}
+            onStatusChanged={() => setJobMovedElsewhere(true)}
           />
         </div>
       )}

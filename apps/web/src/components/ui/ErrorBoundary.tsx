@@ -12,10 +12,13 @@ interface ErrorBoundaryState {
 
 /**
  * A render error below this point shows a Thai panel instead of a white page.
- * A class component because React still has no hook for this. It has no
- * componentDidCatch and logs nothing
- * on purpose: an error thrown on these screens can carry customer data
- * (CLAUDE.md §12 — never log customer data), and the stack is not for staff.
+ * A class component because React still has no hook for this. It adds no
+ * componentDidCatch and no logging of its own. Note that React 19's default
+ * `onCaughtError` (createRoot) still reports the caught error with
+ * console.error — this boundary does not suppress that, and no root handler is
+ * added here; whether to replace it is a separate decision (an error on these
+ * screens can carry customer data, CLAUDE.md §12). The stack is never shown to
+ * staff.
  */
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { failed: false };

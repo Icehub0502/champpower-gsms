@@ -29,11 +29,12 @@ interface RejectJobActionProps {
   onRejected: (result: UpdateJobStatusResult) => void;
   /** The screen was out of date (status_changed, or the server wanted a reason we did not ask for): re-read job and quotation. */
   onStale: () => void;
+  /** Someone moved the job meanwhile (409 status_changed). The page shows the notice. */
+  onStatusChanged: () => void;
 }
 
 function failureText(f: QuoteFailure): string {
   // The job-status door's own refusals are not in QuotationBody.
-  if (f.body === null && f.code === 'status_changed') return 'มีคนเปลี่ยนสถานะงานนี้ไปแล้ว — โหลดหน้าใหม่แล้วตรวจอีกครั้ง';
   if (f.body === null && f.code === 'illegal_status_move') return 'งานนี้อยู่ในสถานะที่ปิดเป็น “ไม่อนุมัติ” ไม่ได้แล้ว';
   return f.text;
 }
@@ -47,7 +48,7 @@ function failureText(f: QuoteFailure): string {
  * server then declines those lines with that reason and closes the quotation
  * (void_reason job_closed) in one transaction.
  */
-export function RejectJobAction({ job, quotation, busyKey, guard, onRejected, onStale }: RejectJobActionProps) {
+export function RejectJobAction({ job, quotation, busyKey, guard, onRejected, onStale, onStatusChanged }: RejectJobActionProps) {
   const [open, setOpen] = useState(false);
   const [failure, setFailure] = useState<QuoteFailure | null>(null);
   const busy = busyKey !== null;
@@ -79,6 +80,9 @@ export function RejectJobAction({ job, quotation, busyKey, guard, onRejected, on
       setServerWantsReason(true);
       onStale();
     } else if (result.failure.code === 'status_changed') {
+      // Said by the PAGE (onStatusChanged), not in this dialog: the reload that
+      // follows may take "rejected" out of allowedMoves and unmount the dialog.
+      onStatusChanged();
       onStale();
     }
     return false;
@@ -88,7 +92,7 @@ export function RejectJobAction({ job, quotation, busyKey, guard, onRejected, on
   const fields: Record<string, string> = {};
   if (failure?.fields.declineReason) fields.reason = failure.fields.declineReason;
   if (failure?.fields.declineNote) fields.note = failure.fields.declineNote;
-  const dialogText = failure && Object.keys(fields).length === 0 ? failureText(failure) : null;
+  const dialogText = failure && failure.code !== 'status_changed' && Object.keys(fields).length === 0 ? failureText(failure) : null;
 
   return (
     <>

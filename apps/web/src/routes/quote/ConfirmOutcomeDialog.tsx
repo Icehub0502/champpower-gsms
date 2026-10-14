@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  quoteTotals, setsNeedingAmount, toSatang, type QuoteLineDecisionState, type QuoteLineMoney,
+  MoneyError, quoteTotals, setsNeedingAmount, toSatang, type QuoteLineDecisionState, type QuoteLineMoney,
 } from '@champpower/domain';
 import { ConfirmInput, type Quotation, type QuotationLine } from '@gsms/contracts/index.js';
 import { Modal } from '../../components/ui/Modal';
@@ -101,7 +101,9 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
         const typed = sets.some((s) => s.id === l.id) ? (amounts[l.id] ?? '').trim() : null;
         return { ...moneyStateOf(l), approvedAmount: typed ?? l.approvedAmount };
       }), discount.trim()).approvedTotal;
-    } catch {
+    } catch (err) {
+      // Only the overflow is expected here; anything else is a bug and goes to the ErrorBoundary.
+      if (!(err instanceof MoneyError)) throw err;
       previewOverflow = true;
     }
   }

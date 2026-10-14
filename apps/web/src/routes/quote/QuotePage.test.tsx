@@ -49,7 +49,7 @@ const JOB: JobDetail = {
 };
 
 let current: Quotation | ApiError;
-let currentJob: JobDetail;
+let currentJob: JobDetail | ApiError;
 let search: CatalogSearchResult = { items: [], vehicleModelLinked: true };
 
 beforeEach(() => {
@@ -65,6 +65,7 @@ beforeEach(() => {
     }
     if (path.startsWith('/api/catalog/search')) return search;
     if (path.startsWith('/api/vehicle-models')) return { items: [{ id: MODEL_ID, brand: 'Chevrolet', name: 'Colorado', yearRange: null }], total: 1 };
+    if (currentJob instanceof ApiError) throw currentJob;
     return currentJob;
   });
 });
@@ -432,5 +433,40 @@ describe('line price save (draft)', () => {
     act(() => { box().dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
     await flush();
     expect(box().value).toBe('1200.00');
+  });
+});
+
+describe('a job reload that fails keeps what was on screen (round 4, MEDIUM)', () => {
+  it('the reject dialog stays open with its chosen reason, and the page says the job data is not the latest', async () => {
+    const a = line({ name: 'โช้คหลัง' });
+    current = quotation({ lines: [a], next: next({ canDecide: true, undecidedLineIds: [a.id] }) });
+    await render('advisor');
+    click(button('ไม่อนุมัติ (ปิดงาน)…'));
+    type(field('ทำไมลูกค้าไม่เอา'), 'too_expensive');
+
+    // The server says the job moved; the page re-reads the job — and that read fails.
+    currentJob = new ApiError(503, 'unavailable');
+    apiPatch.mockRejectedValueOnce(new ApiError(409, 'status_changed', { error: 'status_changed', message: 'x', currentStatus: 'approved' }));
+    click(button('ยืนยันไม่อนุมัติ'));
+    await flush();
+
+    expect(document.querySelector('.qt-header')!.textContent).toContain('SV-00042'); // header not blanked
+    expect(document.body.textContent).toContain('โหลดข้อมูลงานล่าสุดไม่สำเร็จ แสดงข้อมูลเดิม');
+    expect((field('ทำไมลูกค้าไม่เอา') as HTMLSelectElement).value).toBe('too_expensive');
+  });
+});
+
+describe('status_changed on reject — the notice outlives the dialog (round 4, LOW)', () => {
+  it('when the reloaded job no longer allows rejecting, the dialog goes but the page still says why', async () => {
+    current = quotation({ status: 'signed', lines: [line({ name: 'x', approvalStatus: 'declined', declineReason: 'next_time' })], next: next() });
+    await render('advisor');
+    click(button('ไม่อนุมัติ (ปิดงาน)…'));
+    currentJob = { ...JOB, status: 'approved', statusLabel: 'อนุมัติ', allowedMoves: ['repairing'] };
+    apiPatch.mockRejectedValueOnce(new ApiError(409, 'status_changed', { error: 'status_changed', message: 'x', currentStatus: 'approved' }));
+    click(button('ยืนยันไม่อนุมัติ'));
+    await flush();
+    expect(buttons('ไม่อนุมัติ (ปิดงาน)…')).toHaveLength(0);
+    expect(document.querySelector('.modal-card')).toBeNull();
+    expect(document.body.textContent).toContain('มีคนเปลี่ยนสถานะงานนี้ไปแล้ว');
   });
 });
