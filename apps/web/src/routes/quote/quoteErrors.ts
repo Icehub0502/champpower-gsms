@@ -63,6 +63,7 @@ const STALE_CODES = new Set([
   'quotation_not_found', 'quotation_line_not_found', 'quotation_exists', 'quotation_not_draft',
   'quotation_not_issued', 'quotation_frozen', 'quotation_confirmed', 'decisions_incomplete',
   'approved_amount_not_allowed', 'job_not_open', 'document_frozen', 'document_line_frozen',
+  'document_job_immutable',
 ]);
 
 function textOf(body: QuotationBodyT): string {
@@ -103,6 +104,7 @@ function textOf(body: QuotationBodyT): string {
     case 'quotation_not_confirmed': return 'ใบเสนอราคายังไม่ได้ยืนยันผลลูกค้า — โหลดข้อมูลใหม่ให้แล้ว';
     // GS002 from the freeze trigger (lib/pgError.ts), now in QuotationBody.
     case 'document_frozen': return 'ใบเสนอราคานี้ถูกล็อกแล้ว แก้ไม่ได้ — โหลดข้อมูลใหม่ให้แล้ว';
+    case 'document_job_immutable': return 'ใบนี้ผูกกับงานแล้ว เปลี่ยนงานไม่ได้ — โหลดข้อมูลใหม่ให้แล้ว ถ้าต้องใช้กับงานอื่นให้สร้างใบใหม่';
     case 'document_line_frozen': return 'รายการนี้ถูกล็อกแล้ว แก้ไม่ได้ — โหลดข้อมูลใหม่ให้แล้ว';
   }
 }

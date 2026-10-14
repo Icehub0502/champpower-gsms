@@ -53,6 +53,7 @@ const BODIES: QuotationBody[] = [
   { error: 'quotation_not_confirmed', message: 'x' },
   { error: 'document_frozen', message: 'x' },
   { error: 'document_line_frozen', message: 'x' },
+  { error: 'document_job_immutable', message: 'x' },
 ];
 
 describe('describeQuoteError', () => {
@@ -88,6 +89,12 @@ describe('describeQuoteError', () => {
     expect(describeQuoteError(new ApiError(409, 'document_line_frozen', { error: 'document_line_frozen', message: 'x' })).stale).toBe(true);
     // Parsed through the contract now: a frozen body with a stray field is an unknown error, not trusted by its code.
     expect(describeQuoteError(new ApiError(409, 'document_frozen', { error: 'document_frozen', message: 'x', table: 'documents' })).text).toBe(GENERIC_QUOTE_FAILURE);
+  });
+
+  it('document_job_immutable is stale (reload) and carries its own words', () => {
+    const f = describeQuoteError(new ApiError(409, 'document_job_immutable', { error: 'document_job_immutable', message: 'x' }));
+    expect(f.stale).toBe(true);
+    expect(f.text).toContain('เปลี่ยนงานไม่ได้');
   });
 
   it('a body that does not parse is an unknown error — nothing from it is shown', () => {

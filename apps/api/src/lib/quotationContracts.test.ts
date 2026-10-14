@@ -149,7 +149,10 @@ describe('error codes are strict schemas', () => {
 })
 
 describe('QuotationBody carries the freeze refusals', () => {
-  it.each(['document_frozen', 'document_line_frozen'])('parses %s', (code) => {
+  it('document_job_immutable is strict: a stray field fails', () => {
+    expect(QuotationBody.safeParse({ error: 'document_job_immutable', message: 'm', jobId: 'x' }).success).toBe(false)
+  })
+  it.each(['document_frozen', 'document_line_frozen', 'document_job_immutable'])('parses %s', (code) => {
     const r = QuotationBody.safeParse({ error: code, message: 'm' })
     expect(r.success).toBe(true)
   })

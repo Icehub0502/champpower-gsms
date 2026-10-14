@@ -4,7 +4,10 @@
  * with straight SQL through withShop (no API route exists for these yet; the
  * route-level tests belong with the endpoints).
  *
- * TIER 2. Needs PostgreSQL with migrations 0001-0022 applied and the
+ * Migration 0023 (documents.job_id immutable once attached) is proved in its own
+ * describe block at the bottom.
+ *
+ * TIER 2. Needs PostgreSQL with migrations 0001-0023 applied and the
  * connection made as gsms_app. Skipped (never silently passed) otherwise.
  *
  * Every refusal asserted here must carry SQLSTATE GS002 and the right TABLE:
@@ -20,7 +23,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { sql } from 'kysely'
 import pg from 'pg'
 import { withShop } from '@gsms/db/client.js'
-import { DocumentFrozenError, DocumentLineFrozenError } from '@gsms/contracts/index.js'
+import { DocumentFrozenError, DocumentJobImmutableError, DocumentLineFrozenError } from '@gsms/contracts/index.js'
 import { db } from './db.js'
 import { mapPgError } from './pgError.js'
 import { adminDatabaseUrl, hasDatabase, tier2 } from '../test/env.js'
@@ -95,13 +98,16 @@ describe.skipIf(!hasDatabase)(tier2('document + line freeze (migration 0022)'), 
   }
 
   /** Run a statement in its own transaction and demand GS002 on `table`. */
-  async function refused(table: 'documents' | 'document_lines', fn: (trx: Tx) => Promise<unknown>) {
+  async function refused(
+    table: 'documents' | 'document_lines', fn: (trx: Tx) => Promise<unknown>, hint?: string,
+  ) {
     let caught: unknown
     try { await inShop(fn) } catch (e) { caught = e }
     expect(caught, 'the statement should have been refused').toBeTruthy()
-    const e = caught as { code?: string; table?: string }
+    const e = caught as { code?: string; table?: string; hint?: string }
     expect(e.code, `expected SQLSTATE GS002, got ${e.code}`).toBe('GS002')
     expect(e.table).toBe(table)
+    if (hint !== undefined) expect(e.hint).toBe(hint)
     return caught
   }
 
@@ -444,6 +450,168 @@ describe.skipIf(!hasDatabase)(tier2('document + line freeze (migration 0022)'), 
       const mapped = mapPgError(err)
       expect(mapped?.status).toBe(409)
       expect(DocumentFrozenError.parse(mapped?.body).error).toBe('document_frozen')
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // Migration 0023: documents.job_id is NULL -> value once, on a draft, then fixed.
+  // ---------------------------------------------------------------------------
+  describe('job_id immutable (migration 0023)', () => {
+    const HINT = 'document_job_id_immutable'
+
+    async function newJob(): Promise<string> {
+      const n = ++seq
+      const v = await inShop((trx) => sql<{ id: string }>`
+        insert into vehicles (shop_id, customer_id, plate, brand, model)
+        values (${fx.shopA}, ${customerId}, ${'JOB' + n + '-' + Date.now()}, 'Toyota', 'Vigo') returning id`.execute(trx))
+      const j = await inShop((trx) => sql<{ id: string }>`
+        insert into jobs (shop_id, job_number, vehicle_id, customer_id)
+        values (${fx.shopA}, ${'T0023-' + n + '-' + Date.now()}, ${v.rows[0]!.id}, ${customerId}) returning id`.execute(trx))
+      return j.rows[0]!.id
+    }
+
+    async function draftWith(jobId: string | null): Promise<string> {
+      const r = await inShop((trx) => sql<{ id: string }>`
+        insert into documents (shop_id, customer_id, type, series, job_id)
+        values (${fx.shopA}, ${customerId}, 'quotation', 'IV', ${jobId}) returning id`.execute(trx))
+      return r.rows[0]!.id
+    }
+
+    /** The whole row as JSON, updated_at included, so "unchanged" means unchanged. */
+    const snapshot = async (id: string) => (await inShop((trx) => sql<{ r: Record<string, unknown> }>`
+      select to_jsonb(d) as r from documents d where id = ${id}`.execute(trx))).rows[0]!.r
+
+    const setJob = (id: string, jobId: string | null) => (trx: Tx) =>
+      sql`update documents set job_id = ${jobId} where id = ${id}`.execute(trx)
+
+    /** Refuse with the job hint and prove the row did not move. */
+    async function refusedJob(id: string, jobId: string | null) {
+      const before = await snapshot(id)
+      await refused('documents', setJob(id, jobId), HINT)
+      expect(await snapshot(id)).toEqual(before)
+    }
+
+    it('1. a draft with job A cannot be re-pointed at job B', async () => {
+      const a = await newJob(); const b = await newJob()
+      const doc = await draftWith(a)
+      await refusedJob(doc, b)
+    })
+
+    it('2. a draft with job A cannot be detached (A -> NULL)', async () => {
+      const doc = await draftWith(await newJob())
+      await refusedJob(doc, null)
+    })
+
+    it('3. NULL -> job attaches once; afterwards A->B, A->NULL and re-attach are refused, A->A is allowed', async () => {
+      const a = await newJob(); const b = await newJob()
+      const doc = await draftWith(null)
+      await inShop(setJob(doc, a))
+      expect((await snapshot(doc)).job_id).toBe(a)
+      await refusedJob(doc, b)
+      await refusedJob(doc, null)
+      await refusedJob(doc, b)                 // a second "first attach" is still just A -> B
+      await inShop(setJob(doc, a))             // A -> A: not a change, the trigger does not fire
+      expect((await snapshot(doc)).job_id).toBe(a)
+    })
+
+    it('4. issued, signed, superseded and void rows refuse a job_id change in the 0022 trigger (pinned hints)', async () => {
+      // One job per document: uq_live_quotation_per_job allows a single live quotation per job.
+      const b = await newJob()
+
+      const issued = await draftWith(await newJob()); await issue(issued)
+      await refused('documents', setJob(issued, b), 'document_frozen_columns')
+
+      const signed = await draftWith(await newJob()); await issue(signed); await confirm(signed)
+      await refused('documents', setJob(signed, b), 'document_signed')
+
+      const superseded = await draftWith(await newJob()); await issue(superseded); await confirm(superseded)
+      await inShop((trx) => sql`update documents set status = 'superseded' where id = ${superseded}`.execute(trx))
+      await refused('documents', setJob(superseded, b), 'document_closed')
+
+      const voided = await draftWith(await newJob()); await issue(voided)
+      await inShop((trx) => sql`
+        update documents set status = 'void', void_reason = 'wrong customer', voided_at = now(),
+               voided_by = ${fx.userId} where id = ${voided}`.execute(trx))
+      await refused('documents', setJob(voided, b), 'document_closed')
+    })
+
+    it('5. an issued document with NULL job_id cannot be attached afterwards', async () => {
+      const doc = await draftWith(null)
+      await issue(doc)                          // a jobless draft can be issued: the schema allows it
+      const before = await snapshot(doc)
+      await refused('documents', setJob(doc, await newJob()), 'document_frozen_columns')
+      expect(await snapshot(doc)).toEqual(before)
+    })
+
+    it('6. PINNED: one UPDATE that attaches AND issues a draft is allowed (draft rows are free in 0022; NULL -> value on a draft in 0023)', async () => {
+      const a = await newJob()
+      const doc = await draftWith(null)
+      await inShop((trx) => sql`
+        update documents set job_id = ${a}, status = 'issued', number = ${'T-ATT-' + (++seq)},
+               numbered_on = current_date, issued_at = now() where id = ${doc}`.execute(trx))
+      const s = await snapshot(doc)
+      expect(s.status).toBe('issued')
+      expect(s.job_id).toBe(a)
+      // and from then on it is fixed
+      await refused('documents', setJob(doc, await newJob()), 'document_frozen_columns')
+    })
+
+    it('7. ordinary draft updates and a successful attach still advance updated_at', async () => {
+      const doc = await draftWith(null)
+      const t0 = (await snapshot(doc)).updated_at
+      await inShop((trx) => sql`update documents set discount = 5 where id = ${doc}`.execute(trx))
+      const t1 = (await snapshot(doc)).updated_at
+      expect(t1).not.toBe(t0)
+      await inShop(setJob(doc, await newJob()))
+      const t2 = (await snapshot(doc)).updated_at
+      expect(t2).not.toBe(t1)
+    })
+
+    it('8. two transactions attach different jobs to one NULL draft: the loser is refused after re-reading', async () => {
+      const a = await newJob(); const b = await newJob()
+      const doc = await draftWith(null)
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      let attached!: () => void
+      const attachedStarted = new Promise<void>((r) => { attached = r })
+
+      const winner = inShop(async (trx) => {
+        await setJob(doc, a)(trx)
+        attached()
+        await gate                              // row lock held until released
+      })
+      await attachedStarted
+
+      const loser = inShop(setJob(doc, b)).then(() => null, (e: unknown) => e)
+      await new Promise((r) => setTimeout(r, 300))   // let the loser reach the row lock
+      release()
+      await winner
+
+      const err = (await loser) as { code?: string; table?: string; hint?: string } | null
+      expect(err?.code).toBe('GS002')
+      expect(err?.table).toBe('documents')
+      expect(err?.hint).toBe(HINT)
+      expect((await snapshot(doc)).job_id).toBe(a)
+    })
+
+    it('9. shop B cannot touch shop A\'s draft (RLS: zero rows, nothing changes)', async () => {
+      const a = await newJob()
+      const doc = await draftWith(null)
+      const before = await snapshot(doc)
+      const res = await withShop(db, fx.shopB, (trx) => sql`
+        update documents set job_id = ${a} where id = ${doc}`.execute(trx))
+      expect(Number(res.numAffectedRows ?? 0)).toBe(0)
+      expect(await snapshot(doc)).toEqual(before)
+    })
+
+    it.todo('cross-shop attach refused by composite FK (0024)')
+
+    it('the refusal maps to 409 document_job_immutable, matching the strict contract', async () => {
+      const doc = await draftWith(await newJob())
+      const err = await refused('documents', setJob(doc, await newJob()), HINT)
+      const mapped = mapPgError(err)
+      expect(mapped?.status).toBe(409)
+      expect(DocumentJobImmutableError.parse(mapped?.body).error).toBe('document_job_immutable')
     })
   })
 })

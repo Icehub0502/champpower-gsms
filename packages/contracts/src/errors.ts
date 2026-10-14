@@ -196,6 +196,12 @@ export type JobNumberSeriesMissingError = z.infer<typeof JobNumberSeriesMissingE
 export const DocumentFrozenError = payloadless('document_frozen');
 export type DocumentFrozenError = z.infer<typeof DocumentFrozenError>;
 
+// 409 — SQLSTATE GS002, table documents, HINT document_job_immutable (0023): a
+// document's job_id was asked to change after it was attached. The fix is a new
+// document, never a retry.
+export const DocumentJobImmutableError = payloadless('document_job_immutable');
+export type DocumentJobImmutableError = z.infer<typeof DocumentJobImmutableError>;
+
 // 409 — same refusal for a LINE of a numbered document (SQLSTATE GS002, table
 // document_lines): the line's content is locked, or its document no longer
 // accepts line changes at all.
@@ -479,6 +485,7 @@ export const QuotationBody = z.union([
   QuotationMissingError,
   QuotationNotConfirmedError,
   DocumentFrozenError,
+  DocumentJobImmutableError,
   DocumentLineFrozenError,
 ]);
 export type QuotationBody = z.infer<typeof QuotationBody>;
