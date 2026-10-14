@@ -875,7 +875,14 @@ export async function auditClosedByJob(
 
 /** approved -> quoted is refused while the quotation is confirmed (owner decision 8) — checked by the job-status route. */
 export async function jobBackToQuotedBlocked(trx: ScopedTx, jobId: string): Promise<boolean> {
-  const doc = await quotationRepo.findLiveQuotation(trx, jobId)
+  // The unlocked read only finds WHICH document (CLAUDE.md §4.x). The job is already
+  // ours, so locking the document here keeps the order jobs -> documents; the verdict
+  // is then read from the locked row. Void takes the document lock without the job
+  // lock, so a status read taken before this lock can be a signed quotation that was
+  // voided a moment ago.
+  const live = await quotationRepo.findLiveQuotation(trx, jobId)
+  if (!live) return false
+  const doc = await quotationRepo.lockDocument(trx, live.id)
   return blocksJobBackToQuoted((doc?.status as 'signed' | undefined) ?? null)
 }
 
