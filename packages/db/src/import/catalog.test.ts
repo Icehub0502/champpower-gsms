@@ -4,7 +4,8 @@ import {
   buildPlan, convertPrice, convertWarranty, countByAction, warrantyDays,
   type ExistingState, type SourceTables,
 } from './catalogPlan.js'
-import { assertLocalDatabase, renderReport } from './catalog.js'
+import { resolve } from 'node:path'
+import { assertAppRole, assertLocalDatabase, renderReport, resolveReportDir } from './catalog.js'
 
 // Synthetic data only: invented names, no real rows.
 const DUMP = String.raw`-- header
@@ -243,6 +244,45 @@ describe('safety guard', () => {
   it('only accepts a local database', () => {
     expect(() => assertLocalDatabase('postgres://u:p@localhost:5432/gsms')).not.toThrow()
     expect(() => assertLocalDatabase('postgres://u:p@127.0.0.1/gsms')).not.toThrow()
+    expect(() => assertLocalDatabase('postgres://u:p@[::1]:5432/gsms')).not.toThrow()
     expect(() => assertLocalDatabase('postgres://u:p@db.example.com/gsms')).toThrow(/not local/)
+  })
+  it('rejects query-string host overrides that pg would honour', () => {
+    expect(() => assertLocalDatabase('postgres://u@localhost/db?host=evil.com')).toThrow()
+    expect(() => assertLocalDatabase('postgres://u@localhost/db?hostaddr=203.0.113.9')).toThrow()
+    expect(() => assertLocalDatabase('postgres://u@localhost/db?host=')).toThrow()
+  })
+  it('rejects any query parameter at all', () => {
+    expect(() => assertLocalDatabase('postgres://u@localhost/db?sslmode=disable')).toThrow(/query/)
+    expect(() => assertLocalDatabase('postgres://u@localhost/db?application_name=x')).toThrow(/query/)
+  })
+  it('rejects an empty host (unix socket or PGHOST fallback)', () => {
+    expect(() => assertLocalDatabase('postgres://u@/db')).toThrow()
+    expect(() => assertLocalDatabase('postgres:///db')).toThrow()
+  })
+  it('rejects garbage', () => {
+    expect(() => assertLocalDatabase('not a url')).toThrow()
+  })
+})
+
+describe('connected-role guard (L1)', () => {
+  it('accepts only gsms_app', () => {
+    expect(() => assertAppRole('gsms_app')).not.toThrow()
+    expect(() => assertAppRole('postgres')).toThrow(/gsms_app/)
+    expect(() => assertAppRole('')).toThrow()
+  })
+})
+
+describe('report directory guard (L2)', () => {
+  const root = resolve('/repo/_import')
+  it('allows _import and its subfolders', () => {
+    expect(resolveReportDir('/repo/_import', root)).toBe(root)
+    expect(resolveReportDir('/repo/_import/out', root)).toBe(resolve('/repo/_import/out'))
+  })
+  it('rejects anything outside _import, including traversal and prefix tricks', () => {
+    expect(() => resolveReportDir('/repo', root)).toThrow(/_import/)
+    expect(() => resolveReportDir('/repo/docs', root)).toThrow(/_import/)
+    expect(() => resolveReportDir('/repo/_import/../docs', root)).toThrow(/_import/)
+    expect(() => resolveReportDir('/repo/_import-evil', root)).toThrow(/_import/)
   })
 })

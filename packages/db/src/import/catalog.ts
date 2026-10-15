@@ -27,7 +27,8 @@
  *          --report-dir <dir, default: next to the dump>
  */
 import { mkdir, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
+import { parse as parseConnectionString } from 'pg-connection-string'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { sql } from 'kysely'
 import { createDb, withShop, type Db, type ScopedTx } from '../client.js'
@@ -43,11 +44,47 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 
 /** WO-004 section 2.1: this script must never be pointed at a remote database. */
 export function assertLocalDatabase(url: string): void {
-  let host: string
-  try { host = new URL(url).hostname } catch { throw new Error('DATABASE_URL is not a valid URL') }
+  // Query parameters can override the authority (?host=, ?hostaddr=), and the
+  // URL parser would not notice: pg would connect somewhere the guard never
+  // looked. A plain local URL needs none, so any query string is refused.
+  let search: string
+  try { search = new URL(url).search } catch { throw new Error('DATABASE_URL is not a valid URL') }
+  if (search !== '' || url.includes('?')) {
+    throw new Error('refusing to run: DATABASE_URL must not carry a query string (host/hostaddr overrides)')
+  }
+  // Check the host pg itself will use, parsed by the same library pg uses.
+  const host = parseConnectionString(url).host
+  if (!host) {
+    throw new Error('refusing to run: DATABASE_URL has no host (unix socket or PGHOST fallback is not allowed)')
+  }
   if (!LOCAL_HOSTS.has(host)) {
     throw new Error(`refusing to run: DATABASE_URL host "${host}" is not local (WO-004 allows a local database only)`)
   }
+}
+
+/**
+ * L1: the import must run as the application role so row-level security
+ * applies to it. A superuser or table owner would bypass RLS and make withShop
+ * decorative.
+ */
+export function assertAppRole(role: string): void {
+  if (role !== 'gsms_app') {
+    throw new Error(`refusing to run: connected as "${role}", expected gsms_app (RLS must apply to the import)`)
+  }
+}
+
+/**
+ * L2: reports may only be written inside a gitignored `_import/` directory, so
+ * a typo in --report-dir can never drop a file into tracked source. Resolution
+ * normalises `..`; the separator in the prefix test rejects `_import-evil`.
+ */
+export function resolveReportDir(dir: string, root: string): string {
+  const out = resolve(dir)
+  const base = resolve(root)
+  if (out !== base && !out.startsWith(base + sep)) {
+    throw new Error(`refusing to write reports to "${out}": it must be inside ${base} (gitignored _import/)`)
+  }
+  return out
 }
 
 export async function readSource(dumpPath: string): Promise<SourceTables> {
@@ -185,11 +222,21 @@ export async function main(): Promise<void> {
   if (!url) throw new Error('DATABASE_URL is not set (run through the npm script so .env is loaded)')
   assertLocalDatabase(url)
 
+  // Validated before anything is read or written. The dump's own folder is
+  // accepted when it is a gitignored `_import` directory (it is, in practice).
+  const checkoutImport = resolve(HERE, '..', '..', '..', '..', '_import')
+  const dumpDir = dirname(dump)
+  const reportRoot = basename(dumpDir) === '_import' ? dumpDir : checkoutImport
+  const reportDir = resolveReportDir(arg('--report-dir') ?? reportRoot, reportRoot)
+
   const src = await readSource(dump)
   console.log(`read dump: service_items=${src.service_items.length} service_item_components=${src.service_item_components.length} warranties=${src.warranties.length}`)
 
   const db: Db = createDb(url)
   try {
+    const who = await sql<{ current_user: string }>`select current_user`.execute(db)
+    assertAppRole(who.rows[0]?.current_user ?? '')
+
     const shop = await db.selectFrom('shops').select(['id', 'slug']).where('slug', '=', shopSlug).executeTakeFirst()
     if (!shop) throw new Error(`no shop with slug "${shopSlug}"`)
     console.log(`shop: ${shop.slug} ${shop.id}`)
@@ -201,7 +248,6 @@ export async function main(): Promise<void> {
       return plan
     })
 
-    const reportDir = resolve(arg('--report-dir') ?? dirname(dump))
     await mkdir(reportDir, { recursive: true })
     const reportPath = join(reportDir, `catalog-import-report${dryRun ? '-dryrun' : ''}.md`)
     await writeFile(reportPath, renderReport(result, { dryRun, shopSlug: shop.slug, shopId: shop.id, dump }), 'utf8')
