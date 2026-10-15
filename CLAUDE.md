@@ -592,7 +592,7 @@ owner_group  กลุ่มเจ้าของ        เช่น กลุ�
 | SQLSTATE | ความหมาย | ใช้ที่ |
 |---|---|---|
 | `GS001` | document series missing (ร้านยังไม่ได้ตั้งเลขที่เอกสารของ doc type นั้น) | `packages/db/migrations/0014_series_errcode.sql` |
-| `GS002` | document line immutable (บรรทัดของเอกสารที่ freeze แล้วถูกแก้/ลบ/เพิ่ม) | `packages/db/migrations/0022_quote_freeze.sql` |
+| `GS002` | document or document line immutable (เอกสารหรือบรรทัดของเอกสารที่ freeze แล้วถูกแก้/ลบ/เพิ่ม — แยกแต่ละกรณีด้วย `TABLE =` และ `HINT =` ใน `RAISE ... USING`) | `packages/db/migrations/0022_quote_freeze.sql` · `0023_documents_job_id_immutable.sql` |
 
 ---
 
