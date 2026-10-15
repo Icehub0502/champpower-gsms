@@ -25,6 +25,7 @@
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
+import { dbName, selectTestDb } from './src/test/testDbSelect.js'
 
 // vitest is started by `npm test`, which loads no .env, so DATABASE_URL was
 // empty here and GSMS_TEST_DB came out '' — every Tier 2 test skipped on a
@@ -34,7 +35,22 @@ import { defineConfig } from 'vitest/config'
 const envFile = fileURLToPath(new URL('../../.env', import.meta.url))
 if (existsSync(envFile)) process.loadEnvFile(envFile)
 
-const realDatabaseUrl = process.env.DATABASE_URL?.trim() ?? ''
+// DATABASE_URL (loaded above) is the DEV database. Tier 2 must never touch it:
+// the tests insert and delete rows, and the dev DB holds real data. The test
+// database comes only from TEST_DATABASE_URL / TEST_DATABASE_ADMIN_URL, read
+// from the environment or a gitignored .env.test (real env vars win).
+// See packages/db/README.md.
+const devDatabaseUrl = process.env.DATABASE_URL?.trim() ?? ''
+const testEnvFile = fileURLToPath(new URL('../../.env.test', import.meta.url))
+if (existsSync(testEnvFile)) process.loadEnvFile(testEnvFile)
+
+const testDb = selectTestDb({
+  testUrl: process.env.TEST_DATABASE_URL,
+  testAdminUrl: process.env.TEST_DATABASE_ADMIN_URL,
+  devUrl: devDatabaseUrl,
+})
+if (!testDb.url) console.warn(`\n[vitest] ${testDb.skipReason}\n`)
+const realDatabaseUrl = testDb.url
 
 // `@champpower/domain`'s package.json points `main` at `./dist/index.js`, and
 // nothing in `npm test -w apps/api` rebuilds that dist first. A reviewer
@@ -70,6 +86,10 @@ export default defineConfig({
       // loudly (ECONNREFUSED) rather than reaching a real database.
       DATABASE_URL: realDatabaseUrl || 'postgresql://gsms_app@127.0.0.1:1/gsms_no_database',
       GSMS_TEST_DB: realDatabaseUrl ? '1' : '',
+      // env.ts reads this name for the admin-gated suites. Always the TEST
+      // admin URL, never the dev one; empty skips those suites.
+      DATABASE_ADMIN_URL: testDb.adminUrl,
+      DEV_DATABASE_NAME: dbName(devDatabaseUrl),
       // Long enough to satisfy the length guard in lib/jwt.ts.
       JWT_SECRET: process.env.JWT_SECRET ?? 'test-secret-that-is-long-enough-for-the-guard-0123456789',
       CORS_ORIGINS: process.env.CORS_ORIGINS ?? 'http://localhost:5173',

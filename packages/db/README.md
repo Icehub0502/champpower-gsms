@@ -16,6 +16,38 @@ npm run migrate -w packages/db
 npm run seed -w packages/db
 ```
 
+## Test database (`gsms_test`)
+
+The API integration tests (Tier 2) insert and delete rows, so they must never
+run against the dev database `gsms`. They use a dedicated `gsms_test`.
+
+```bash
+# 1. copy and fill in (gitignored). gsms_app has the same password as in .env;
+#    TEST_DATABASE_ADMIN_URL is the postgres superuser, database gsms_test.
+cp .env.test.example .env.test
+
+# 2. create gsms_test if missing, make sure gsms_app exists, grant, migrate 0001..latest
+npm run test-db:setup -w packages/db
+
+# 3. run the tests
+npm test -w apps/api
+```
+
+- `test-db:setup` is idempotent. It reads `TEST_DATABASE_ADMIN_URL` only (never
+  `DATABASE_ADMIN_URL`), and refuses a database named `gsms`, `postgres`, or the
+  one in `DATABASE_URL`. After adding a migration, re-run it to bring
+  `gsms_test` up to date. `npm run migrate` still targets dev, unchanged.
+- Roles are cluster-wide, so `gsms_app` is shared with dev. If it is missing the
+  script creates it `NOLOGIN` and tells you to set the password yourself.
+  Grants and default privileges are per database, so the script applies them.
+- Tests connect as `gsms_app` (not the owner), so RLS applies. A guard test
+  asserts `current_database()` is not the dev DB and the role is a non-superuser.
+- No `TEST_DATABASE_URL` means Tier 2 is SKIPPED with a loud warning. It never
+  falls back to `DATABASE_URL`. If the test database name equals the one in
+  `DATABASE_URL`, vitest aborts at startup. `TEST_DATABASE_ADMIN_URL` is what
+  the admin-gated suites receive as `DATABASE_ADMIN_URL`; the dev admin URL is
+  never passed to tests.
+
 ## Rules
 
 - **Migrations are append-only.** The runner stores a checksum of every applied
