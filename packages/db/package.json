@@ -6,6 +6,7 @@
   "scripts": {
     "migrate": "tsx --env-file=../../.env src/migrate.ts",
     "migrate:dry": "tsx --env-file=../../.env src/migrate.ts --dry-run",
+    "test-db:setup": "tsx --env-file=../../.env --env-file-if-exists=../../.env.test src/test-db-setup.ts",
     "seed": "tsx --env-file=../../.env src/seed.ts",
     "codegen": "kysely-codegen --dialect postgres --out-file src/types.ts"
   },

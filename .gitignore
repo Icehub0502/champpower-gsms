@@ -4,6 +4,8 @@ build/
 apps/api/lib/
 .env
 .env.local
+# Test-database connection (apps/api Tier 2); may hold a password.
+.env.test
 *.log
 .firebase/
 firebase-debug.log
