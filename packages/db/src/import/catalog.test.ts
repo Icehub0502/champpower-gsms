@@ -5,7 +5,7 @@ import {
   type ExistingState, type SourceTables,
 } from './catalogPlan.js'
 import { resolve } from 'node:path'
-import { assertAppRole, assertLocalDatabase, renderReport, resolveReportDir } from './catalog.js'
+import { assertAppRole, assertLocalDatabase, renderReport, renderWarrantyReview, resolveReportDir } from './catalog.js'
 
 // Synthetic data only: invented names, no real rows.
 const DUMP = String.raw`-- header
@@ -231,6 +231,18 @@ describe('buildPlan', () => {
     expect(codes).toEqual(expect.arrayContaining(['component_set_not_imported', 'component_invalid', 'component_duplicate_slot']))
     // both members of the duplicated (set 3, sort 1) slot are held back
     expect(p.components.map((c) => c.legacyId)).toEqual(['10', '12'])
+  })
+
+  it('imports warranty #4 inactive and everything else active; review note counts items', () => {
+    const s = src()
+    s.warranties.push({ id: '4', warranty_name: 'heavy', warranty_year: '0', warranty_month: '6', warranty_km: '0' })
+    s.service_items.push(item('7', 'Misc', 'Heavy thing', { warranty_id: '4' }))
+    const p = buildPlan(s, EMPTY)
+    expect(p.terms.map((t) => [t.legacyId, t.isActive])).toEqual([['1', true], ['2', true], ['4', false]])
+    const md = renderWarrantyReview(p, s)
+    expect(md).toContain('"heavy"')
+    expect(md).toContain('catalog items that reference it: 1')
+    expect(md).toContain('NOT COUNTED')
   })
 
   it('renders a report without throwing', () => {

@@ -16,6 +16,14 @@ import type { DumpRow } from './mysqlDump.js'
 export const ITEM_SOURCE = 'service_item'
 export const WARRANTY_SOURCE = 'warranty'
 
+/**
+ * Prototype warranties imported INACTIVE so new quotes cannot pick them
+ * (DECISION-2026-10-15 section 3). #4 reads "6 months, heavy steering 3 months"
+ * but its numbers only say 6 months. Applied on insert only: once a person
+ * re-activates the term, a re-run must not switch it off again.
+ */
+export const INACTIVE_WARRANTY_LEGACY_IDS: readonly string[] = ['4']
+
 // -----------------------------------------------------------------------------
 // Converters
 // -----------------------------------------------------------------------------
@@ -99,6 +107,8 @@ export interface TermPlan {
   days: number | null
   maxKm: number | null
   existingId: string | null
+  /** Value for a NEW term only; an existing term's is_active is never touched. */
+  isActive: boolean
   /** The prototype row, for the report's "what was converted" section. */
   from: { year: number | null; month: number | null; km: number | null }
 }
@@ -230,7 +240,7 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
     }
     const hit = matches[0]
     const action: Action = !hit ? 'insert' : hit.days === conv.days && hit.max_km === conv.maxKm ? 'unchanged' : 'update'
-    const plan: TermPlan = { action, legacyId: id, name, days: conv.days, maxKm: conv.maxKm, existingId: hit?.id ?? null, from }
+    const plan: TermPlan = { action, legacyId: id, name, days: conv.days, maxKm: conv.maxKm, existingId: hit?.id ?? null, from, isActive: !INACTIVE_WARRANTY_LEGACY_IDS.includes(id) }
     terms.push(plan)
     termByLegacy.set(id, plan)
   }

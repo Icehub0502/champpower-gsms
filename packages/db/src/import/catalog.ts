@@ -125,7 +125,7 @@ async function applyPlan(trx: ScopedTx, shopId: string, plan: Plan): Promise<{ a
   for (const t of plan.terms) {
     if (t.action === 'insert') {
       const row = await trx.insertInto('warranty_terms')
-        .values({ shop_id: shopId, name: t.name, days: t.days, max_km: t.maxKm })
+        .values({ shop_id: shopId, name: t.name, days: t.days, max_km: t.maxKm, is_active: t.isActive })
         .returning('id').executeTakeFirstOrThrow()
       termId.set(t.legacyId, row.id)
     } else {
@@ -209,6 +209,21 @@ export function renderReport(plan: Plan, meta: { dryRun: boolean; shopSlug: stri
   return L.join('\n') + '\n'
 }
 
+/** Short readable note for the owner about each warranty imported inactive. */
+export function renderWarrantyReview(plan: Plan, src: SourceTables): string {
+  const L = ['# Warranties imported INACTIVE -- for review', '']
+  for (const t of plan.terms.filter((x) => !x.isActive)) {
+    const items = src.service_items.filter((r) => r.warranty_id === t.legacyId)
+    L.push(`## #${t.legacyId} "${t.name}"`, '')
+    L.push(`- days: ${t.days ?? 'none'}   max_km: ${t.maxKm ?? 'none'}   (from ${t.from.year ?? 0}y ${t.from.month ?? 0}m ${t.from.km ?? 0}km)`)
+    L.push(`- catalog items that reference it: ${items.length}${items.length ? ' -- ' + items.map((r) => r.product_name).join(', ') : ''}`)
+    L.push('- old documents that reference it: NOT COUNTED. Old quotation_items / receipt_items store only a text copy (warranty_name), not a warranty id, and those tables belong to customer quotations and receipts, which this phase does not read. Counting needs an explicit go-ahead to read them (names and counts only).')
+    L.push('- state: is_active = false, so new quotes cannot pick it. Re-activate it in the warranty settings if you want it back; a re-run of the import will not switch it off again.', '')
+  }
+  if (L.length === 2) L.push('No inactive warranties in this run.')
+  return L.join('\n') + '\n'
+}
+
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(name)
   return i >= 0 ? process.argv[i + 1] : undefined
@@ -251,6 +266,8 @@ export async function main(): Promise<void> {
     await mkdir(reportDir, { recursive: true })
     const reportPath = join(reportDir, `catalog-import-report${dryRun ? '-dryrun' : ''}.md`)
     await writeFile(reportPath, renderReport(result, { dryRun, shopSlug: shop.slug, shopId: shop.id, dump }), 'utf8')
+
+    await writeFile(join(reportDir, 'warranty-4-for-review.md'), renderWarrantyReview(result, src), 'utf8')
 
     const ct = (rows: { action: 'insert' | 'update' | 'unchanged' }[]) => JSON.stringify(countByAction(rows))
     console.log(`${dryRun ? 'DRY RUN -- nothing written' : 'WRITTEN'}`)
