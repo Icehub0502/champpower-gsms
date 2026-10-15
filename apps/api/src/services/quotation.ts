@@ -22,7 +22,7 @@
  * write after.
  */
 import {
-  MoneyError, applySetDecision, blocksJobBackToQuoted, canUndoConfirm, checkApprovedAmount,
+  MoneyError, agreedAmountsAfterUndo, discountAtIssue, totalsAfterUndoConfirm, applySetDecision, blocksJobBackToQuoted, canUndoConfirm, checkApprovedAmount,
   confirmReadiness, decisionCarries, formatSatang, jobOutcomeAtConfirm, jobStatusOnIssue,
   lineTotalSatang, offeredItemLineIds, planQuotationClose, quoteTotals, quoteTotalsDecimal,
   setsNeedingAmount, subStateAfterMove, toSatang, validateQuoteLine, warrantySnapshotOf,
@@ -503,10 +503,16 @@ export async function issue(trx: ScopedTx, shopId: string, documentId: string, a
   // again, and re-run the 3-tier rule on the rest (a draft is writable).
   const rows = await clearStaleAgreedAmounts(trx, lineRows)
   let totals: ReturnType<typeof quoteTotalsDecimal>
+  let offeredDiscount: string
   try {
     const refusal = agreedAmountRefusal(rows)
     if (refusal) return err(refusal)
-    totals = quoteTotalsDecimal(quoteTotals(rows.map(toDomainLine), doc.discount))
+    // The discount stored on the offer is what the entered one really takes off the
+    // offered subtotal (clamped), written to BOTH offered_discount and discount; the
+    // totals are computed from that stored figure so the paper foots (0024).
+    const domainRows = rows.map(toDomainLine)
+    offeredDiscount = discountAtIssue(domainRows, doc.discount)
+    totals = quoteTotalsDecimal(quoteTotals(domainRows, offeredDiscount))
   } catch (e) {
     if (e instanceof MoneyError) return err({ code: 'amount_out_of_range' })
     throw e
@@ -515,12 +521,12 @@ export async function issue(trx: ScopedTx, shopId: string, documentId: string, a
   const number = await quotationRepo.allocateQuotationNumber(trx, shopId)
   // approved_total is what the carried decisions approve (0 for a fresh rev 1).
   await quotationRepo.markIssued(trx, documentId, {
-    number, offeredTotal: totals.offeredTotal, approvedTotal: totals.approvedTotal, discount: totals.discount,
+    number, offeredTotal: totals.offeredTotal, approvedTotal: totals.approvedTotal, offeredDiscount,
     grandTotal: totals.offeredTotal, issuedBy: actorId,
   })
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_issued', entityType: 'documents', entityId: documentId,
-    after: { number, offeredTotal: totals.offeredTotal, approvedTotal: totals.approvedTotal },
+    after: { number, offeredTotal: totals.offeredTotal, approvedTotal: totals.approvedTotal, offeredDiscount },
   })
 
   // Owner decision (3 Oct 2026): issuing moves the job to 'quoted', in this SAME
@@ -645,6 +651,8 @@ export async function confirm(
       return err({ code: 'approved_amount_not_allowed', lineId: a.lineId })
     }
   }
+  // What each cut set held before confirm, kept in the audit so undo can put it back exactly.
+  const priorSetAmounts = (adjustments?.setLines ?? []).map((a) => ({ lineId: a.lineId, approvedAmount: byId.get(a.lineId)!.approved_amount }))
   for (const a of adjustments?.setLines ?? []) {
     await quotationRepo.setApprovedAmount(trx, a.lineId, a.approvedAmount)
   }
@@ -698,7 +706,11 @@ export async function confirm(
   auditAfter.jobAdvancedFrom = jobAdvancedFrom
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_confirmed', entityType: 'documents', entityId: documentId,
-    before: { discount: doc.discount }, after: auditAfter,
+    before: {
+      discount: doc.discount, offeredDiscount: doc.offered_discount,
+      ...(priorSetAmounts.length > 0 ? { setLines: priorSetAmounts } : {}),
+    },
+    after: auditAfter,
   })
 
   return ok({ document: (await quotationRepo.getDocument(trx, documentId))!, jobOutcome: outcome === 'approve_job' ? 'approve_job' : 'keep_quoted', jobStatusUnchanged })
@@ -724,12 +736,35 @@ export async function undoConfirm(trx: ScopedTx, shopId: string, documentId: str
     if (check.code === 'different_day') return err({ code: 'undo_confirm_different_day' })
     return err({ code: 'undo_confirm_job_moved_on' })
   }
-  await quotationRepo.markUnsigned(trx, documentId)
+  // The confirm's own audit row says what it did: whether it moved the job (jobAdvancedFrom) and
+  // which cut sets it wrote an agreed amount to (and what they held before).
+  const confirmRecord = await quotationRepo.latestConfirmAfter(trx, documentId)
+
+  // Model A (owner ruling 14 Oct 2026): undo puts the AGREED figures back as they were before confirm.
+  // Decided from the post-lock rows (doc, lineRows). The document goes first (signed -> issued carries
+  // discount + approved_total, migration 0024); only then are the lines writable again.
+  const restoredAmounts = agreedAmountsAfterUndo(
+    lineRows.map((l) => ({ id: l.id, approvedAmount: l.approved_amount })),
+    confirmRecord?.writtenLineIds ?? [], confirmRecord?.priorAmounts ?? {},
+  )
+  let restored: ReturnType<typeof totalsAfterUndoConfirm>
+  try {
+    restored = totalsAfterUndoConfirm(
+      lineRows.map((l) => ({ ...toDomainLine(l), approvedAmount: restoredAmounts.get(l.id) ?? null })),
+      doc.offered_discount,
+    )
+  } catch (e) {
+    if (e instanceof MoneyError) return err({ code: 'amount_out_of_range' })
+    throw e
+  }
+  await quotationRepo.markUnsigned(trx, documentId, restored)
+  for (const l of lineRows) {
+    const back = restoredAmounts.get(l.id) ?? null
+    if (back !== l.approved_amount) await quotationRepo.setApprovedAmount(trx, l.id, back)
+  }
   await quotationRepo.deleteOfferedItemsOfDocument(trx, documentId)
   // Only a job that confirm moved to 'approved' goes back; a job confirm left alone (D5, or before quoted) stays.
-  // The confirm's own audit row says whether it moved the job (structured field jobAdvancedFrom);
-  // a confirm that found the job already approved (or not yet quoted) must not pull it back.
-  const confirmRecord = await quotationRepo.latestConfirmAfter(trx, documentId)
+  // A confirm that found the job already approved (or not yet quoted) must not pull it back.
   if (doc.job_id && job && job.status === 'approved' && confirmRecord?.jobAdvancedFrom === 'quoted') {
     await jobsRepo.applyStatus(trx, { jobId: doc.job_id, status: 'quoted', subState: null })
     const history = await jobsRepo.recordStatusHistory(trx, shopId, doc.job_id, 'quoted', actorId)
@@ -742,7 +777,8 @@ export async function undoConfirm(trx: ScopedTx, shopId: string, documentId: str
   // row for a document to hold it, unlike undo-delivered.
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_confirm_undone', entityType: 'documents', entityId: documentId,
-    before: { status: 'signed' }, after: { status: 'issued', reason },
+    before: { status: 'signed', discount: doc.discount, approvedTotal: doc.approved_total },
+    after: { status: 'issued', reason, discount: restored.discount, approvedTotal: restored.approvedTotal },
   })
   return ok((await quotationRepo.getDocument(trx, documentId))!)
 }
@@ -763,7 +799,9 @@ export async function revise(trx: ScopedTx, shopId: string, documentId: string, 
   await quotationRepo.markSuperseded(trx, doc.id)
   const newDoc = await quotationRepo.insertRevision(trx, {
     shopId, jobId: doc.job_id, customerId: doc.customer_id, revision: doc.revision + 1, supersedesDocumentId: doc.id,
-    discount: doc.discount,
+    // Owner ruling (14 Oct 2026): rev 2's offer starts from the discount AGREED on the source.
+    // On an issued source that equals its offered discount; on a signed one it is the confirmed figure.
+    carriedDiscount: doc.discount,
   })
   // The superseded document's "เคยเสนอไว้" rows stay: rev 2 may never be confirmed, and a declined item may be re-added during the revision. Confirm de-duplicates instead (security M1).
 
@@ -793,7 +831,9 @@ export async function revise(trx: ScopedTx, shopId: string, documentId: string, 
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_revised', entityType: 'documents', entityId: newDoc.id,
     // `reason` is staff free text kept here on purpose, like the confirm adjustments: documents has no column for it.
-    before: { supersedes: doc.id, reason: reason ?? null }, after: { revision: newDoc.revision },
+    before: { supersedes: doc.id, reason: reason ?? null },
+    // offeredDiscount = the source's own offer; carriedDiscount = what rev 2 starts from (the source's agreed one).
+    after: { revision: newDoc.revision, offeredDiscount: doc.offered_discount, carriedDiscount: doc.discount },
   })
   return ok(newDoc)
 }

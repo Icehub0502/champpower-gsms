@@ -74,14 +74,17 @@ export function buildQuotationView(doc: DocumentRow, lineRows: LineRow[], job: V
   const totalsRaw = quoteTotals(lines, doc.discount)
   const computed = quoteTotalsDecimal(totalsRaw)
   // A NUMBERED document is read from what was frozen on it, never recomputed (CLAUDE.md §4.4): the
-  // stored net totals and discount are the truth. Subtotals come from the (immutable) lines, and the
-  // applied discount is derived from stored net, so the five numbers can never disagree.
+  // stored figures are the truth. Two discounts, both stored (0024, model A):
+  //   offeredDiscount  the discount on the offer; offeredSubtotal - offeredDiscount = offeredTotal
+  //   discount         the AGREED discount (= offeredDiscount until confirm changes it)
+  // Subtotals come from the (immutable) lines; approvedDiscount is derived from the stored approved
+  // total, so the figures can never disagree.
   const totals = doc.number === null ? computed : {
     ...computed,
     discount: doc.discount,
+    offeredDiscount: doc.offered_discount,
     offeredTotal: doc.offered_total,
     approvedTotal: doc.approved_total,
-    offeredDiscount: formatSatang(Math.max(0, totalsRaw.offeredSubtotal - toSatang(doc.offered_total))),
     approvedDiscount: formatSatang(Math.max(0, totalsRaw.approvedSubtotal - toSatang(doc.approved_total))),
   }
   const readiness = confirmReadiness(lines.map((l) => ({

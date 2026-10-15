@@ -435,6 +435,58 @@ export function checkApprovedAmount(offeredSatang: number, agreedSatang: number)
   return { ok: true, kind, delta, requiresReason: true };
 }
 
+// -----------------------------------------------------------------------------
+// Offered vs agreed discount (model A, owner ruling 14 Oct 2026)
+//
+// documents.offered_discount = the discount on the offer, written at issue and
+// never changed. documents.discount = the AGREED discount: equal to the offered
+// one until confirm changes it, and put back to it by undo-confirm.
+// -----------------------------------------------------------------------------
+
+/**
+ * The discount stored at issue, as BOTH offered_discount and discount: what the
+ * entered discount really takes off the offered subtotal (clamped to
+ * [0, subtotal]). Storing the clamped figure is what makes
+ * offeredSubtotal - offeredDiscount = offeredTotal hold on the paper.
+ */
+export function discountAtIssue(lines: readonly QuoteLineMoney[], entered: string | number): string {
+  return formatSatang(quoteTotals(lines, entered).offeredDiscount);
+}
+
+/** The footing rule of the offer: subtotal - discount = total, in satang. */
+export function offeredFoots(offeredSubtotal: string, offeredDiscount: string, offeredTotal: string): boolean {
+  return toSatang(offeredSubtotal) - toSatang(offeredDiscount) === toSatang(offeredTotal);
+}
+
+/**
+ * The line amounts after undo-confirm. `written` are the lines confirm wrote an
+ * agreed amount to and `prior` is what each held BEFORE confirm (absent = null).
+ * Those lines go back to it; every other line is untouched. Pure so the same
+ * answer drives the write and the totals.
+ */
+export function agreedAmountsAfterUndo(
+  lines: ReadonlyArray<{ id: string; approvedAmount: string | null }>,
+  written: readonly string[],
+  prior: Readonly<Record<string, string | null>>,
+): Map<string, string | null> {
+  const w = new Set(written);
+  return new Map(lines.map((l) => [l.id, w.has(l.id) ? (prior[l.id] ?? null) : l.approvedAmount]));
+}
+
+/**
+ * What undo-confirm restores on the document: the agreed discount goes back to
+ * the offered one and approved_total is rebuilt from the decisions, the restored
+ * amounts and that discount — the same arithmetic decideLine uses before
+ * confirm, so reversing a confirm reproduces the pre-confirm totals exactly.
+ */
+export function totalsAfterUndoConfirm(
+  lines: readonly QuoteLineMoney[],
+  offeredDiscount: string,
+): { discount: string; approvedTotal: string } {
+  const t = quoteTotals(lines, offeredDiscount);
+  return { discount: offeredDiscount, approvedTotal: formatSatang(t.approvedTotal) };
+}
+
 export type JobOutcomeAtConfirm = 'approve_job' | 'keep_quoted' | 'not_ready';
 
 /**

@@ -97,7 +97,13 @@ export const QuotationTotals = z
   .object({
     offeredSubtotal: MoneyString,
     approvedSubtotal: MoneyString,
-    // The discount as entered, and the part of it that really applies to each base (clamped).
+    // Two discounts (model A, owner ruling 14 Oct 2026, migration 0024):
+    //   offeredDiscount  the discount on the OFFER: stored at issue, never changes.
+    //                    offeredSubtotal - offeredDiscount = offeredTotal, always.
+    //                    (Clamped to the offered subtotal. On a draft it is computed.)
+    //   discount         the AGREED discount: equal to offeredDiscount until "ยืนยันผลลูกค้า"
+    //                    changes it (reason mandatory); undo puts it back.
+    // approvedDiscount is the part of the agreed one that applies to the approved subtotal (clamped).
     discount: MoneyString,
     offeredDiscount: MoneyString,
     approvedDiscount: MoneyString,

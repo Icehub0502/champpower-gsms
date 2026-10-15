@@ -196,7 +196,7 @@ export type JobNumberSeriesMissingError = z.infer<typeof JobNumberSeriesMissingE
 export const DocumentFrozenError = payloadless('document_frozen');
 export type DocumentFrozenError = z.infer<typeof DocumentFrozenError>;
 
-// 409 — SQLSTATE GS002, table documents, HINT document_job_immutable (0023): a
+// 409 — SQLSTATE GS002, table documents, HINT document_job_id_immutable (0023): a
 // document's job_id was asked to change after it was attached. The fix is a new
 // document, never a retry.
 export const DocumentJobImmutableError = payloadless('document_job_immutable');
