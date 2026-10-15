@@ -11,8 +11,8 @@ describe('selectTestDb (Tier 1)', () => {
   })
   it('aborts when the test database is the dev database', () => {
     expect(() => selectTestDb({
-      testUrl: 'postgres://gsms_app:x@localhost:5433/gsms',
-      devUrl: 'postgres://gsms_app:x@localhost/gsms',
+      testUrl: 'postgres://gsms_app:x@localhost:5433/devcopy',
+      devUrl: 'postgres://gsms_app:x@localhost/devcopy',
     })).toThrow(/same as DATABASE_URL/)
   })
   it('aborts when the admin URL names a different database', () => {
@@ -20,6 +20,36 @@ describe('selectTestDb (Tier 1)', () => {
       testUrl: 'postgres://gsms_app:x@localhost/gsms_test',
       testAdminUrl: 'postgres://postgres:x@localhost/gsms',
     })).toThrow(/differs/)
+  })
+  it('M1: refuses the name gsms even when no dev URL is known', () => {
+    expect(() => selectTestDb({ testUrl: 'postgres://gsms_app:x@localhost/gsms' })).toThrow(/Refusing/)
+  })
+  it('M1: refuses postgres even when the dev URL is something else', () => {
+    expect(() => selectTestDb({
+      testUrl: 'postgres://gsms_app:x@localhost/postgres',
+      devUrl: 'postgres://gsms_app:x@localhost/other',
+    })).toThrow(/Refusing/)
+  })
+  it('L2: a percent-encoded name cannot slip past (gsm%73)', () => {
+    expect(() => selectTestDb({ testUrl: 'postgres://gsms_app:x@localhost/gsm%73' })).toThrow(/Refusing/)
+  })
+  it('L2: an undecodable name is refused, not accepted', () => {
+    expect(() => selectTestDb({ testUrl: 'postgres://gsms_app:x@localhost/%E0%A4%A' })).toThrow()
+  })
+  it('L3: admin URL on a different host or port is refused', () => {
+    const testUrl = 'postgres://gsms_app:x@localhost:5432/gsms_test'
+    expect(() => selectTestDb({ testUrl, testAdminUrl: 'postgres://postgres:x@otherhost:5432/gsms_test' })).toThrow(/differs/)
+    expect(() => selectTestDb({ testUrl, testAdminUrl: 'postgres://postgres:x@localhost:5433/gsms_test' })).toThrow(/differs/)
+  })
+  it('S1: warns loudly when the test URL is set without the admin URL', () => {
+    const r = selectTestDb({ testUrl: 'postgres://gsms_app:x@localhost/gsms_test' })
+    expect(r.warning).toMatch(/TEST_DATABASE_ADMIN_URL/)
+  })
+  it('admin set while test is unset is skipped, and the admin URL is not passed on', () => {
+    const r = selectTestDb({ testAdminUrl: 'postgres://postgres:x@localhost/gsms_test' })
+    expect(r.url).toBe('')
+    expect(r.adminUrl).toBe('')
+    expect(r.skipReason).toMatch(/TEST_DATABASE_URL/)
   })
   it('accepts a distinct test database', () => {
     const r = selectTestDb({
@@ -38,7 +68,7 @@ describe.skipIf(!hasDatabase)(tier2('test-database guard: never the dev database
     try {
       const { rows: [row] } = await client.query<{ db: string; usr: string; su: boolean }>(
         `SELECT current_database() AS db, current_user AS usr,
-                (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS su`)
+                (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user) AS su`)
       console.log(`[guard] current_database() = ${row!.db}`)
       expect(row!.db).not.toBe(process.env.DEV_DATABASE_NAME)
       expect(row!.db).not.toBe('gsms')

@@ -15,8 +15,15 @@
 import pg from 'pg'
 import { describeTarget, migrate } from './migrate.js'
 
+// A malformed URL makes `new URL` throw ERR_INVALID_URL, whose message and
+// `input` property carry the raw string, password included. So parsing is
+// wrapped and failures report nothing but a fixed message.
 function dbOf(url: string): string {
-  return new URL(url).pathname.replace(/^\//, '')
+  try {
+    return decodeURIComponent(new URL(url).pathname.replace(/^\//, ''))
+  } catch {
+    return ''
+  }
 }
 
 const adminUrl = process.env.TEST_DATABASE_ADMIN_URL?.trim()

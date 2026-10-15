@@ -36,7 +36,11 @@ export function describeTarget(url: string): string {
     const pw = u.password ? `set, ${u.password.length} chars` : 'MISSING'
     return `${user}@${u.hostname}:${u.port || '5432'}/${db}  (password: ${pw})`
   } catch {
-    return `UNPARSEABLE — check for quotes or spaces around the value:\n  ${JSON.stringify(url)}`
+    // Never echo the value: it is a connection string and holds the password.
+    // Show its shape only, which is enough to spot stray quotes or spaces.
+    const shape = url.replace(/:\/\/([^:@/]*):[^@]*@/, '://$1:***@')
+    const hint = url !== url.trim() ? ' (has leading/trailing whitespace)' : /^["']|["']$/.test(url) ? ' (wrapped in quotes)' : ''
+    return `UNPARSEABLE${hint} — check for quotes or spaces around the value. Redacted: ${JSON.stringify(shape)}`
   }
 }
 

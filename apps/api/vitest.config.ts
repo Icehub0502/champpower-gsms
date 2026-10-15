@@ -50,6 +50,7 @@ const testDb = selectTestDb({
   devUrl: devDatabaseUrl,
 })
 if (!testDb.url) console.warn(`\n[vitest] ${testDb.skipReason}\n`)
+if (testDb.warning) console.warn(`\n[vitest] WARNING: ${testDb.warning}\n`)
 const realDatabaseUrl = testDb.url
 
 // `@champpower/domain`'s package.json points `main` at `./dist/index.js`, and
