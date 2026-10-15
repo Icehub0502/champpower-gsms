@@ -83,6 +83,8 @@ function sha(text: string): string {
 
 export async function migrate(connectionString: string, opts: { dryRun?: boolean } = {}) {
   const client = new pg.Client({ connectionString })
+  // RAISE NOTICE from a migration (e.g. 0024's stale-row count) is otherwise dropped.
+  client.on('notice', (n) => console.log('NOTICE:', n.message))
   await client.connect()
   try {
     await client.query(LEDGER)

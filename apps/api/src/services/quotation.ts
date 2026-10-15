@@ -526,7 +526,11 @@ export async function issue(trx: ScopedTx, shopId: string, documentId: string, a
   })
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_issued', entityType: 'documents', entityId: documentId,
-    after: { number, offeredTotal: totals.offeredTotal, approvedTotal: totals.approvedTotal, offeredDiscount },
+    after: {
+      number, offeredTotal: totals.offeredTotal, approvedTotal: totals.approvedTotal, offeredDiscount,
+      // What staff typed, kept only when the clamp changed it.
+      ...(toSatang(doc.discount) !== toSatang(offeredDiscount) ? { enteredDiscount: doc.discount } : {}),
+    },
   })
 
   // Owner decision (3 Oct 2026): issuing moves the job to 'quoted', in this SAME
@@ -657,13 +661,20 @@ export async function confirm(
     await quotationRepo.setApprovedAmount(trx, a.lineId, a.approvedAmount)
   }
 
-  const discount = adjustments?.discount?.amount ?? doc.discount
+  const enteredDiscount = adjustments?.discount?.amount ?? doc.discount
   const refreshedRows = await quotationRepo.getLines(trx, documentId)
-  const totals = quoteTotalsDecimal(quoteTotals(refreshedRows.map(toDomainLine), discount))
+  // CLAUDE.md §4.5: the discount is clamped. The AGREED discount is stored clamped to the approved
+  // subtotal (as issue clamps the offered one to the offered subtotal), so the stored figure is the
+  // one that was really taken off and the approved side foots.
+  const agreedLines = refreshedRows.map(toDomainLine)
+  const storedDiscount = formatSatang(quoteTotals(agreedLines, enteredDiscount).approvedDiscount)
+  const totals = quoteTotalsDecimal(quoteTotals(agreedLines, storedDiscount))
 
   await quotationRepo.markSigned(trx, documentId, totals.approvedTotal, totals.discount)
 
   const auditAfter: Record<string, unknown> = { approvedTotal: totals.approvedTotal, discount: totals.discount }
+  // What staff typed, kept only when the clamp changed it.
+  if (toSatang(enteredDiscount) !== toSatang(totals.discount)) auditAfter.enteredDiscount = enteredDiscount
   if (adjustments?.discount) auditAfter.discountReason = adjustments.discount.reason
   if (adjustments?.setLines?.length) auditAfter.setLines = adjustments.setLines.map((a) => ({ lineId: a.lineId, approvedAmount: a.approvedAmount, reason: a.reason }))
   // The free-text reasons below (discount / agreed set amount) go into audit_logs.after on purpose:
@@ -743,9 +754,14 @@ export async function undoConfirm(trx: ScopedTx, shopId: string, documentId: str
   // Model A (owner ruling 14 Oct 2026): undo puts the AGREED figures back as they were before confirm.
   // Decided from the post-lock rows (doc, lineRows). The document goes first (signed -> issued carries
   // discount + approved_total, migration 0024); only then are the lines writable again.
+  // LEGACY confirm: its audit row has after.setLines but no before.setLines (written before the prior
+  // amounts were recorded). We cannot know what those lines held, so the amounts confirm wrote are
+  // CLEARED: the next confirm asks for them again (set_amount_required) instead of silently reusing a
+  // figure nobody can vouch for. A modern confirm restores each line to its recorded prior value.
+  const legacyConfirm = confirmRecord !== undefined && confirmRecord.writtenLineIds.length > 0 && !confirmRecord.hasPriorAmounts
   const restoredAmounts = agreedAmountsAfterUndo(
     lineRows.map((l) => ({ id: l.id, approvedAmount: l.approved_amount })),
-    confirmRecord?.writtenLineIds ?? [], confirmRecord?.priorAmounts ?? {},
+    confirmRecord?.writtenLineIds ?? [], legacyConfirm ? {} : confirmRecord?.priorAmounts ?? {},
   )
   let restored: ReturnType<typeof totalsAfterUndoConfirm>
   try {

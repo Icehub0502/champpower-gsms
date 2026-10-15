@@ -323,6 +323,8 @@ export interface ConfirmRecord {
   writtenLineIds: string[]
   /** What each of them held BEFORE confirm (absent = it held nothing; rows written before 0024 have none). */
   priorAmounts: Record<string, string | null>
+  /** false when the audit row has no before.setLines (a confirm recorded before prior amounts were kept). */
+  hasPriorAmounts: boolean
 }
 
 export async function latestConfirmAfter(trx: ScopedTx, documentId: string): Promise<ConfirmRecord | undefined> {
@@ -344,6 +346,7 @@ export async function latestConfirmAfter(trx: ScopedTx, documentId: string): Pro
   return {
     jobAdvancedFrom: row.job_advanced_from,
     writtenLineIds: entries(row.after_set_lines).map((x) => x.lineId),
+    hasPriorAmounts: Array.isArray(row.before_set_lines),
     priorAmounts: Object.fromEntries(entries(row.before_set_lines).map((x) => [x.lineId, x.approvedAmount ?? null])),
   }
 }

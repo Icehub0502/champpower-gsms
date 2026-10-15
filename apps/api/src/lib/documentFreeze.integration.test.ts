@@ -604,7 +604,7 @@ describe.skipIf(!hasDatabase)(tier2('document + line freeze (migration 0022)'), 
       expect(await snapshot(doc)).toEqual(before)
     })
 
-    it.todo('cross-shop attach refused by composite FK (0024)')
+    it.todo('cross-shop attach refused by composite FK (0025)')
 
     it('the refusal maps to 409 document_job_immutable, matching the strict contract', async () => {
       const doc = await draftWith(await newJob())

@@ -310,6 +310,71 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(
       expect(rs.find((r) => r.status === 409)!.body.error).toBe('quotation_not_issued')
     })
 
+    // ---- lead rulings of 15 Oct ---------------------------------------------
+    it('A. undo restores a CARRIED non-null prior (rev 1 amount 5200 carried to rev 2, rev 2 confirmed at 5100, undo -> 5200)', async () => {
+      const { jobId, parentId } = await cutSet()
+      await confirm(jobId, cutBody(parentId, '5200.00'))
+      expect((await POST<Quotation>(`${base(jobId)}/revise`, { reason: 'ต่อ' })).status).toBe(201)
+      expect((await POST(`${base(jobId)}/issue`)).status).toBe(200)
+      const rev2 = await view(jobId)
+      const head2 = rev2.lines.find((l) => l.parentLineId === null)!
+      expect(head2.approvedAmount).toBe('5200.00') // carried
+      await confirm(jobId, cutBody(head2.id, '5100.00'))
+      expect(byName(await view(jobId), 'ชุดโปรทดสอบ').approvedAmount).toBe('5100.00')
+      await undo(jobId)
+      const back = await view(jobId)
+      expect(byName(back, 'ชุดโปรทดสอบ').approvedAmount).toBe('5200.00')
+      expect(back.totals.approvedTotal).toBe('5200.00')
+      expect(back.totals.discount).toBe('0.00')
+    })
+
+    it('B. legacy confirm (audit before has no setLines): undo clears the amounts and the totals foot', async () => {
+      const { jobId, parentId } = await cutSet()
+      await confirm(jobId, cutBody(parentId, '5200.00'))
+      const docId = (await docRows(jobId))[0]!.id
+      // Recreate the old audit shape: after.setLines present, before.setLines absent.
+      const admin = new pg.Client({ connectionString: adminDatabaseUrl })
+      await admin.connect()
+      try {
+        await admin.query('set session_replication_role = replica')
+        const r = await admin.query(
+          `update audit_logs set before = before - 'setLines' where action = 'quotation_confirmed' and entity_id = $1`, [docId])
+        expect(r.rowCount).toBe(1)
+      } finally { await admin.end() }
+      await undo(jobId)
+      const v = await view(jobId)
+      expect(byName(v, 'ชุดโปรทดสอบ').approvedAmount).toBeNull()
+      expect(Number(v.totals.approvedSubtotal) - Number(v.totals.approvedDiscount)).toBe(Number(v.totals.approvedTotal))
+      expect(v.totals.approvedTotal).toBe('6000.00')
+      const again = await confirmRaw(jobId)
+      expect(again.body).toMatchObject({ error: 'set_amount_required' })
+    })
+
+    it('C. an agreed discount above the approved subtotal is stored clamped; the audit keeps what was typed', async () => {
+      const { jobId } = await issuedApproved('200')
+      const c = await confirm(jobId, { adjustments: { discount: { amount: '99999', reason: 'ทดสอบ' } } })
+      expect(c.totals).toMatchObject({ discount: '5000.00', approvedTotal: '0.00', offeredDiscount: '200.00' })
+      const row = (await docRows(jobId))[0]!
+      expect(row).toMatchObject({ discount: '5000.00', offered_discount: '200.00' })
+      const a = await audit('quotation_confirmed', row.id)
+      expect(Number((a[0]!.after as Record<string, string>).enteredDiscount)).toBe(99999)
+      expect(a[0]!.after).toMatchObject({ discount: '5000.00' })
+      // an unclamped confirm records no enteredDiscount
+      const ok = await issuedApproved('200')
+      await confirm(ok.jobId, { adjustments: { discount: { amount: '300', reason: 'ลูกค้าประจำ' } } })
+      const okRow = (await docRows(ok.jobId))[0]!
+      expect((await audit('quotation_confirmed', okRow.id))[0]!.after).not.toHaveProperty('enteredDiscount')
+      // issue: a discount above the offered subtotal is stored clamped and the issue audit says what was typed
+      const big = await quotedJob()
+      await addFree(big, 'ลูกหมาก', '300.00')
+      await PATCH(base(big), { discount: '500' })
+      await POST(`${base(big)}/issue`)
+      const bigRow = (await docRows(big))[0]!
+      const ia = await audit('quotation_issued', bigRow.id)
+      expect(ia[0]!.after).toMatchObject({ offeredDiscount: '300.00' })
+      expect(Number((ia[0]!.after as Record<string, string>).enteredDiscount)).toBe(500)
+    })
+
     it('isolation: an unrelated id is not found', async () => {
       expect((await GET(base(randomUUID()))).status).toBe(404)
     })
