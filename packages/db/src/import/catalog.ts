@@ -1,0 +1,224 @@
+/**
+ * WO-004 phase 1 -- import the prototype's service catalog.
+ *
+ *   service_items            -> catalog_items
+ *   service_item_components  -> catalog_set_components
+ *   warranties (only those the items reference) -> warranty_terms
+ *
+ * Reads a LOCAL mysqldump file only (never a server). Writes only through
+ * withShop(<shop>) as the application role, so RLS applies to the import like
+ * to any request. Safe to re-run: items are keyed on (legacy_source, legacy_id),
+ * components on (set, sort_order), terms on name, and a second run updates in
+ * place. --dry-run reads the target (in a READ ONLY transaction) and prints the
+ * plan without writing anything.
+ *
+ *   npm run import:catalog -w packages/db -- --dry-run
+ *   npm run import:catalog -w packages/db            (the real run)
+ *
+ * Known limitation, accepted for this phase: warranty_terms (keyed on name) and
+ * catalog_set_components (keyed on set + sort_order) have no legacy_source /
+ * legacy_id columns. The later phase should add them by migration and move
+ * these two onto real legacy keys.
+ *
+ * Staff prices win: a non-NULL base_price in the DB is never replaced, by NULL
+ * or by a different dump value (the latter is listed as "price_differs").
+ *
+ * Options: --dump <file.sql.gz>  --shop <slug, default samut-prakan>
+ *          --report-dir <dir, default: next to the dump>
+ */
+import { mkdir, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { sql } from 'kysely'
+import { createDb, withShop, type Db, type ScopedTx } from '../client.js'
+import { extractTables, linesOfFile } from './mysqlDump.js'
+import {
+  ITEM_SOURCE, buildPlan, countByAction,
+  type ExistingState, type Plan, type SourceTables,
+} from './catalogPlan.js'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const DEFAULT_DUMP = join(HERE, '..', '..', '..', '..', '_import', 'cps2-20260916-0246.sql.gz')
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
+
+/** WO-004 section 2.1: this script must never be pointed at a remote database. */
+export function assertLocalDatabase(url: string): void {
+  let host: string
+  try { host = new URL(url).hostname } catch { throw new Error('DATABASE_URL is not a valid URL') }
+  if (!LOCAL_HOSTS.has(host)) {
+    throw new Error(`refusing to run: DATABASE_URL host "${host}" is not local (WO-004 allows a local database only)`)
+  }
+}
+
+export async function readSource(dumpPath: string): Promise<SourceTables> {
+  // Only these three tables are decoded; every other line of the dump is skipped.
+  const t = await extractTables(linesOfFile(dumpPath), ['service_items', 'service_item_components', 'warranties'])
+  return { service_items: t.service_items!, service_item_components: t.service_item_components!, warranties: t.warranties! }
+}
+
+async function loadExisting(trx: ScopedTx): Promise<ExistingState> {
+  const terms = await trx.selectFrom('warranty_terms').select(['id', 'name', 'days', 'max_km']).execute()
+  const termName = new Map(terms.map((t) => [t.id, t.name]))
+  const items = await trx
+    .selectFrom('catalog_items')
+    .select(['id', 'legacy_id', 'legacy_source', 'category', 'name', 'category_key', 'name_key', 'is_set', 'is_active', 'base_price', 'warranty_term_id', 'merged_into_id'])
+    .execute()
+  const importedIds = items.filter((i) => i.legacy_source === ITEM_SOURCE).map((i) => i.id)
+  const components = importedIds.length === 0 ? [] : await trx
+    .selectFrom('catalog_set_components')
+    .select(['id', 'set_item_id', 'sort_order', 'component_name', 'qty'])
+    .where('set_item_id', 'in', importedIds)
+    .execute()
+  return {
+    terms,
+    items: items.map((i) => ({
+      id: i.id,
+      legacy_id: i.legacy_source === ITEM_SOURCE ? i.legacy_id : null,
+      category: i.category, name: i.name, category_key: i.category_key, name_key: i.name_key,
+      is_set: i.is_set, is_active: i.is_active, base_price: i.base_price,
+      warranty_term_name: i.warranty_term_id ? termName.get(i.warranty_term_id) ?? null : null,
+      merged: i.merged_into_id !== null,
+    })),
+    components,
+  }
+}
+
+async function applyPlan(trx: ScopedTx, shopId: string, plan: Plan): Promise<{ audit: Record<string, unknown> }> {
+  const termId = new Map<string, string>()
+  for (const t of plan.terms) {
+    if (t.action === 'insert') {
+      const row = await trx.insertInto('warranty_terms')
+        .values({ shop_id: shopId, name: t.name, days: t.days, max_km: t.maxKm })
+        .returning('id').executeTakeFirstOrThrow()
+      termId.set(t.legacyId, row.id)
+    } else {
+      termId.set(t.legacyId, t.existingId!)
+      if (t.action === 'update') {
+        await trx.updateTable('warranty_terms').set({ days: t.days, max_km: t.maxKm })
+          .where('shop_id', '=', shopId).where('id', '=', t.existingId!).execute()
+      }
+    }
+  }
+
+  const itemId = new Map<string, string>()
+  for (const i of plan.items) {
+    const warranty_term_id = i.warrantyLegacyId ? termId.get(i.warrantyLegacyId)! : null
+    if (i.action === 'insert') {
+      const row = await trx.insertInto('catalog_items')
+        .values({
+          shop_id: shopId, category: i.category, name: i.name, line_type: 'part',
+          is_set: i.isSet, is_active: i.isActive, base_price: i.basePrice, warranty_term_id,
+          legacy_source: ITEM_SOURCE, legacy_id: i.legacyId,
+        })
+        .returning('id').executeTakeFirstOrThrow()
+      itemId.set(i.legacyId, row.id)
+    } else {
+      itemId.set(i.legacyId, i.existingId!)
+      if (i.action === 'update') {
+        await trx.updateTable('catalog_items')
+          .set({ category: i.category, name: i.name, is_set: i.isSet, is_active: i.isActive, base_price: i.basePrice, warranty_term_id })
+          .where('shop_id', '=', shopId).where('id', '=', i.existingId!).execute()
+      }
+    }
+  }
+
+  for (const c of plan.components) {
+    const set_item_id = itemId.get(c.legacySetId)!
+    if (c.action === 'insert') {
+      await trx.insertInto('catalog_set_components')
+        .values({ shop_id: shopId, set_item_id, component_name: c.name, qty: c.qty, sort_order: c.sortOrder })
+        .execute()
+    } else if (c.action === 'update') {
+      await trx.updateTable('catalog_set_components').set({ component_name: c.name, qty: c.qty })
+        .where('shop_id', '=', shopId).where('id', '=', c.existingId!).execute()
+    }
+  }
+
+  const audit = {
+    terms: countByAction(plan.terms), items: countByAction(plan.items), components: countByAction(plan.components),
+    ambiguities: plan.ambiguities.length,
+  }
+  // One summary row per run: this is catalog data, not money or stock, so a
+  // per-row trail would be noise; the legacy keys already say where each row came from.
+  await trx.insertInto('audit_logs')
+    .values({ shop_id: shopId, actor_id: null, action: 'catalog_import', entity_type: 'catalog_import', after: JSON.stringify(audit) })
+    .execute()
+  return { audit }
+}
+
+export function renderReport(plan: Plan, meta: { dryRun: boolean; shopSlug: string; shopId: string; dump: string }): string {
+  const L: string[] = []
+  const c = (rows: { action: 'insert' | 'update' | 'unchanged' }[]) => {
+    const n = countByAction(rows)
+    return `${rows.length} (insert ${n.insert}, update ${n.update}, unchanged ${n.unchanged})`
+  }
+  L.push(`# WO-004 phase 1 catalog import -- ${meta.dryRun ? 'DRY RUN' : 'REAL RUN'}`)
+  L.push('', `shop: ${meta.shopSlug} (${meta.shopId})`, `dump: ${meta.dump}`, '')
+  L.push('## Counts', '', `- warranty_terms: ${c(plan.terms)}`, `- catalog_items: ${c(plan.items)}`, `- catalog_set_components: ${c(plan.components)}`)
+  L.push(`- sets (is_set): ${plan.items.filter((i) => i.isSet).length}`, `- base_price NULL after import: ${plan.items.filter((i) => i.basePrice === null).length}`)
+  L.push(`  - NULL already in source: ${plan.priceNulls.nullInSource}; 0 in source -> NULL: ${plan.priceNulls.zero}; negative: ${plan.priceNulls.negative}; unparseable: ${plan.priceNulls.unparseable}`, '')
+  L.push('## Warranty conversion (days = year x 365 + month x 30; 0 km = no km limit)', '')
+  for (const t of plan.terms) L.push(`- [${t.action}] #${t.legacyId} "${t.name}": ${t.from.year ?? 0}y ${t.from.month ?? 0}m ${t.from.km ?? 0}km -> days=${t.days ?? 'NULL'} max_km=${t.maxKm ?? 'NULL'}`)
+  L.push('', '## Needs a human (nothing below was guessed)', '')
+  L.push('- All catalog_items.line_type = part and all components line_type = part: the prototype has no type column and CLAUDE.md 5.2 forbids guessing from names. Many components are labour (e.g. "ประกอบติดตั้ง"); a person should set those.')
+  L.push('- component_item_id is NULL on every component: linking to an item by name would be a guess.')
+  const by = new Map<string, typeof plan.ambiguities>()
+  for (const a of plan.ambiguities) by.set(a.code, [...(by.get(a.code) ?? []), a])
+  if (by.size === 0) L.push('- no row-level ambiguities')
+  for (const [code, rows] of by) {
+    L.push('', `### ${code} (${rows.length})`, '')
+    for (const a of rows) L.push(`- ${a.table} #${a.legacyId ?? '-'}: ${a.detail}`)
+  }
+  return L.join('\n') + '\n'
+}
+
+function arg(name: string): string | undefined {
+  const i = process.argv.indexOf(name)
+  return i >= 0 ? process.argv[i + 1] : undefined
+}
+
+export async function main(): Promise<void> {
+  const dryRun = process.argv.includes('--dry-run')
+  const dump = resolve(arg('--dump') ?? DEFAULT_DUMP)
+  const shopSlug = arg('--shop') ?? 'samut-prakan'
+  const url = process.env.DATABASE_URL
+  if (!url) throw new Error('DATABASE_URL is not set (run through the npm script so .env is loaded)')
+  assertLocalDatabase(url)
+
+  const src = await readSource(dump)
+  console.log(`read dump: service_items=${src.service_items.length} service_item_components=${src.service_item_components.length} warranties=${src.warranties.length}`)
+
+  const db: Db = createDb(url)
+  try {
+    const shop = await db.selectFrom('shops').select(['id', 'slug']).where('slug', '=', shopSlug).executeTakeFirst()
+    if (!shop) throw new Error(`no shop with slug "${shopSlug}"`)
+    console.log(`shop: ${shop.slug} ${shop.id}`)
+
+    const result = await withShop(db, shop.id, async (trx) => {
+      if (dryRun) await sql`set transaction read only`.execute(trx)
+      const plan = buildPlan(src, await loadExisting(trx))
+      if (!dryRun) await applyPlan(trx, shop.id, plan)
+      return plan
+    })
+
+    const reportDir = resolve(arg('--report-dir') ?? dirname(dump))
+    await mkdir(reportDir, { recursive: true })
+    const reportPath = join(reportDir, `catalog-import-report${dryRun ? '-dryrun' : ''}.md`)
+    await writeFile(reportPath, renderReport(result, { dryRun, shopSlug: shop.slug, shopId: shop.id, dump }), 'utf8')
+
+    const ct = (rows: { action: 'insert' | 'update' | 'unchanged' }[]) => JSON.stringify(countByAction(rows))
+    console.log(`${dryRun ? 'DRY RUN -- nothing written' : 'WRITTEN'}`)
+    console.log(`  warranty_terms          ${ct(result.terms)}`)
+    console.log(`  catalog_items           ${ct(result.items)}  sets=${result.items.filter((i) => i.isSet).length}`)
+    console.log(`  catalog_set_components  ${ct(result.components)}`)
+    console.log(`  base_price NULL: ${result.items.filter((i) => i.basePrice === null).length} (0->NULL: ${result.priceNulls.zero}, NULL in source: ${result.priceNulls.nullInSource})`)
+    console.log(`  ambiguities: ${result.ambiguities.length}`)
+    console.log(`  report: ${reportPath}`)
+  } finally {
+    await db.destroy()
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => { console.error(err instanceof Error ? err.message : err); process.exit(1) })
+}
