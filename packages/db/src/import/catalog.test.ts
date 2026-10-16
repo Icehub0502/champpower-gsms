@@ -4,9 +4,10 @@ import {
   buildPlan, convertPrice, convertWarranty, countByAction, warrantyDays,
   type ExistingState, type SourceTables,
 } from './catalogPlan.js'
+import { priceKey } from '@champpower/domain'
 import { resolve } from 'node:path'
-import { countWarrantyUse, duplicateGroups, duplicatesCsv } from './catalogReview.js'
-import { assertAppRole, assertLocalDatabase, renderReport, renderWarrantyReview, resolveReportDir } from './catalog.js'
+import { countWarrantyUse, csvCell, duplicateGroups, duplicatesCsv } from './catalogReview.js'
+import { assertAppRole, assertLocalDatabase, parseCliArgs, renderReport, renderWarrantyReview, resolveReportDir } from './catalog.js'
 
 // Synthetic data only: invented names, no real rows.
 const DUMP = String.raw`-- header
@@ -124,16 +125,16 @@ describe('buildPlan', () => {
   it('is idempotent: planning against its own result changes nothing', () => {
     const first = buildPlan(src(), EMPTY)
     const state: ExistingState = {
-      terms: first.terms.map((t, k) => ({ id: `t${k}`, name: t.name, days: t.days, max_km: t.maxKm })),
+      terms: first.terms.map((t, k) => ({ id: `t${k}`, name: t.name, days: t.days, max_km: t.maxKm, is_active: true })),
       items: first.items.map((i, k) => ({
         id: `i${k}`, legacy_id: i.legacyId, category: i.category, name: i.name,
-        category_key: null, name_key: null, is_set: i.isSet, is_active: i.isActive, base_price: i.basePrice,
+        category_key: priceKey(i.category), name_key: priceKey(i.name), is_set: i.isSet, is_active: i.isActive, base_price: i.basePrice,
         warranty_term_name: i.warrantyLegacyId ? first.terms.find((t) => t.legacyId === i.warrantyLegacyId)!.name : null,
         merged: false,
       })),
       components: first.components.map((c, k) => ({
         id: `c${k}`, set_item_id: `i${first.items.findIndex((i) => i.legacyId === c.legacySetId)}`,
-        sort_order: c.sortOrder, component_name: c.name, qty: c.qty,
+        sort_order: c.sortOrder, component_name: c.name, qty: c.qty, line_type: 'part', component_item_id: null,
       })),
     }
     const second = buildPlan(src(), state)
@@ -252,7 +253,7 @@ describe('buildPlan', () => {
     expect(p.terms.map((t) => [t.legacyId, t.isActive])).toEqual([['1', true], ['2', true], ['4', false]])
     const md = renderWarrantyReview(p, s)
     expect(md).toContain('"heavy"')
-    expect(md).toContain('catalog items that reference it: 1')
+    expect(md).toContain('catalog items that point at it: 1')
     expect(md).toContain('not counted in this run')
     const withUsage = renderWarrantyReview(p, s, new Map([['4', { quotationLines: 5, quotationDocs: 3, receiptLines: 2, receiptDocs: 2 }]]))
     expect(withUsage).toContain('quotation lines 5 in 3 quotations; receipt lines 2 in 2 receipts')
@@ -278,7 +279,7 @@ describe('buildPlan', () => {
 
   it('never modifies an existing warranty term of the same name; reports a difference', () => {
     const state: ExistingState = {
-      terms: [{ id: 'staff', name: 'one year', days: 400, max_km: null }],
+      terms: [{ id: 'staff', name: 'one year', days: 400, max_km: null, is_active: true }],
       items: [], components: [],
     }
     const p = buildPlan(src(), state)
@@ -288,7 +289,7 @@ describe('buildPlan', () => {
     expect(p.terms.some((x) => x.action === 'update')).toBe(false)
     expect(p.ambiguities.some((a) => a.code === 'warranty_exists_differs')).toBe(true)
     // an identical existing term is linked silently
-    const same = buildPlan(src(), { terms: [{ id: 'x', name: 'one year', days: 365, max_km: 100000 }], items: [], components: [] })
+    const same = buildPlan(src(), { terms: [{ id: 'x', name: 'one year', days: 365, max_km: 100000, is_active: true }], items: [], components: [] })
     expect(same.ambiguities.some((a) => a.code === 'warranty_exists_differs')).toBe(false)
   })
 
@@ -338,11 +339,175 @@ describe('review artefacts', () => {
       item('1', 'Rack', 'Rack OEM', { created_at: '2026-01-01' }), item('6', 'Rack', 'rack-oem', { created_at: '2026-02-02' }),
       item('2', 'Rack', 'Unique'),
     ]
-    const g = duplicateGroups(s)
+    const g = duplicateGroups(s, [comp('1', '6', 'x'), comp('2', '6', 'y', '1', '1')])
     expect(g).toHaveLength(1)
     const csv = duplicatesCsv(g)
-    expect(csv).toContain('kind,normalised_key,legacy_ids,names,categories,created_at')
-    expect(csv).toContain('catalog_item,rack|rackoem,1 | 6,Rack OEM | rack-oem')
+    expect(csv).toContain('kind,normalised_category_key,normalised_name_key,imported_legacy_id,legacy_ids,names,categories,created_at,set_price,warranty_ids,component_counts')
+    expect(csv).toContain('catalog_item,rack,rackoem,1,1 | 6,Rack OEM | rack-oem')
+    expect(csv).toContain('0 | 2')
+  })
+  it('neutralises spreadsheet formulas and quotes CR/LF in CSV cells', () => {
+    expect(csvCell('=SUM(A1)')).toBe("'=SUM(A1)")
+    expect(csvCell('+1')).toBe("'+1")
+    expect(csvCell('-1')).toBe("'-1")
+    expect(csvCell('@x')).toBe("'@x")
+    expect(csvCell('a\rb')).toBe('"a\rb"')
+    expect(csvCell('a,"b"')).toBe('"a,""b"""')
+    expect(csvCell('plain')).toBe('plain')
+  })
+})
+
+describe('mysqldump reader: projection and errors', () => {
+  it('skips non-kept cells without decoding them', () => {
+    const rows = parseValuesTuples(String.raw`(1,'secret \'x\' value',2,NULL),(3,'other',4,5)`, { keep: new Set([0, 2]), columns: 4 })
+    expect(rows).toEqual([['1', '2'], ['3', '4']])
+  })
+  it('errors never echo source text', () => {
+    let msg = ''
+    try { parseValuesTuples(`(1,'visible-secret',zzz-secret)`, { label: 'tbl' }) } catch (e) { msg = String(e) }
+    expect(msg).toMatch(/unsupported literal/)
+    expect(msg).toMatch(/tbl/)
+    expect(msg).toMatch(/tuple 1, column 2/)
+    expect(msg).not.toContain('secret')
+    let msg2 = ''
+    try { parseValuesTuples(`secret-start`, { label: 'tbl' }) } catch (e) { msg2 = String(e) }
+    expect(msg2).not.toContain('secret')
+  })
+  it('rejects a tuple with the wrong number of cells', () => {
+    expect(() => parseValuesTuples(`(1,2,3)`, { columns: 2 })).toThrow(/expected 2/)
+  })
+  it('throws on a repeated CREATE TABLE for a wanted table', async () => {
+    const lines = ['CREATE TABLE `t` (', '  `id` int', ') ENGINE=InnoDB;', 'CREATE TABLE `t` (', '  `id` int', ') ENGINE=InnoDB;']
+    await expect(extractTables(lines, ['t'])).rejects.toThrow(/more than one CREATE TABLE/)
+  })
+  it('keeps \\% and \\_ with their backslash, like MySQL', () => {
+    expect(parseValuesTuples(String.raw`('50\% a\_b')`)).toEqual([['50\\% a\\_b']])
+  })
+  it('round-trips Thai (utf8mb4) text and an emoji', async () => {
+    const lines = ['CREATE TABLE `t` (', '  `id` int,', '  `name` varchar(20)', ') ENGINE=InnoDB;', "INSERT INTO `t` VALUES (1,'ลูกหมากปีกนก 🚗'),(2,'แร็คพวงมาลัย');"]
+    const out = await extractTables(lines, ['t'])
+    expect(out.t!.map((r) => r.name)).toEqual(['ลูกหมากปีกนก 🚗', 'แร็คพวงมาลัย'])
+    const plan = buildPlan({ warranties: [], service_items: [item('1', 'แร็คพวงมาลัย', 'ลูกหมากปีกนก')], service_item_components: [] }, EMPTY)
+    expect(plan.items[0]!.name).toBe('ลูกหมากปีกนก')
+  })
+})
+
+describe('cli arguments', () => {
+  it('requires --dump for a real run but not for a dry run', () => {
+    expect(() => parseCliArgs([])).toThrow(/requires --dump/)
+    expect(parseCliArgs(['--dry-run']).dryRun).toBe(true)
+    expect(parseCliArgs(['--dump', 'x.sql.gz']).dump).toBe('x.sql.gz')
+  })
+  it('rejects unknown arguments and flags missing their value', () => {
+    expect(() => parseCliArgs(['--dryrun', '--dump', 'x'])).toThrow(/unknown argument/)
+    expect(() => parseCliArgs(['--dump'])).toThrow(/needs a value/)
+    expect(() => parseCliArgs(['--dump', '--dry-run'])).toThrow(/needs a value/)
+    expect(() => parseCliArgs(['--dry-run', '--shop'])).toThrow(/needs a value/)
+    expect(() => parseCliArgs(['stray'])).toThrow(/unknown argument/)
+  })
+})
+
+describe('review round: inactive warranty, hand edits, component slots', () => {
+  const base = (): SourceTables => ({
+    warranties: [
+      { id: '1', warranty_name: 'one year', warranty_year: '1', warranty_month: '0', warranty_km: '0', is_active: '1' },
+      { id: '4', warranty_name: 'odd', warranty_year: '0', warranty_month: '6', warranty_km: '0', is_active: '0' },
+    ],
+    service_items: [
+      item('1', 'Rack', 'Rack A', { warranty_id: '1', set_price: '100.00' }),
+      item('2', 'Rack', 'Rack B', { warranty_id: '4' }),
+      item('3', 'Set', 'Set S', { is_set: '1' }),
+    ],
+    service_item_components: [comp('10', '3', 'first'), comp('11', '3', 'second', '1', '1')],
+  })
+  const stateFrom = (plan: ReturnType<typeof buildPlan>, over: Partial<ExistingState> = {}): ExistingState => ({
+    terms: plan.terms.map((t, k) => ({ id: `t${k}`, name: t.name, days: t.days, max_km: t.maxKm, is_active: t.isActive })),
+    items: plan.items.map((i, k) => ({
+      id: `i${k}`, legacy_id: i.legacyId, category: i.category, name: i.name,
+      category_key: priceKey(i.category), name_key: priceKey(i.name), is_set: i.isSet, is_active: i.isActive,
+      base_price: i.basePrice, merged: false,
+      warranty_term_name: i.warrantyLegacyId ? plan.terms.find((t) => t.legacyId === i.warrantyLegacyId)!.name : null,
+    })),
+    components: plan.components.map((c, k) => ({
+      id: `c${k}`, set_item_id: `i${plan.items.findIndex((i) => i.legacyId === c.legacySetId)}`,
+      sort_order: c.sortOrder, component_name: c.name, qty: c.qty, line_type: 'part', component_item_id: null,
+    })),
+    ...over,
+  })
+
+  it('imports items of an inactive warranty without a link, and reports each', () => {
+    const p = buildPlan(base(), EMPTY)
+    expect(p.terms.find((t) => t.legacyId === '4')!.isActive).toBe(false)
+    expect(p.items.find((i) => i.legacyId === '2')!.warrantyLegacyId).toBeNull()
+    expect(p.items.find((i) => i.legacyId === '1')!.warrantyLegacyId).toBe('1')
+    const a = p.ambiguities.filter((x) => x.code === 'item_warranty_inactive_unlinked')
+    expect(a.map((x) => x.legacyId)).toEqual(['2'])
+    expect(a[0]!.detail).toContain('Rack B')
+    expect(a[0]!.detail).toContain('odd')
+    expect(p.ambiguities.some((x) => x.code === 'warranty_inactive_in_prototype' && x.legacyId === '4')).toBe(true)
+  })
+
+  it('links the items once a person has activated the term (re-run)', () => {
+    const first = buildPlan(base(), EMPTY)
+    const state = stateFrom(first)
+    state.terms.find((t) => t.name === 'odd')!.is_active = true // activated in the app
+    const again = buildPlan(base(), state)
+    const it2 = again.items.find((i) => i.legacyId === '2')!
+    expect(it2.warrantyLegacyId).toBe('4')
+    expect(it2.action).toBe('update')
+    expect(again.ambiguities.some((x) => x.code === 'item_warranty_inactive_unlinked')).toBe(false)
+  })
+
+  it('restores a hand-edited name or is_active, but keeps a hand-set price', () => {
+    const first = buildPlan(base(), EMPTY)
+    const state = stateFrom(first)
+    const a = state.items.find((i) => i.legacy_id === '1')!
+    a.name = 'Rack A (renamed)'; a.name_key = priceKey(a.name)
+    a.is_active = false
+    a.base_price = '777.00' // staff price, dump says 100.00
+    const p = buildPlan(base(), state)
+    const one = p.items.find((i) => i.legacyId === '1')!
+    expect(one.action).toBe('update')
+    expect(one.name).toBe('Rack A')
+    expect(one.isActive).toBe(true)
+    expect(one.basePrice).toBe('777.00')
+    expect(p.ambiguities.some((x) => x.code === 'price_differs')).toBe(true)
+  })
+
+  it('does not overwrite a slot a person has retyped or linked; reports DB slots not in the dump', () => {
+    const first = buildPlan(base(), EMPTY)
+    const state = stateFrom(first)
+    const s0 = state.components.find((c) => c.sort_order === 0)!
+    s0.component_name = 'Labour'; s0.line_type = 'labor'
+    const s1 = state.components.find((c) => c.sort_order === 1)!
+    s1.component_name = 'Linked thing'; s1.component_item_id = 'some-item'
+    state.components.push({ id: 'extra', set_item_id: s0.set_item_id, sort_order: 9, component_name: 'Added by hand', qty: '1.00', line_type: 'part', component_item_id: null })
+    const p = buildPlan(base(), state)
+    expect(p.ambiguities.filter((x) => x.code === 'component_slot_changed').map((x) => x.legacyId).sort()).toEqual(['10', '11'])
+    expect(p.components).toHaveLength(0)
+    expect(p.ambiguities.some((x) => x.code === 'component_db_slot_not_in_dump' && x.detail.includes('Added by hand'))).toBe(true)
+  })
+
+  it('a plain rename of a part-type, unlinked slot is still restored', () => {
+    const first = buildPlan(base(), EMPTY)
+    const state = stateFrom(first)
+    state.components.find((c) => c.sort_order === 0)!.component_name = 'typo'
+    const p = buildPlan(base(), state)
+    expect(p.components.find((c) => c.sortOrder === 0)!.action).toBe('update')
+  })
+
+  it('reports the components of a duplicate pair\'s held-back member', () => {
+    const s = base()
+    s.service_items.push(item('30', 'Set', 'set-s', { is_set: '1' })) // loser of 3 vs 30
+    s.service_item_components.push(comp('40', '30', 'orphaned'))
+    const p = buildPlan(s, EMPTY)
+    expect(p.items.find((i) => i.legacyId === '30')).toBeUndefined()
+    expect(p.ambiguities.some((x) => x.code === 'component_set_not_imported' && x.legacyId === '40')).toBe(true)
+  })
+
+  it('treats a base_price above numeric(12,2) as unparseable', () => {
+    expect(convertPrice('9999999999.99')).toEqual({ price: '9999999999.99', note: null })
+    expect(convertPrice('10000000000.00')).toEqual({ price: null, note: 'unparseable' })
   })
 })
 

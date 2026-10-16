@@ -82,6 +82,8 @@ export function convertPrice(raw: string | null): { price: string | null; note: 
   if (/[1-9]/.test(frac.slice(2))) return { price: null, note: 'unparseable' }
   // Integer-string arithmetic on purpose: money never goes through a float.
   const satang = BigInt(whole! + (frac + '00').slice(0, 2))
+  // numeric(12,2) tops out at 9,999,999,999.99.
+  if (satang > 999_999_999_999n) return { price: null, note: 'unparseable' }
   if (satang === 0n) return { price: null, note: 'zero_means_unpriced' }
   if (sign === '-') return { price: null, note: 'negative' }
   const s = satang.toString().padStart(3, '0')
@@ -138,7 +140,7 @@ export interface ComponentPlan {
 }
 
 export interface ExistingState {
-  terms: { id: string; name: string; days: number | null; max_km: number | null }[]
+  terms: { id: string; name: string; days: number | null; max_km: number | null; is_active: boolean }[]
   items: {
     id: string
     legacy_id: string | null
@@ -152,7 +154,7 @@ export interface ExistingState {
     warranty_term_name: string | null
     merged: boolean
   }[]
-  components: { id: string; set_item_id: string; sort_order: number; component_name: string; qty: string }[]
+  components: { id: string; set_item_id: string; sort_order: number; component_name: string; qty: string; line_type: string; component_item_id: string | null }[]
 }
 
 export interface Plan {
@@ -204,6 +206,11 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
   }
 
   // ---- warranty terms (only those the items need) ----------------------------
+  for (const w of src.warranties) {
+    if (w.is_active === '0') {
+      flag({ code: 'warranty_inactive_in_prototype', table: 'warranties', legacyId: w.id!, detail: `"${(w.warranty_name ?? '').trim()}" is switched off (is_active = 0) in the prototype; the importer does not carry that flag, review if items use it` })
+    }
+  }
   const warrantyById = new Map(src.warranties.map((w) => [w.id!, w]))
   const needed = new Set(src.service_items.map((r) => r.warranty_id).filter((v): v is string => v !== null))
   const termByLegacy = new Map<string, TermPlan>()
@@ -254,7 +261,10 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
       flag({ code: 'warranty_exists_differs', table: 'warranties', legacyId: id, detail: `"${name}": the shop already has a term with this name (days=${hit.days ?? 'NULL'}, max_km=${hit.max_km ?? 'NULL'}); dump says days=${conv.days ?? 'NULL'}, max_km=${conv.maxKm ?? 'NULL'}. Existing term kept and linked, not changed` })
     }
     const action: Action = hit ? 'unchanged' : 'insert'
-    const plan: TermPlan = { action, legacyId: id, name, days: conv.days, maxKm: conv.maxKm, existingId: hit?.id ?? null, from, isActive: !INACTIVE_WARRANTY_LEGACY_IDS.includes(id) }
+    const plan: TermPlan = { action, legacyId: id, name, days: conv.days, maxKm: conv.maxKm, existingId: hit?.id ?? null, from,
+      // An existing term keeps whatever a person set; a new one starts inactive
+      // when the owner said so. Either way this is the term's EFFECTIVE state.
+      isActive: hit ? hit.is_active : !INACTIVE_WARRANTY_LEGACY_IDS.includes(id) }
     terms.push(plan)
     termByLegacy.set(id, plan)
   }
@@ -278,10 +288,10 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
     if (group.length > 1) {
       // Owner decision (option A): the catalog allows one live item per
       // normalised (category, name), so the lowest legacy id is imported and the
-      // others are held for review (they are all listed in review-duplicates.csv).
+      // others are held for review (they are all listed in review-duplicates-catalog.csv).
       const winner = [...group].sort((a, b) => Number(a) - Number(b))[0]!
       if (legacyId !== winner) {
-        flag({ code: 'item_duplicate_in_source', table: 'service_items', legacyId, detail: `"${category}" / "${name}" appears ${group.length} times in the prototype; #${winner} (lowest id) is imported, this one is NOT, listed in review-duplicates.csv for a person to merge. Side by side: ${group.map((g) => describeRow(byId.get(g)!, compCount)).join(' || ')}` })
+        flag({ code: 'item_duplicate_in_source', table: 'service_items', legacyId, detail: `"${category}" / "${name}" appears ${group.length} times in the prototype; #${winner} (lowest id) is imported, this one is NOT, listed in review-duplicates-catalog.csv for a person to merge. Side by side: ${group.map((g) => describeRow(byId.get(g)!, compCount)).join(' || ')}` })
         continue
       }
     }
@@ -315,7 +325,13 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
     let warrantyLegacyId: string | null = null
     const wid = r.warranty_id ?? null
     if (wid !== null) {
-      if (termByLegacy.has(wid)) warrantyLegacyId = wid
+      const term = termByLegacy.get(wid)
+      if (term && !term.isActive) {
+        // The API copies an item's warranty_term_id onto new quote lines without
+        // looking at is_active, so an inactive term must not be linked at all.
+        // Once a person activates it, a re-run links the item.
+        flag({ code: 'item_warranty_inactive_unlinked', table: 'service_items', legacyId, detail: `"${name}": intended warranty "${term.name}" (#${wid}) is inactive, so the item is imported WITHOUT a warranty link; activate the term and re-run to link it` })
+      } else if (term) warrantyLegacyId = wid
       else flag({ code: 'item_warranty_dropped', table: 'service_items', legacyId, detail: `"${name}": warranty ${wid} could not be imported (see the warranty entries); item imported with no warranty` })
     }
 
@@ -382,10 +398,28 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
     setsWithComponents.add(setLegacy)
     const prior = set.existingId ? existingComp.get(`${set.existingId}\u0000${sortOrder}`) : undefined
     const qty = `${qtyN}.00`
+    // The slot key is (set, sort_order). If a person has since turned this slot
+    // into something else (renamed AND typed it or linked it to an item), the
+    // name difference is no longer a stale import, so do not overwrite it.
+    if (prior && prior.component_name !== name && (prior.line_type !== 'part' || prior.component_item_id !== null)) {
+      flag({ code: 'component_slot_changed', table: 'service_item_components', legacyId, detail: `set ${setLegacy} slot ${sortOrder}: the shop has "${prior.component_name}" (line_type ${prior.line_type}${prior.component_item_id ? ', linked to an item' : ''}), dump has "${name}"; left as is` })
+      continue
+    }
     components.push({
       action: !prior ? 'insert' : prior.component_name === name && prior.qty === qty ? 'unchanged' : 'update',
       legacyId, legacySetId: setLegacy, name, qty, sortOrder, existingId: prior?.id ?? null,
     })
+  }
+  // Slots the shop holds for an imported set that the dump no longer has: never
+  // deleted, but a person should know.
+  const sourceSlots = new Set(src.service_item_components.map((c) => `${c.service_item_id}\u0000${int(c.sort_order)}`))
+  for (const i of items) {
+    if (!i.existingId) continue
+    for (const dbc of existing.components.filter((x) => x.set_item_id === i.existingId)) {
+      if (!sourceSlots.has(`${i.legacyId}\u0000${dbc.sort_order}`)) {
+        flag({ code: 'component_db_slot_not_in_dump', table: 'service_item_components', legacyId: null, detail: `set ${i.legacyId} ("${i.name}") slot ${dbc.sort_order} "${dbc.component_name}" exists in the shop but not in the dump; kept` })
+      }
+    }
   }
   for (const i of items) {
     if (i.isSet && !setsWithComponents.has(i.legacyId)) {

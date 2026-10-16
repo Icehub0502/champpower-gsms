@@ -47,37 +47,66 @@ export function countWarrantyUse(
 // -----------------------------------------------------------------------------
 
 export interface DuplicateGroup {
-  key: string
+  categoryKey: string
+  nameKey: string
+  /** The member the importer imports (lowest numeric id); the rest are held for review. */
+  importedLegacyId: string
   legacyIds: string[]
   names: string[]
   categories: string[]
   createdAt: string[]
+  setPrices: string[]
+  warrantyIds: string[]
+  componentCounts: number[]
 }
 
 /** Prototype rows sharing one normalised (category, name) key, whatever the final import choice. */
-export function duplicateGroups(items: DumpRow[]): DuplicateGroup[] {
+export function duplicateGroups(items: DumpRow[], components: DumpRow[] = []): DuplicateGroup[] {
   const groups = new Map<string, DumpRow[]>()
   for (const r of items) {
-    const key = `${priceKey((r.category ?? '').trim())}|${priceKey((r.product_name ?? '').trim())}`
+    // Keyed on the pair, kept apart (never glued with a separator that a name could contain).
+    const key = JSON.stringify([priceKey((r.category ?? '').trim()), priceKey((r.product_name ?? '').trim())])
     groups.set(key, [...(groups.get(key) ?? []), r])
   }
-  return [...groups].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({
-    key,
-    legacyIds: rows.map((r) => r.id!),
-    names: rows.map((r) => r.product_name ?? ''),
-    categories: rows.map((r) => r.category ?? ''),
-    createdAt: rows.map((r) => r.created_at ?? ''),
-  }))
+  const compCount = new Map<string, number>()
+  for (const c of components) compCount.set(c.service_item_id!, (compCount.get(c.service_item_id!) ?? 0) + 1)
+  return [...groups].filter(([, rows]) => rows.length > 1).map(([key, rows]) => {
+    const [categoryKey, nameKey] = JSON.parse(key) as [string, string]
+    return {
+      categoryKey, nameKey,
+      importedLegacyId: rows.map((r) => r.id!).sort((a, b) => Number(a) - Number(b))[0]!,
+      legacyIds: rows.map((r) => r.id!),
+      names: rows.map((r) => r.product_name ?? ''),
+      categories: rows.map((r) => r.category ?? ''),
+      createdAt: rows.map((r) => r.created_at ?? ''),
+      setPrices: rows.map((r) => r.set_price ?? ''),
+      warrantyIds: rows.map((r) => r.warranty_id ?? ''),
+      componentCounts: rows.map((r) => compCount.get(r.id!) ?? 0),
+    }
+  })
 }
 
-const csvCell = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
+/**
+ * One CSV cell. Quotes anything with a comma, quote, CR or LF, and neutralises a
+ * leading = + - @ (spreadsheet formula injection) by prefixing an apostrophe.
+ */
+export function csvCell(v: string): string {
+  const safe = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v
+  return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe
+}
 
 /** WO-004 section 3 columns, adapted for the catalog. */
 export function duplicatesCsv(groups: DuplicateGroup[]): string {
-  const head = ['kind', 'normalised_key', 'legacy_ids', 'names', 'categories', 'created_at']
+  const head = [
+    'kind', 'normalised_category_key', 'normalised_name_key', 'imported_legacy_id', 'legacy_ids', 'names',
+    'categories', 'created_at', 'set_price', 'warranty_ids', 'component_counts',
+  ]
   const rows = groups.map((g) => [
-    'catalog_item', g.key, g.legacyIds.join(' | '), g.names.join(' | '), g.categories.join(' | '), g.createdAt.join(' | '),
+    'catalog_item', g.categoryKey, g.nameKey, g.importedLegacyId, g.legacyIds.join(' | '), g.names.join(' | '),
+    g.categories.join(' | '), g.createdAt.join(' | '), g.setPrices.join(' | '), g.warrantyIds.join(' | '),
+    g.componentCounts.join(' | '),
   ])
   // BOM so Excel reads the Thai text as UTF-8.
   return '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n'
 }
+

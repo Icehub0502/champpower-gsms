@@ -2,11 +2,16 @@
  * A deliberately tiny reader for mysqldump output (WO-004).
  *
  * It extracts ONLY the tables it is asked for: the line scanner discards every
- * other line without parsing it, so customer rows in the same file are never
- * decoded, held, or printed. It understands exactly what mysqldump emits for
- * those tables -- `CREATE TABLE` column lists and single-line
- * `INSERT INTO ... VALUES (...),(...);` -- and refuses anything else rather
- * than guessing.
+ * other line without parsing it. Within a wanted table, cells outside the
+ * caller's `keepColumns` are advanced over by a scanner that builds no string
+ * and keeps no value, so (for example) a customer-linked table can be asked for
+ * two columns and nothing else is ever decoded. It understands exactly what
+ * mysqldump emits -- `CREATE TABLE` column lists and single-line
+ * `INSERT INTO ... VALUES (...),(...);` -- and refuses anything else.
+ *
+ * Error messages carry the table, tuple number, column index and offset only.
+ * They never echo source text: a parse error must not be able to put a
+ * customer's data into a log.
  */
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
@@ -16,32 +21,52 @@ import { createGunzip } from 'node:zlib'
 export type Cell = string | null
 export type DumpRow = Record<string, Cell>
 
+// MySQL string escapes. \% and \_ are the odd ones: MySQL keeps the backslash
+// (they exist for LIKE patterns). Any other unknown escape drops the backslash
+// and keeps the character.
 const ESCAPES: Record<string, string> = {
   '0': '\0', b: '\b', n: '\n', r: '\r', t: '\t', Z: '\x1a',
-  "'": "'", '"': '"', '\\': '\\',
+  "'": "'", '"': '"', '\\': '\\', '%': '\\%', _: '\\_',
+}
+
+export interface TupleOptions {
+  /** Column indexes to decode; others are skipped without being decoded. Default: all. */
+  keep?: ReadonlySet<number>
+  /** Expected cells per tuple; a mismatch throws. */
+  columns?: number
+  /** Table name for error messages. */
+  label?: string
 }
 
 /**
  * Parse the part of an INSERT statement after `VALUES` into tuples of cells.
+ * With `keep`, each tuple holds only the kept cells, in column order.
  * Throws on anything malformed: a half-parsed catalog is worse than none.
  */
-export function parseValuesTuples(text: string): Cell[][] {
+export function parseValuesTuples(text: string, opts: TupleOptions = {}): Cell[][] {
   const rows: Cell[][] = []
+  const { keep, columns, label = 'dump' } = opts
   let i = 0
+  let tuple = 0
+  let col = 0
   const n = text.length
   const fail = (msg: string): never => {
-    throw new Error(`dump parse error at offset ${i}: ${msg}`)
+    throw new Error(`${label}: parse error in tuple ${tuple}, column ${col}, offset ${i}: ${msg}`)
   }
-  const skipWs = () => { while (i < n && /\s/.test(text[i]!)) i++ }
+  const isWs = (c: string | undefined) => c === ' ' || c === '\n' || c === '\r' || c === '\t'
+  const skipWs = () => { while (i < n && isWs(text[i])) i++ }
 
   skipWs()
   while (i < n) {
     if (text[i] === ';') break
-    if (text[i] !== '(') fail(`expected "(" but found ${JSON.stringify(text[i])}`)
+    tuple++
+    col = 0
+    if (text[i] !== '(') fail('expected "("')
     i++
     const row: Cell[] = []
     for (;;) {
       skipWs()
+      const wanted = !keep || keep.has(col)
       if (text[i] === "'") {
         i++
         let out = ''
@@ -51,29 +76,32 @@ export function parseValuesTuples(text: string): Cell[][] {
           if (c === '\\') {
             const e = text[i + 1]
             if (e === undefined) fail('dangling backslash')
-            // MySQL: an unknown escape drops the backslash and keeps the char.
-            out += ESCAPES[e!] ?? e
+            if (wanted) out += ESCAPES[e!] ?? e
             i += 2
           } else if (c === "'") {
-            if (text[i + 1] === "'") { out += "'"; i += 2 } else { i++; break }
-          } else { out += c; i++ }
+            if (text[i + 1] === "'") { if (wanted) out += "'"; i += 2 } else { i++; break }
+          } else { if (wanted) out += c; i++ }
         }
-        row.push(out)
+        if (wanted) row.push(out)
       } else {
         let j = i
         while (j < n && text[j] !== ',' && text[j] !== ')') j++
-        const raw = text.slice(i, j).trim()
-        if (raw === '') fail('empty value')
-        if (raw === 'NULL') row.push(null)
-        else if (/^-?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(raw)) row.push(raw)
-        else fail(`unsupported literal ${JSON.stringify(raw.slice(0, 20))}`)
+        if (wanted) {
+          const raw = text.slice(i, j).trim()
+          if (raw === '') fail('empty value')
+          if (raw === 'NULL') row.push(null)
+          else if (/^-?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(raw)) row.push(raw)
+          else fail('unsupported literal')
+        } else if (j === i) fail('empty value')
         i = j
       }
+      col++
       skipWs()
       if (text[i] === ',') { i++; continue }
       if (text[i] === ')') { i++; break }
       fail('expected "," or ")"')
     }
+    if (columns !== undefined && col !== columns) fail(`tuple has ${col} cells, expected ${columns}`)
     rows.push(row)
     skipWs()
     if (text[i] === ',') { i++; skipWs() }
@@ -93,14 +121,14 @@ export function parseCreateColumns(createLines: string[]): string[] {
 
 /**
  * Scan a dump (as lines) and return the rows of the wanted tables only.
- * Every table asked for must have a CREATE TABLE and at least one INSERT line
- * in the dump, or this throws -- a silently empty table would read as "nothing
+ * Every table asked for must have exactly one CREATE TABLE and at least one
+ * INSERT line, or this throws -- a silently empty table would read as "nothing
  * to import" instead of "wrong file".
  */
 export async function extractTables(
   lines: AsyncIterable<string> | Iterable<string>,
   wanted: readonly string[],
-  /** Per table, the only columns kept. Every other cell is dropped as soon as the tuple is tokenised; it never reaches a row object. */
+  /** Per table, the only columns kept. Other cells are skipped, never decoded. */
   keepColumns: Readonly<Record<string, readonly string[]>> = {},
 ): Promise<Record<string, DumpRow[]>> {
   const want = new Set(wanted)
@@ -123,7 +151,11 @@ export async function extractTables(
     // here without any further work.
     if (line.startsWith('CREATE TABLE `')) {
       const name = /^CREATE TABLE `([^`]+)`/.exec(line)?.[1]
-      if (name && want.has(name)) { inCreate = name; createBuf = [] }
+      if (name && want.has(name)) {
+        if (columns.has(name)) throw new Error(`table ${name} has more than one CREATE TABLE in the dump`)
+        inCreate = name
+        createBuf = []
+      }
       continue
     }
     if (line.startsWith('INSERT INTO `')) {
@@ -133,12 +165,17 @@ export async function extractTables(
       const cols = columns.get(table)
       if (!cols) throw new Error(`INSERT for ${table} appears before its CREATE TABLE`)
       seenInsert.add(table)
-      for (const cells of parseValuesTuples(line.slice(m[0].length))) {
-        if (cells.length !== cols.length) {
-          throw new Error(`${table}: row has ${cells.length} cells, CREATE TABLE has ${cols.length} columns`)
-        }
-        const keep = keepColumns[table]
-        result[table]!.push(Object.fromEntries(cols.flatMap((c, k) => (!keep || keep.includes(c) ? [[c, cells[k]!] as const] : []))))
+      const keepNames = keepColumns[table]
+      const keepIdx = keepNames ? cols.flatMap((c, k) => (keepNames.includes(c) ? [k] : [])) : undefined
+      if (keepNames && keepIdx!.length !== keepNames.length) {
+        throw new Error(`${table}: a requested column is not in CREATE TABLE`)
+      }
+      const outNames = keepIdx ? keepIdx.map((k) => cols[k]!) : cols
+      const tuples = parseValuesTuples(line.slice(m[0].length), {
+        keep: keepIdx ? new Set(keepIdx) : undefined, columns: cols.length, label: table,
+      })
+      for (const cells of tuples) {
+        result[table]!.push(Object.fromEntries(outNames.map((c, k) => [c, cells[k]!])))
       }
     }
   }

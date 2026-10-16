@@ -28,14 +28,15 @@
  * or by a different dump value (the latter is listed as "price_differs").
  *
  * Options: --dump <file.sql.gz>  --shop <slug, default samut-prakan>
- *          --report-dir <dir, default: next to the dump>
+ *          --report-dir <dir inside the checkout's _import/, default: that folder>
+ *          A real run requires --dump; unknown flags are errors.
  */
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { parse as parseConnectionString } from 'pg-connection-string'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { sql } from 'kysely'
-import { createDb, withShop, type Db, type ScopedTx } from '../client.js'
+import { createDb, unscoped, withShop, type Db, type ScopedTx } from '../client.js'
 import { extractTables, linesOfFile } from './mysqlDump.js'
 import {
   USAGE_COLUMNS, countWarrantyUse, duplicateGroups, duplicatesCsv, type WarrantyUsage,
@@ -101,7 +102,7 @@ export async function readSource(dumpPath: string): Promise<SourceTables> {
 }
 
 async function loadExisting(trx: ScopedTx): Promise<ExistingState> {
-  const terms = await trx.selectFrom('warranty_terms').select(['id', 'name', 'days', 'max_km']).execute()
+  const terms = await trx.selectFrom('warranty_terms').select(['id', 'name', 'days', 'max_km', 'is_active']).execute()
   const termName = new Map(terms.map((t) => [t.id, t.name]))
   const items = await trx
     .selectFrom('catalog_items')
@@ -110,7 +111,7 @@ async function loadExisting(trx: ScopedTx): Promise<ExistingState> {
   const importedIds = items.filter((i) => i.legacy_source === ITEM_SOURCE).map((i) => i.id)
   const components = importedIds.length === 0 ? [] : await trx
     .selectFrom('catalog_set_components')
-    .select(['id', 'set_item_id', 'sort_order', 'component_name', 'qty'])
+    .select(['id', 'set_item_id', 'sort_order', 'component_name', 'qty', 'line_type', 'component_item_id'])
     .where('set_item_id', 'in', importedIds)
     .execute()
   return {
@@ -232,70 +233,129 @@ export async function readWarrantyUsage(dump: string, src: SourceTables): Promis
 }
 
 /** Short readable note for the owner about each warranty imported inactive. */
-export function renderWarrantyReview(plan: Plan, src: SourceTables, usageById: Map<string, WarrantyUsage> = new Map()): string {
+export function renderWarrantyReview(
+  plan: Plan, src: SourceTables, usageById: Map<string, WarrantyUsage> = new Map(), notCountedReason = '',
+): string {
   const L = ['# Warranties imported INACTIVE -- for review', '']
   for (const t of plan.terms.filter((x) => !x.isActive)) {
     const items = src.service_items.filter((r) => r.warranty_id === t.legacyId)
     L.push(`## #${t.legacyId} "${t.name}"`, '')
     L.push(`- days: ${t.days ?? 'none'}   max_km: ${t.maxKm ?? 'none'}   (from ${t.from.year ?? 0}y ${t.from.month ?? 0}m ${t.from.km ?? 0}km)`)
-    L.push(`- catalog items that reference it: ${items.length}${items.length ? ' -- ' + items.map((r) => r.product_name).join(', ') : ''}`)
+    L.push(`- catalog items that point at it: ${items.length}${items.length ? ' -- ' + items.map((r) => r.product_name).join(', ') : ''}`)
     const u = usageById.get(t.legacyId)
     L.push(u
       ? `- old documents using it (exact match on the warranty text, counts only): quotation lines ${u.quotationLines} in ${u.quotationDocs} quotations; receipt lines ${u.receiptLines} in ${u.receiptDocs} receipts`
-      : '- old documents using it: not counted in this run')
-    L.push('- state: is_active = false, so new quotes cannot pick it. Re-activate it in the warranty settings if you want it back; a re-run of the import will not switch it off again.', '')
+      : `- old documents using it: not counted${notCountedReason ? ` (${notCountedReason})` : ' in this run'}`)
+    L.push('- state: the term exists but is switched off (is_active = false). The items above are imported WITHOUT a warranty link, so a new quote for them carries no warranty until this is decided. A re-run does not switch the term off again once a person has activated it.')
+    L.push('- to link them: activate the term in the warranty settings, then run the import again; it links the items above to it.', '')
   }
   if (L.length === 2) L.push('No inactive warranties in this run.')
   return L.join('\n') + '\n'
 }
 
-function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(name)
-  return i >= 0 ? process.argv[i + 1] : undefined
+// -----------------------------------------------------------------------------
+// CLI
+// -----------------------------------------------------------------------------
+
+export interface CliArgs {
+  dryRun: boolean
+  dump: string | undefined
+  shop: string
+  reportDir: string | undefined
+}
+
+/**
+ * Strict argument parsing. A mistyped flag on a script that writes to a
+ * database must fail, not be ignored: `--dryrun` silently meaning "real run"
+ * is exactly the typo this guards against.
+ */
+export function parseCliArgs(argv: readonly string[]): CliArgs {
+  const out: CliArgs = { dryRun: false, dump: undefined, shop: 'samut-prakan', reportDir: undefined }
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!
+    if (a === '--dry-run') { out.dryRun = true; continue }
+    if (a === '--dump' || a === '--shop' || a === '--report-dir') {
+      const v = argv[i + 1]
+      if (v === undefined || v.startsWith('--') || v === '') throw new Error(`${a} needs a value`)
+      i++
+      if (a === '--dump') out.dump = v
+      else if (a === '--shop') out.shop = v
+      else out.reportDir = v
+      continue
+    }
+    throw new Error(`unknown argument "${a.slice(0, 40)}" (known: --dry-run, --dump <file>, --shop <slug>, --report-dir <dir>)`)
+  }
+  // A real run must name its dump explicitly; only a dry-run may use the default.
+  if (!out.dryRun && out.dump === undefined) throw new Error('a real run requires --dump <file> (only --dry-run may use the default dump)')
+  return out
+}
+
+/**
+ * Plan (and, unless dry-run, apply) the import for one shop. Everything goes
+ * through withShop, so RLS applies. Exported so the integration test drives
+ * exactly the code the CLI runs.
+ */
+export async function runCatalogImport(
+  db: Db, shopId: string, src: SourceTables, opts: { dryRun: boolean },
+): Promise<Plan> {
+  return withShop(db, shopId, async (trx) => {
+    if (opts.dryRun) await sql`set transaction read only`.execute(trx)
+    const plan = buildPlan(src, await loadExisting(trx))
+    if (!opts.dryRun) await applyPlan(trx, shopId, plan)
+    return plan
+  })
+}
+
+async function describeFile(path: string): Promise<string> {
+  const st = await stat(path)
+  return `${basename(path)}  ${st.size} bytes  modified ${st.mtime.toISOString()}`
 }
 
 export async function main(): Promise<void> {
-  const dryRun = process.argv.includes('--dry-run')
-  const dump = resolve(arg('--dump') ?? DEFAULT_DUMP)
-  const shopSlug = arg('--shop') ?? 'samut-prakan'
+  const args = parseCliArgs(process.argv.slice(2))
+  const dryRun = args.dryRun
+  const dump = resolve(args.dump ?? DEFAULT_DUMP)
   const url = process.env.DATABASE_URL
   if (!url) throw new Error('DATABASE_URL is not set (run through the npm script so .env is loaded)')
   assertLocalDatabase(url)
 
-  // Validated before anything is read or written. The dump's own folder is
-  // accepted when it is a gitignored `_import` directory (it is, in practice).
-  const checkoutImport = resolve(HERE, '..', '..', '..', '..', '_import')
-  const dumpDir = dirname(dump)
-  const reportRoot = basename(dumpDir) === '_import' ? dumpDir : checkoutImport
-  const reportDir = resolveReportDir(arg('--report-dir') ?? reportRoot, reportRoot)
-
-  const src = await readSource(dump)
-  console.log(`read dump: service_items=${src.service_items.length} service_item_components=${src.service_item_components.length} warranties=${src.warranties.length}`)
-
-  const usage = await readWarrantyUsage(dump, src)
+  // Reports always go under the checkout's own gitignored _import/.
+  const reportRoot = resolve(HERE, '..', '..', '..', '..', '_import')
+  const reportDir = resolveReportDir(args.reportDir ?? reportRoot, reportRoot)
 
   const db: Db = createDb(url)
   try {
+    // Order: guard, connect, role check, and only then read the dump.
     const who = await sql<{ current_user: string }>`select current_user`.execute(db)
     assertAppRole(who.rows[0]?.current_user ?? '')
 
-    const shop = await db.selectFrom('shops').select(['id', 'slug']).where('slug', '=', shopSlug).executeTakeFirst()
-    if (!shop) throw new Error(`no shop with slug "${shopSlug}"`)
+    console.log(`dump: ${await describeFile(dump)}`)
+    const src = await readSource(dump)
+    console.log(`read dump: service_items=${src.service_items.length} service_item_components=${src.service_item_components.length} warranties=${src.warranties.length}`)
+
+    // Not fatal: the usage count is a courtesy for the owner's review note.
+    let usage = new Map<string, WarrantyUsage>()
+    let usageNote = ''
+    try {
+      usage = await readWarrantyUsage(dump, src)
+    } catch (err) {
+      usageNote = err instanceof Error ? err.message : 'unknown error'
+      console.log(`warranty usage not counted (${usageNote})`)
+    }
+
+    const shop = await unscoped(db, (trx) =>
+      trx.selectFrom('shops').select(['id', 'slug']).where('slug', '=', args.shop).executeTakeFirst())
+    if (!shop) throw new Error(`no shop with slug "${args.shop}"`)
     console.log(`shop: ${shop.slug} ${shop.id}`)
 
-    const result = await withShop(db, shop.id, async (trx) => {
-      if (dryRun) await sql`set transaction read only`.execute(trx)
-      const plan = buildPlan(src, await loadExisting(trx))
-      if (!dryRun) await applyPlan(trx, shop.id, plan)
-      return plan
-    })
+    const result = await runCatalogImport(db, shop.id, src, { dryRun })
 
     await mkdir(reportDir, { recursive: true })
     const reportPath = join(reportDir, `catalog-import-report${dryRun ? '-dryrun' : ''}.md`)
     await writeFile(reportPath, renderReport(result, { dryRun, shopSlug: shop.slug, shopId: shop.id, dump }), 'utf8')
-
-    await writeFile(join(reportDir, 'warranty-4-for-review.md'), renderWarrantyReview(result, src, usage), 'utf8')
-    await writeFile(join(reportDir, 'review-duplicates.csv'), duplicatesCsv(duplicateGroups(src.service_items)), 'utf8')
+    await writeFile(join(reportDir, 'warranty-4-for-review.md'), renderWarrantyReview(result, src, usage, usageNote), 'utf8')
+    await writeFile(join(reportDir, 'review-duplicates-catalog.csv'),
+      duplicatesCsv(duplicateGroups(src.service_items, src.service_item_components)), 'utf8')
 
     const ct = (rows: { action: 'insert' | 'update' | 'unchanged' }[]) => JSON.stringify(countByAction(rows))
     console.log(`${dryRun ? 'DRY RUN -- nothing written' : 'WRITTEN'}`)
