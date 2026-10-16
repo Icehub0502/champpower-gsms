@@ -453,6 +453,24 @@ export function discountAtIssue(lines: readonly QuoteLineMoney[], entered: strin
   return formatSatang(quoteTotals(lines, entered).offeredDiscount);
 }
 
+/**
+ * DECISION-2026-10-15 §1. When the customer approved LESS than was offered
+ * (agreed set amounts included) and the quotation carries a discount, confirm
+ * must be given a NEW discount by staff: a discount bargained on 2,000 means
+ * nothing on the 100 that is left, and carrying or clamping it silently bills
+ * 0 baht. The system forces the decision, it does not take it.
+ *
+ * `lines` are the lines as they will be AT confirm (decisions recorded, agreed
+ * set amounts applied); `discount` is the current discount (equal to the offered
+ * one while the document is issued). The API refuses a confirm without an
+ * explicit adjustments.discount when this is true; the confirm dialog uses the
+ * same function to start its discount field empty.
+ */
+export function confirmNeedsNewDiscount(lines: readonly QuoteLineMoney[], discount: string | number): boolean {
+  const t = quoteTotals(lines, discount);
+  return t.discount > 0 && t.approvedSubtotal < t.offeredSubtotal;
+}
+
 /** The footing rule of the offer: subtotal - discount = total, in satang. */
 export function offeredFoots(offeredSubtotal: string, offeredDiscount: string, offeredTotal: string): boolean {
   return toSatang(offeredSubtotal) - toSatang(offeredDiscount) === toSatang(offeredTotal);

@@ -22,7 +22,7 @@
  * write after.
  */
 import {
-  MoneyError, agreedAmountsAfterUndo, discountAtIssue, totalsAfterUndoConfirm, applySetDecision, blocksJobBackToQuoted, canUndoConfirm, checkApprovedAmount,
+  MoneyError, agreedAmountsAfterUndo, confirmNeedsNewDiscount, discountAtIssue, totalsAfterUndoConfirm, applySetDecision, blocksJobBackToQuoted, canUndoConfirm, checkApprovedAmount,
   confirmReadiness, decisionCarries, formatSatang, jobOutcomeAtConfirm, jobStatusOnIssue,
   lineTotalSatang, offeredItemLineIds, planQuotationClose, quoteTotals, quoteTotalsDecimal,
   setsNeedingAmount, subStateAfterMove, toSatang, validateQuoteLine, warrantySnapshotOf,
@@ -100,6 +100,7 @@ export type QuotationError =
   | { code: 'amount_out_of_range' }
   | { code: 'decisions_incomplete'; lineIds: string[] }
   | { code: 'set_amount_required'; lineIds: string[] }
+  | { code: 'discount_required' }
   | { code: 'approved_amount_not_allowed'; lineId: string }
   | { code: 'amount_over_2x'; lineId: string; offered: string; max: string }
   | { code: 'amount_above_offer_free_set'; lineId: string }
@@ -655,6 +656,15 @@ export async function confirm(
       return err({ code: 'approved_amount_not_allowed', lineId: a.lineId })
     }
   }
+  // DECISION-2026-10-15 §1 (front gate, CLAUDE.md §4.y): approved < offered with a discount needs a NEW
+  // discount typed by staff. Judged on the lines AS THEY WILL BE (this request's agreed amounts applied) and
+  // BEFORE any write, so a refusal leaves nothing behind. The clamp further down stays a last net only.
+  const agreedNow = new Map((adjustments?.setLines ?? []).map((a) => [a.lineId, a.approvedAmount]))
+  if (!adjustments?.discount &&
+      confirmNeedsNewDiscount(lineRows.map((r) => ({ ...toDomainLine(r), approvedAmount: agreedNow.get(r.id) ?? r.approved_amount })), doc.discount)) {
+    return err({ code: 'discount_required' })
+  }
+
   // What each cut set held before confirm, kept in the audit so undo can put it back exactly.
   const priorSetAmounts = (adjustments?.setLines ?? []).map((a) => ({ lineId: a.lineId, approvedAmount: byId.get(a.lineId)!.approved_amount }))
   for (const a of adjustments?.setLines ?? []) {

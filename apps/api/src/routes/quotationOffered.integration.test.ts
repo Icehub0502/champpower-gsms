@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto'
 import { sql } from 'kysely'
 import pg from 'pg'
 import { offeredFoots } from '@champpower/domain'
-import type { Quotation } from '@gsms/contracts/index.js'
+import { DiscountRequiredError, type Quotation } from '@gsms/contracts/index.js'
 import { withShop } from '@gsms/db/client.js'
 import { db } from '../lib/db.js'
 import { adminDatabaseUrl, hasDatabase, tier2 } from '../test/env.js'
@@ -373,6 +373,77 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(
       const ia = await audit('quotation_issued', bigRow.id)
       expect(ia[0]!.after).toMatchObject({ offeredDiscount: '300.00' })
       expect(Number((ia[0]!.after as Record<string, string>).enteredDiscount)).toBe(500)
+    })
+
+    // ---- DECISION-2026-10-15 §1: no silent carry ------------------------------
+    /** Offer 2,000 (1,900 + 100) with discount 200; the customer approves only the 100 line. */
+    async function approveOnlyHundred() {
+      const jobId = await quotedJob()
+      await addFree(jobId, 'ลูกหมาก', '1900.00')
+      await addFree(jobId, 'ยาง', '100.00')
+      expect((await PATCH(base(jobId), { discount: '200' })).status).toBe(200)
+      expect((await POST(`${base(jobId)}/issue`)).status).toBe(200)
+      const v = await view(jobId)
+      await decide(jobId, byName(v, 'ลูกหมาก').id, { decision: 'declined', reason: 'too_expensive' })
+      await decide(jobId, byName(v, 'ยาง').id, { decision: 'approved' })
+      return jobId
+    }
+
+    it('D1. pass criterion: offer 2,000 discount 200, approve 100, confirm WITHOUT a discount -> 400 discount_required, nothing written', async () => {
+      const jobId = await approveOnlyHundred()
+      const r = await confirmRaw(jobId)
+      expect(r.status, JSON.stringify(r.body)).toBe(400)
+      expect(r.body).toMatchObject({ error: 'discount_required', fields: { 'adjustments.discount.amount': ['required'] } })
+      expect(DiscountRequiredError.safeParse(r.body).success).toBe(true)
+      expect((await docRows(jobId))[0]).toMatchObject({ status: 'issued', discount: '200.00', offered_discount: '200.00' })
+      // with an explicit new discount it confirms (and the old 200 is not what is stored)
+      const ok = await confirm(jobId, { adjustments: { discount: { amount: '10', reason: 'ลดตามยอดที่เหลือ' } } })
+      expect(ok.totals).toMatchObject({ discount: '10.00', offeredDiscount: '200.00', approvedTotal: '90.00' })
+    })
+
+    it('D2. approved == offered with a discount: no new discount needed', async () => {
+      const { jobId } = await issuedApproved('200')
+      const r = await confirmRaw(jobId)
+      expect(r.status, JSON.stringify(r.body)).toBe(200)
+      expect(r.body.totals).toMatchObject({ discount: '200.00', approvedTotal: '4800.00' })
+    })
+
+    it('D3. discount 0: not needed even when lines were declined', async () => {
+      const jobId = await quotedJob()
+      await addFree(jobId, 'ลูกหมาก', '1900.00')
+      await addFree(jobId, 'ยาง', '100.00')
+      expect((await POST(`${base(jobId)}/issue`)).status).toBe(200)
+      const v = await view(jobId)
+      await decide(jobId, byName(v, 'ลูกหมาก').id, { decision: 'declined', reason: 'too_expensive' })
+      await decide(jobId, byName(v, 'ยาง').id, { decision: 'approved' })
+      const r = await confirmRaw(jobId)
+      expect(r.status, JSON.stringify(r.body)).toBe(200)
+      expect(r.body.totals).toMatchObject({ discount: '0.00', approvedTotal: '100.00' })
+    })
+
+    it('D4. a cut set whose agreed amount is lower, with a discount, also needs a new discount (judged on this request\'s amounts)', async () => {
+      const jobId = await quotedJob()
+      expect((await POST<Quotation>(`${base(jobId)}/lines`, { kind: 'set', itemId: setItem })).status).toBe(201)
+      expect((await PATCH(base(jobId), { discount: '100' })).status).toBe(200)
+      expect((await POST(`${base(jobId)}/issue`)).status).toBe(200)
+      const v = await view(jobId)
+      const parent = v.lines.find((l) => l.parentLineId === null)!
+      await decide(jobId, v.lines.find((l) => l.parentLineId === parent.id)!.id, { decision: 'declined', reason: 'not_needed_yet' })
+      await decide(jobId, parent.id, { decision: 'approved' })
+      const refused = await confirmRaw(jobId, cutBody(parent.id, '5200.00'))
+      expect(refused.status, JSON.stringify(refused.body)).toBe(400)
+      expect(refused.body.error).toBe('discount_required')
+      expect((await docRows(jobId))[0]!.status).toBe('issued')
+      const ok = await confirmRaw(jobId, { adjustments: { ...cutBody(parent.id, '5200.00').adjustments, discount: { amount: '50', reason: 'ตัดชิ้นออก' } } })
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200)
+      expect(ok.body.totals).toMatchObject({ discount: '50.00', approvedTotal: '5150.00' })
+    })
+
+    it('D5. undo after a new discount still restores the OFFERED discount (200)', async () => {
+      const jobId = await approveOnlyHundred()
+      await confirm(jobId, { adjustments: { discount: { amount: '10', reason: 'ลดตามยอดที่เหลือ' } } })
+      await undo(jobId)
+      expect((await docRows(jobId))[0]).toMatchObject({ status: 'issued', discount: '200.00', offered_discount: '200.00' })
     })
 
     it('isolation: an unrelated id is not found', async () => {

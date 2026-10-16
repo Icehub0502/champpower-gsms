@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  agreedAmountsAfterUndo, discountAtIssue, offeredFoots, quoteTotals, quoteTotalsDecimal,
+  agreedAmountsAfterUndo, confirmNeedsNewDiscount, discountAtIssue, offeredFoots, quoteTotals, quoteTotalsDecimal,
   totalsAfterUndoConfirm, type QuoteLineMoney,
 } from './quote.js';
 
@@ -85,5 +85,32 @@ describe('undo-confirm reverses confirm (offered 200, agreed 300)', () => {
     const undone = totalsAfterUndoConfirm(noAdj, offeredDiscount);
     expect(undone.approvedTotal).toBe(before.approvedTotal);
     expect(undone.discount).toBe(offeredDiscount);
+  });
+});
+
+describe('confirmNeedsNewDiscount (DECISION-2026-10-15 §1)', () => {
+  // offer 2,000 (1,900 + 100) with a discount of 200
+  const offer = (declineFirst: boolean) => [
+    line('a', '1900', { approvalStatus: declineFirst ? 'declined' : 'approved' }),
+    line('b', '100'),
+  ];
+  it('pass criterion: offer 2,000, discount 200, approve only 100 -> a new discount is required', () => {
+    expect(confirmNeedsNewDiscount(offer(true), '200')).toBe(true);
+  });
+  it('everything approved (approved == offered) with a discount -> not needed', () => {
+    expect(confirmNeedsNewDiscount(offer(false), '200')).toBe(false);
+  });
+  it('discount 0 -> not needed even when lines are declined', () => {
+    expect(confirmNeedsNewDiscount(offer(true), '0')).toBe(false);
+    expect(confirmNeedsNewDiscount(offer(true), '0.00')).toBe(false);
+  });
+  it('a cut set whose agreed amount is below the offer counts as approved < offered', () => {
+    expect(confirmNeedsNewDiscount([line('s', '6000', { approvedAmount: '5200.00' })], '100')).toBe(true);
+  });
+  it('a set agreed at a HIGHER price than offered is not "less"', () => {
+    expect(confirmNeedsNewDiscount([line('s', '1000', { approvedAmount: '1300.00' })], '100')).toBe(false);
+  });
+  it('pending lines count as not approved', () => {
+    expect(confirmNeedsNewDiscount([line('a', '500', { approvalStatus: 'pending' })], '50')).toBe(true);
   });
 });

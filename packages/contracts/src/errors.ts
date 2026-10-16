@@ -317,6 +317,19 @@ export const SetAmountRequiredError = z
   .strict();
 export type SetAmountRequiredError = z.infer<typeof SetAmountRequiredError>;
 
+// 400 — DECISION-2026-10-15 §1: the customer approved less than was offered and the
+// quotation carries a discount, so confirm needs a NEW discount typed by staff in
+// adjustments.discount. Never carried or clamped silently. The field error uses the
+// same nested-path style as the rest of the confirm body.
+export const DiscountRequiredError = z
+  .object({
+    error: z.literal('discount_required'),
+    message: z.string(),
+    fields: z.object({ 'adjustments.discount.amount': z.array(z.string()) }).strict(),
+  })
+  .strict();
+export type DiscountRequiredError = z.infer<typeof DiscountRequiredError>;
+
 // 422 — an agreed amount above 2x the offer (almost certainly a typo). Revise instead.
 export const ApprovedAmountTooHighError = z
   .object({
@@ -428,6 +441,7 @@ export const QuotationRefusal = z.discriminatedUnion('error', [
   QuotationEmptyError,
   DecisionsIncompleteError,
   SetAmountRequiredError,
+  DiscountRequiredError,
   ApprovedAmountTooHighError,
   ApprovedAmountAboveFreeSetError,
   ApprovedAmountNotAllowedError,
