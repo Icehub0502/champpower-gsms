@@ -247,7 +247,7 @@ export function renderWarrantyReview(
       ? `- old documents using it (exact match on the warranty text, counts only): quotation lines ${u.quotationLines} in ${u.quotationDocs} quotations; receipt lines ${u.receiptLines} in ${u.receiptDocs} receipts`
       : `- old documents using it: not counted${notCountedReason ? ` (${notCountedReason})` : ' in this run'}`)
     L.push('- state: the term exists but is switched off (is_active = false). The items above are imported WITHOUT a warranty link, so a new quote for them carries no warranty until this is decided. A re-run does not switch the term off again once a person has activated it.')
-    L.push('- to link them: activate the term in the warranty settings, then run the import again; it links the items above to it.', '')
+    L.push('- to link them: once Ice decides on this term, activate it in the warranty settings and link the item(s) above to it in the catalog screen. (On a test database only, re-running the import also links them; do not re-run the import against production for this.)', '')
   }
   if (L.length === 2) L.push('No inactive warranties in this run.')
   return L.join('\n') + '\n'

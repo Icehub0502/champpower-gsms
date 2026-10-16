@@ -373,6 +373,13 @@ describe('mysqldump reader: projection and errors', () => {
     try { parseValuesTuples(`secret-start`, { label: 'tbl' }) } catch (e) { msg2 = String(e) }
     expect(msg2).not.toContain('secret')
   })
+  it('a skipped unquoted cell containing a quote is a parse error that carries no value', () => {
+    let msg = ''
+    try { parseValuesTuples(`(1,ab'secretcd,3)`, { keep: new Set([0]), label: 'tbl' }) } catch (e) { msg = String(e) }
+    expect(msg).toMatch(/unexpected quote/)
+    expect(msg).toMatch(/tbl: parse error in tuple 1, column 1/)
+    expect(msg).not.toContain('secret')
+  })
   it('rejects a tuple with the wrong number of cells', () => {
     expect(() => parseValuesTuples(`(1,2,3)`, { columns: 2 })).toThrow(/expected 2/)
   })

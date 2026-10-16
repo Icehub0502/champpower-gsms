@@ -92,7 +92,12 @@ export function parseValuesTuples(text: string, opts: TupleOptions = {}): Cell[]
           if (raw === 'NULL') row.push(null)
           else if (/^-?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(raw)) row.push(raw)
           else fail('unsupported literal')
-        } else if (j === i) fail('empty value')
+        } else {
+          if (j === i) fail('empty value')
+          // An unquoted cell never contains a quote; one that does means the
+          // scanner is out of step with the string it is skipping.
+          if (text.slice(i, j).includes("'")) fail('unexpected quote in unquoted cell')
+        }
         i = j
       }
       col++
