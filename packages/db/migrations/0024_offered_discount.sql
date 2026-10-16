@@ -53,11 +53,12 @@
 --
 -- ROWS:     BACKFILL touches EVERY quotation row of documents, once, with user
 --           triggers off (SET LOCAL session_replication_role = replica, back to
---           origin right after; the role must be superuser/BYPASSRLS, which the
+--           origin right after; the role must be a superuser, which the
 --           guard checks; this also keeps updated_at as it was):
---             quotation, status draft
+--             quotation, status draft, OR number IS NULL (a draft that was
+--             voided: never issued, so offered_total was never written)
 --                 offered_discount = GREATEST(discount, 0)
---             quotation, status issued / signed / superseded / void
+--             quotation, status issued / signed / superseded / void, with a number
 --                 offered_discount = GREATEST(S - offered_total, 0)
 --                 where S = SUM(line_total) over the document's lines with
 --                 parent_line_id IS NULL (0 when it has none)
@@ -72,7 +73,8 @@
 --           0 by GREATEST). A $verify$ block then RAISES EXCEPTION (whole file
 --           rolls back) if any non-draft quotation fails to foot
 --           (S - offered_discount <> offered_total, which is exactly the
---           approximated case) or any draft differs from GREATEST(discount, 0),
+--           approximated case) or any draft / never-numbered quotation differs
+--           from GREATEST(discount, 0),
 --           so an approximated row stops the migration for a human decision.
 --           It finally RAISES NOTICE with the count of:
 --             (b) issued quotations whose discount <> offered_discount after the
@@ -238,8 +240,9 @@ BEGIN
                   WHERE tgname = 'trg_document_lines_immutable' AND NOT tgisinternal) THEN
     RAISE EXCEPTION '0024_offered_discount requires 0022_quote_freeze first';
   END IF;
-  IF NOT (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user) THEN
-    RAISE EXCEPTION '0024 must run as a superuser/BYPASSRLS role (documents is FORCE RLS; the backfill would silently touch 0 rows)';
+  -- superuser, not merely BYPASSRLS: SET session_replication_role (below) needs it.
+  IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+    RAISE EXCEPTION '0024 must run as a superuser (documents is FORCE RLS and the backfill switches triggers off; as anyone else it would touch 0 rows or fail)';
   END IF;
 END
 $guard$;
@@ -265,9 +268,11 @@ BEGIN
 END
 $assert$;
 
-UPDATE documents SET offered_discount = GREATEST(discount, 0) WHERE type = 'quotation' AND status = 'draft';
+-- A draft, or a draft that was voided (status <> 'draft' but number IS NULL: it was never
+-- issued, so offered_total was never written), carries its discount as entered.
+UPDATE documents SET offered_discount = GREATEST(discount, 0) WHERE type = 'quotation' AND (status = 'draft' OR number IS NULL);
 UPDATE documents d SET offered_discount = GREATEST(COALESCE((SELECT SUM(l.line_total) FROM document_lines l WHERE l.document_id = d.id AND l.parent_line_id IS NULL), 0) - d.offered_total, 0)
- WHERE d.type = 'quotation' AND d.status <> 'draft';
+ WHERE d.type = 'quotation' AND d.status <> 'draft' AND d.number IS NOT NULL;
 
 SET LOCAL session_replication_role = origin;
 
@@ -275,9 +280,9 @@ DO $verify$
 DECLARE n_bad integer; n_draft integer; n_stale integer;
 BEGIN
   SELECT count(*) INTO n_bad FROM documents d
-   WHERE d.type = 'quotation' AND d.status <> 'draft'
+   WHERE d.type = 'quotation' AND d.status <> 'draft' AND d.number IS NOT NULL
      AND COALESCE((SELECT SUM(l.line_total) FROM document_lines l WHERE l.document_id = d.id AND l.parent_line_id IS NULL), 0) - d.offered_discount <> d.offered_total;
-  SELECT count(*) INTO n_draft FROM documents WHERE type = 'quotation' AND status = 'draft' AND offered_discount <> GREATEST(discount, 0);
+  SELECT count(*) INTO n_draft FROM documents WHERE type = 'quotation' AND (status = 'draft' OR number IS NULL) AND offered_discount <> GREATEST(discount, 0);
   IF n_bad > 0 OR n_draft > 0 THEN
     RAISE EXCEPTION '0024 backfill does not foot: % non-draft quotation(s), % draft(s). Nothing applied; decide those rows first.', n_bad, n_draft;
   END IF;
@@ -288,7 +293,9 @@ $verify$;
 
 -- -----------------------------------------------------------------------------
 -- 3. documents_are_immutable() — 0022's function with the changes in WHAT
---    (marked "0024" below). Everything else is 0022 verbatim.
+--    (marked "0024" below). The logic of everything else is 0022's; some of 0022's
+--    longer comments are shortened or dropped here (the ROLLBACK block above keeps
+--    0022's function byte-for-byte, comments included).
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION documents_are_immutable() RETURNS trigger AS $$
 DECLARE

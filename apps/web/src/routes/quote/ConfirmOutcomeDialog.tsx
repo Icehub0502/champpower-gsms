@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import {
-  MoneyError, confirmNeedsNewDiscount, quoteTotals, setsNeedingAmount, toSatang, type QuoteLineDecisionState, type QuoteLineMoney,
+  MoneyError, confirmNeedsNewDiscount, discountExceedsApproved, quoteTotals, setsNeedingAmount, toSatang, type QuoteLineDecisionState, type QuoteLineMoney,
 } from '@champpower/domain';
 import { ConfirmInput, type Quotation, type QuotationLine } from '@gsms/contracts/index.js';
 import { Modal } from '../../components/ui/Modal';
 import { baht, formatSatangText, typedSatang } from '../../lib/money';
-import type { QuoteFailure } from './quoteErrors';
+import { discountExceedsApprovedText, type QuoteFailure } from './quoteErrors';
 import { amountHint } from './quoteView';
 
 interface ConfirmOutcomeDialogProps {
@@ -51,6 +51,8 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
   const [discountReason, setDiscountReason] = useState('');
   const [touched, setTouched] = useState(false);
   const [failure, setFailure] = useState<QuoteFailure | null>(null);
+  const discountRefId = useId();
+  const discountErrorId = useId();
 
   const setNeedsSending = (s: QuotationLine) => missing.has(s.id) || s.approvedAmount === null || (amounts[s.id] ?? '').trim() !== s.approvedAmount;
 
@@ -62,22 +64,54 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
     return { ...moneyStateOf(l), approvedAmount: typed !== '' && typedSatang(typed) !== null ? typed : l.approvedAmount };
   });
   let needsNewDiscount: boolean;
-  let liveApprovedSubtotal: number | null = null;
   try {
-    const atConfirm = linesAtConfirm();
-    needsNewDiscount = confirmNeedsNewDiscount(atConfirm, quotation.totals.discount);
-    // Only needed for the reference text, so only computed when the rule applies.
-    if (needsNewDiscount) liveApprovedSubtotal = quoteTotals(atConfirm).approvedSubtotal;
+    needsNewDiscount = confirmNeedsNewDiscount(linesAtConfirm(), quotation.totals.discount);
   } catch (err) {
     // A typed set amount the totals cannot hold: judge on the stored lines; the preview flags the overflow.
     if (!(err instanceof MoneyError)) throw err;
     needsNewDiscount = confirmNeedsNewDiscount(lines.map(moneyStateOf), quotation.totals.discount);
   }
-  const discountText = needsNewDiscount && !discountEntered ? '' : discount;
+
+  // When the rule switches ON mid-dialog (a lower set amount was typed), whatever was in
+  // the discount box was typed against the old total: empty it again so staff decide anew.
+  // Previous-render value kept in state, not a ref: React's pattern for adjusting state on
+  // a change seen during render (a ref must not be read or written while rendering).
+  const [prevNeedsNewDiscount, setPrevNeedsNewDiscount] = useState(needsNewDiscount);
+  let enteredNow = discountEntered;
+  if (prevNeedsNewDiscount !== needsNewDiscount) {
+    setPrevNeedsNewDiscount(needsNewDiscount);
+    if (needsNewDiscount && discountEntered) {
+      setDiscountEntered(false);
+      enteredNow = false;
+    }
+  }
+
+  const discountText = needsNewDiscount && !enteredNow ? '' : discount;
   const discountMissing = needsNewDiscount && discountText.trim() === '';
   const discountSatang = typedSatang(discountText);
   // Under the rule the discount is ALWAYS sent (the API wants an explicit one), with its reason.
   const discountChanged = needsNewDiscount || discountSatang === null || discountSatang !== toSatang(quotation.totals.discount);
+
+  // The approved subtotal at confirm, for the reference text and the "more than approved"
+  // check. Only computed when one of them is on screen.
+  let liveApprovedSubtotal: number | null = null;
+  if (needsNewDiscount || (discountChanged && discountSatang !== null)) {
+    try {
+      liveApprovedSubtotal = quoteTotals(linesAtConfirm()).approvedSubtotal;
+    } catch (err) {
+      if (!(err instanceof MoneyError)) throw err;
+    }
+  }
+  // The domain's rule the API answers with discount_exceeds_approved, on the same lines — advance
+  // notice that also blocks sending, so staff see it before the server has to refuse.
+  let discountExceeds = false;
+  if (discountChanged && discountSatang !== null) {
+    try {
+      discountExceeds = discountExceedsApproved(linesAtConfirm(), discountText.trim());
+    } catch (err) {
+      if (!(err instanceof MoneyError)) throw err;
+    }
+  }
 
   // A confirm 400 keys its fields by full path, the set by its line id:
   // "adjustments.setLines.<lineId>.approvedAmount" / ".reason",
@@ -109,7 +143,9 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
     ? 'กรอกส่วนลดใหม่ก่อนยืนยัน (ไม่ให้ส่วนลดใส่ 0)'
     : touched && discountSatang === null
       ? 'จำนวนเงินไม่ถูกต้อง — ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง'
-      : serverField('adjustments.discount.amount');
+      : discountExceeds
+        ? discountExceedsApprovedText(liveApprovedSubtotal !== null ? `฿${formatSatangText(liveApprovedSubtotal)}` : baht(quotation.totals.approvedSubtotal))
+        : serverField('adjustments.discount.amount');
   const discountReasonError = touched && discountChanged && discountReason.trim() === ''
     ? 'เปลี่ยนส่วนลดต้องกรอกเหตุผล'
     : serverField('adjustments.discount.reason');
@@ -146,7 +182,7 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
     const invalid = sets.some((s) => {
       const typed = (amounts[s.id] ?? '').trim();
       return setNeedsSending(s) && (typed === '' || typedSatang(typed) === null || (reasons[s.id] ?? '').trim() === '');
-    }) || discountSatang === null || (discountChanged && discountReason.trim() === '');
+    }) || discountMissing || discountSatang === null || discountExceeds || (discountChanged && discountReason.trim() === '');
     if (invalid) return;
 
     const setLines = sets.filter(setNeedsSending).map((s) => ({
@@ -218,7 +254,7 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
           </legend>
           {needsNewDiscount && (
             // The old deal as reference only — every figure is the server's or a domain total, never summed here.
-            <p className="qt-line-sub" data-testid="discount-reference">
+            <p className="qt-line-sub" data-testid="discount-reference" id={discountRefId}>
               ส่วนลดที่ตกลงไว้ <span className="mono">{formatSatangText(toSatang(quotation.totals.discount))}</span> บาท
               บนยอด <span className="mono">{formatSatangText(toSatang(quotation.totals.offeredSubtotal))}</span>
               {' · '}ยอดอนุมัติตอนนี้ <span className="mono">{formatSatangText(liveApprovedSubtotal ?? toSatang(quotation.totals.approvedSubtotal))}</span> บาท
@@ -228,11 +264,12 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
             <span className="ci-field-label">ส่วนลด (บาท)</span>
             <input
               inputMode="decimal" value={discountText} disabled={busy}
-              placeholder={needsNewDiscount ? 'กรอกส่วนลดใหม่ (ไม่ให้ใส่ 0)' : undefined}
+              placeholder={needsNewDiscount ? 'เช่น 0' : undefined}
               aria-invalid={discountError ? true : undefined}
+              aria-describedby={[needsNewDiscount ? discountRefId : null, discountError ? discountErrorId : null].filter(Boolean).join(' ') || undefined}
               onChange={(e) => { setDiscount(e.target.value); setDiscountEntered(true); }}
             />
-            {discountError && <span className="ci-field-error">{discountError}</span>}
+            {discountError && <span className="ci-field-error" id={discountErrorId}>{discountError}</span>}
           </label>
           {discountChanged && (
             <label className={`field ci-field${discountReasonError ? ' has-error' : ''}`}>
@@ -249,7 +286,7 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
         </p>
 
         <div className="row-flex">
-          <button type="submit" className="btn" disabled={busy || discountMissing}>{busy ? 'กำลังยืนยัน...' : 'ยืนยันผลลูกค้า'}</button>
+          <button type="submit" className="btn" disabled={busy}>{busy ? 'กำลังยืนยัน...' : 'ยืนยันผลลูกค้า'}</button>
           <button type="button" className="btn secondary" disabled={busy} onClick={onClose}>ยกเลิก</button>
         </div>
       </form>

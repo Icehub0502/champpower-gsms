@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  agreedAmountsAfterUndo, confirmNeedsNewDiscount, discountAtIssue, offeredFoots, quoteTotals, quoteTotalsDecimal,
+  agreedAmountsAfterUndo, confirmNeedsNewDiscount, discountAtIssue, discountExceedsApproved, offeredFoots, quoteTotals, quoteTotalsDecimal,
   totalsAfterUndoConfirm, type QuoteLineMoney,
 } from './quote.js';
 
@@ -112,5 +112,31 @@ describe('confirmNeedsNewDiscount (DECISION-2026-10-15 §1)', () => {
   });
   it('pending lines count as not approved', () => {
     expect(confirmNeedsNewDiscount([line('a', '500', { approvalStatus: 'pending' })], '50')).toBe(true);
+  });
+  it('all lines declined with a discount: the rule applies (current behaviour, pinned)', () => {
+    expect(confirmNeedsNewDiscount([line('a', '1000', { approvalStatus: 'declined' })], '200')).toBe(true);
+  });
+});
+
+describe('discountExceedsApproved', () => {
+  const approved100 = [line('a', '1900', { approvalStatus: 'declined' }), line('b', '100')];
+  it('a discount above the approved subtotal is refused', () => {
+    expect(discountExceedsApproved(approved100, '100.01')).toBe(true);
+    expect(discountExceedsApproved(approved100, '200')).toBe(true);
+  });
+  it('equal to the approved subtotal is allowed (bill 0), and so is anything below', () => {
+    expect(discountExceedsApproved(approved100, '100')).toBe(false);
+    expect(discountExceedsApproved(approved100, '10')).toBe(false);
+    expect(discountExceedsApproved(approved100, '0')).toBe(false);
+  });
+  it('an agreed set amount counts, not the offered price', () => {
+    const cut = [line('s', '6000', { approvedAmount: '5200.00' })];
+    expect(discountExceedsApproved(cut, '5200')).toBe(false);
+    expect(discountExceedsApproved(cut, '5200.01')).toBe(true);
+  });
+  it('nothing approved: only 0 fits', () => {
+    const none = [line('a', '500', { approvalStatus: 'declined' })];
+    expect(discountExceedsApproved(none, '0')).toBe(false);
+    expect(discountExceedsApproved(none, '1')).toBe(true);
   });
 });

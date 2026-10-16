@@ -330,6 +330,18 @@ export const DiscountRequiredError = z
   .strict();
 export type DiscountRequiredError = z.infer<typeof DiscountRequiredError>;
 
+// 400 — the discount typed at confirm is larger than the approved subtotal. Refused, not
+// clamped silently (the clamp is only the last net). `max` is the approved subtotal.
+export const DiscountExceedsApprovedError = z
+  .object({
+    error: z.literal('discount_exceeds_approved'),
+    message: z.string(),
+    fields: z.object({ 'adjustments.discount.amount': z.array(z.string()) }).strict(),
+    max: z.string(),
+  })
+  .strict();
+export type DiscountExceedsApprovedError = z.infer<typeof DiscountExceedsApprovedError>;
+
 // 422 — an agreed amount above 2x the offer (almost certainly a typo). Revise instead.
 export const ApprovedAmountTooHighError = z
   .object({
@@ -442,6 +454,7 @@ export const QuotationRefusal = z.discriminatedUnion('error', [
   DecisionsIncompleteError,
   SetAmountRequiredError,
   DiscountRequiredError,
+  DiscountExceedsApprovedError,
   ApprovedAmountTooHighError,
   ApprovedAmountAboveFreeSetError,
   ApprovedAmountNotAllowedError,

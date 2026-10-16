@@ -13,8 +13,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { sql } from 'kysely'
 import pg from 'pg'
-import { offeredFoots } from '@champpower/domain'
-import { DiscountRequiredError, type Quotation } from '@gsms/contracts/index.js'
+import { offeredFoots, toSatang } from '@champpower/domain'
+import { DiscountExceedsApprovedError, DiscountRequiredError, type Quotation } from '@gsms/contracts/index.js'
 import { withShop } from '@gsms/db/client.js'
 import { db } from '../lib/db.js'
 import { adminDatabaseUrl, hasDatabase, tier2 } from '../test/env.js'
@@ -344,21 +344,22 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(
       await undo(jobId)
       const v = await view(jobId)
       expect(byName(v, 'ชุดโปรทดสอบ').approvedAmount).toBeNull()
-      expect(Number(v.totals.approvedSubtotal) - Number(v.totals.approvedDiscount)).toBe(Number(v.totals.approvedTotal))
+      expect(toSatang(v.totals.approvedSubtotal) - toSatang(v.totals.approvedDiscount)).toBe(toSatang(v.totals.approvedTotal))
       expect(v.totals.approvedTotal).toBe('6000.00')
       const again = await confirmRaw(jobId)
       expect(again.body).toMatchObject({ error: 'set_amount_required' })
     })
 
-    it('C. an agreed discount above the approved subtotal is stored clamped; the audit keeps what was typed', async () => {
+    it('C. a typed discount above the approved subtotal is REFUSED (400 discount_exceeds_approved), nothing written; equal to it is allowed', async () => {
       const { jobId } = await issuedApproved('200')
-      const c = await confirm(jobId, { adjustments: { discount: { amount: '99999', reason: 'ทดสอบ' } } })
+      const r = await confirmRaw(jobId, { adjustments: { discount: { amount: '99999', reason: 'ทดสอบ' } } })
+      expect(r.status, JSON.stringify(r.body)).toBe(400)
+      expect(r.body).toMatchObject({ error: 'discount_exceeds_approved', max: '5000.00', fields: { 'adjustments.discount.amount': ['exceeds_approved'] } })
+      expect(DiscountExceedsApprovedError.safeParse(r.body).success).toBe(true)
+      expect((await docRows(jobId))[0]).toMatchObject({ status: 'issued', discount: '200.00', offered_discount: '200.00' })
+      expect(await audit('quotation_confirmed', (await docRows(jobId))[0]!.id)).toHaveLength(0)
+      const c = await confirm(jobId, { adjustments: { discount: { amount: '5000', reason: 'ทดสอบ' } } })
       expect(c.totals).toMatchObject({ discount: '5000.00', approvedTotal: '0.00', offeredDiscount: '200.00' })
-      const row = (await docRows(jobId))[0]!
-      expect(row).toMatchObject({ discount: '5000.00', offered_discount: '200.00' })
-      const a = await audit('quotation_confirmed', row.id)
-      expect(Number((a[0]!.after as Record<string, string>).enteredDiscount)).toBe(99999)
-      expect(a[0]!.after).toMatchObject({ discount: '5000.00' })
       // an unclamped confirm records no enteredDiscount
       const ok = await issuedApproved('200')
       await confirm(ok.jobId, { adjustments: { discount: { amount: '300', reason: 'ลูกค้าประจำ' } } })
@@ -444,6 +445,76 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(
       await confirm(jobId, { adjustments: { discount: { amount: '10', reason: 'ลดตามยอดที่เหลือ' } } })
       await undo(jobId)
       expect((await docRows(jobId))[0]).toMatchObject({ status: 'issued', discount: '200.00', offered_discount: '200.00' })
+    })
+
+    // ---- fix round (code / security review) ------------------------------------
+    /** A set quote (6000) with an offered discount, one piece declined, the set approved. */
+    async function cutSetWithDiscount(offered = '100') {
+      const jobId = await quotedJob()
+      expect((await POST<Quotation>(`${base(jobId)}/lines`, { kind: 'set', itemId: setItem })).status).toBe(201)
+      expect((await PATCH(base(jobId), { discount: offered })).status).toBe(200)
+      expect((await POST(`${base(jobId)}/issue`)).status).toBe(200)
+      const v = await view(jobId)
+      const parent = v.lines.find((l) => l.parentLineId === null)!
+      await decide(jobId, v.lines.find((l) => l.parentLineId === parent.id)!.id, { decision: 'declined', reason: 'not_needed_yet' })
+      await decide(jobId, parent.id, { decision: 'approved' })
+      return { jobId, parentId: parent.id }
+    }
+
+    it('F1. confirm with setLines AND a new discount, then undo: both are restored (amount NULL, discount back to the offered 100)', async () => {
+      const { jobId, parentId } = await cutSetWithDiscount('100')
+      const c = await confirm(jobId, { adjustments: { ...cutBody(parentId, '5200.00').adjustments, discount: { amount: '50', reason: 'ตัดชิ้นออก' } } })
+      expect(c.totals).toMatchObject({ discount: '50.00', approvedTotal: '5150.00' })
+      const u = await undo(jobId)
+      expect(byName(u, 'ชุดโปรทดสอบ').approvedAmount).toBeNull()
+      expect(u.totals).toMatchObject({ discount: '100.00', offeredDiscount: '100.00', approvedTotal: '5900.00' })
+      expect((await docRows(jobId))[0]).toMatchObject({ status: 'issued', discount: '100.00', offered_discount: '100.00', approved_total: '5900.00' })
+    })
+
+    it('F2. every line declined with an existing discount: the §1 rule applies (pinned) — 400 without a discount, 200 with 0', async () => {
+      const jobId = await quotedJob()
+      await addFree(jobId, 'ลูกหมาก', '1900.00')
+      await addFree(jobId, 'ยาง', '100.00')
+      expect((await PATCH(base(jobId), { discount: '200' })).status).toBe(200)
+      expect((await POST(`${base(jobId)}/issue`)).status).toBe(200)
+      const v = await view(jobId)
+      await decide(jobId, byName(v, 'ลูกหมาก').id, { decision: 'declined', reason: 'too_expensive' })
+      await decide(jobId, byName(v, 'ยาง').id, { decision: 'declined', reason: 'too_expensive' })
+      const r = await confirmRaw(jobId)
+      expect(r.status, JSON.stringify(r.body)).toBe(400)
+      expect(r.body.error).toBe('discount_required')
+      const zero = await confirmRaw(jobId, { adjustments: { discount: { amount: '0', reason: 'ไม่ทำเลย' } } })
+      expect(zero.status, JSON.stringify(zero.body)).toBe(200)
+      expect(zero.body.totals).toMatchObject({ discount: '0.00', approvedTotal: '0.00' })
+    })
+
+    it('F3. undo reads ITS OWN confirm row (signedAt = documents.signed_at), not merely the newest audit row', async () => {
+      const { jobId, parentId } = await cutSet()
+      await confirm(jobId, cutBody(parentId, '5200.00'))
+      const row = (await docRows(jobId))[0]!
+      // A newer, well-formed confirm row that belongs to some other signedAt, claiming a prior of 999.
+      const admin = new pg.Client({ connectionString: adminDatabaseUrl })
+      await admin.connect()
+      try {
+        await admin.query('set session_replication_role = replica')
+        await admin.query(
+          `insert into audit_logs (shop_id, actor_id, action, entity_type, entity_id, before, after, at)
+           values ($1, $2, 'quotation_confirmed', 'documents', $3, $4::jsonb, $5::jsonb, now() + interval '1 minute')`,
+          [fx.shopA, fx.userId, row.id,
+            JSON.stringify({ discount: '0.00', offeredDiscount: '0.00', setLines: [{ lineId: parentId, approvedAmount: '999.00' }] }),
+            JSON.stringify({ approvedTotal: '1.00', discount: '0.00', setLines: [{ lineId: parentId, approvedAmount: '1.00', reason: 'x' }], jobAdvancedFrom: null, signedAt: '2020-01-01T00:00:00.000Z' })])
+      } finally { await admin.end() }
+      await undo(jobId)
+      expect(byName(await view(jobId), 'ชุดโปรทดสอบ').approvedAmount).toBeNull() // from OUR row (prior null), not 999
+    })
+
+    it('F4. shop B calling undo on shop A\'s confirmed quotation gets 404 and nothing changes', async () => {
+      const { jobId } = await issuedApproved('200')
+      await confirm(jobId)
+      const tokenB = (await issueTokensFor(fx.userId, fx.shopB, 'owner')).accessToken
+      const r = await post<any>(api, `${base(jobId)}/confirm/undo`, { reason: 'ลองข้ามร้าน' }, tokenB) // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(r.status, JSON.stringify(r.body)).toBe(404)
+      expect((await docRows(jobId))[0]!.status).toBe('signed')
     })
 
     it('isolation: an unrelated id is not found', async () => {

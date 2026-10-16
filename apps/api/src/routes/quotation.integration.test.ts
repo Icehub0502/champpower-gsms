@@ -699,14 +699,18 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(
         })
       })
 
-      it('a discount larger than the approved subtotal clamps; the approved total is never negative', async () => {
+      it('a typed discount larger than the approved subtotal is refused (400 discount_exceeds_approved); equal to it is allowed and the approved total is never negative', async () => {
         const j = await draftQuote()
         await addFree(j.jobId, 'ลูกหมาก', '1000.00')
         await addFree(j.jobId, 'ยาง', '400.00')
         const v = await issue(j.jobId)
         await approve(j.jobId, byName(v, 'ลูกหมาก').id)
         await decline(j.jobId, byName(v, 'ยาง').id, 'too_expensive')
-        const c = await confirm(j.jobId, { adjustments: { discount: { amount: '5000.00', reason: 'ทดสอบ' } } })
+        const over = await confirmRaw(j.jobId, { adjustments: { discount: { amount: '5000.00', reason: 'ทดสอบ' } } })
+        expect(over.status, JSON.stringify(over.body)).toBe(400)
+        expect(over.body).toMatchObject({ error: 'discount_exceeds_approved', max: '1000.00', fields: { 'adjustments.discount.amount': ['exceeds_approved'] } })
+        expect((await view(j.jobId)).status).toBe('issued')
+        const c = await confirm(j.jobId, { adjustments: { discount: { amount: '1000.00', reason: 'ทดสอบ' } } })
         expect(c.totals.approvedTotal).toBe('0.00')
         expect(c.totals.approvedDiscount).toBe('1000.00')
         // the offered side is frozen at issue (two-totals rule, CLAUDE.md §5.1 item 3): a discount set at confirm moves only the approved side

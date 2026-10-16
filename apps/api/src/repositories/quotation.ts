@@ -16,6 +16,7 @@
  */
 import { sql } from 'kysely'
 import type { ScopedTx } from '@gsms/db/client.js'
+import { ConfirmAuditAfter, ConfirmAuditBefore } from '../lib/confirmAudit.js'
 
 export interface DocumentRow {
   id: string
@@ -309,14 +310,6 @@ export async function applyDecisions(trx: ScopedTx, changes: readonly DecisionWr
   }
 }
 
-/**
- * What the current confirm of this document recorded about the job, read from the
- * structured `after` of its newest `quotation_confirmed` audit row (never from any
- * message text). `jobAdvancedFrom` is the status confirm moved the job FROM, or null
- * when confirm left the job alone. undefined = no such row (confirmed before this
- * field existed): the caller must then not move the job.
- * Relies on idx_audit_entity (shop_id, entity_type, entity_id).
- */
 export interface ConfirmRecord {
   jobAdvancedFrom: string | null
   /** Lines confirm wrote an agreed amount to. */
@@ -327,27 +320,38 @@ export interface ConfirmRecord {
   hasPriorAmounts: boolean
 }
 
-export async function latestConfirmAfter(trx: ScopedTx, documentId: string): Promise<ConfirmRecord | undefined> {
-  const row = await trx
+/**
+ * What the confirm that produced the document's CURRENT signed state recorded: whether it
+ * moved the job (`jobAdvancedFrom`: the status it moved the job FROM, or null) and which
+ * cut sets it wrote an agreed amount to, with what they held before. Read from the
+ * structured `quotation_confirmed` audit row (never from any message text), parsed with
+ * the same schema the writer uses (lib/confirmAudit.ts); a malformed row THROWS.
+ *
+ * The row is picked by `signedAt` === documents.signed_at, so an earlier confirm of the
+ * same document (confirm, undo, confirm again) is never mistaken for the current one.
+ * Rows written before signedAt was recorded fall back to the newest row.
+ * undefined = no row, or a row from before jobAdvancedFrom existed: the caller must then
+ * not move the job.
+ * Relies on idx_audit_entity (shop_id, entity_type, entity_id).
+ */
+export async function latestConfirmAfter(trx: ScopedTx, documentId: string, signedAt: Date | null): Promise<ConfirmRecord | undefined> {
+  const rows = await trx
     .selectFrom('audit_logs')
-    .select(sql<string | null>`after ->> 'jobAdvancedFrom'`.as('job_advanced_from'))
-    .select(sql<boolean>`jsonb_exists(after, 'jobAdvancedFrom')`.as('has_field'))
-    .select(sql<unknown>`after -> 'setLines'`.as('after_set_lines'))
-    .select(sql<unknown>`before -> 'setLines'`.as('before_set_lines'))
+    .select(['before', 'after'])
     .where('entity_type', '=', 'documents')
     .where('entity_id', '=', documentId)
     .where('action', '=', 'quotation_confirmed')
     .orderBy('at', 'desc')
-    .limit(1)
-    .executeTakeFirst()
-  if (!row || !row.has_field) return undefined
-  const entries = (v: unknown): Array<{ lineId: string; approvedAmount: string | null }> =>
-    Array.isArray(v) ? v.filter((x): x is { lineId: string; approvedAmount: string | null } => typeof x?.lineId === 'string') : []
+    .limit(50)
+    .execute()
+  const parsed = rows.map((r) => ({ before: ConfirmAuditBefore.parse(r.before), after: ConfirmAuditAfter.parse(r.after) }))
+  const row = (signedAt && parsed.find((p) => p.after.signedAt !== undefined && new Date(p.after.signedAt).getTime() === signedAt.getTime())) || parsed[0]
+  if (!row || row.after.jobAdvancedFrom === undefined) return undefined
   return {
-    jobAdvancedFrom: row.job_advanced_from,
-    writtenLineIds: entries(row.after_set_lines).map((x) => x.lineId),
-    hasPriorAmounts: Array.isArray(row.before_set_lines),
-    priorAmounts: Object.fromEntries(entries(row.before_set_lines).map((x) => [x.lineId, x.approvedAmount ?? null])),
+    jobAdvancedFrom: row.after.jobAdvancedFrom,
+    writtenLineIds: (row.after.setLines ?? []).map((x) => x.lineId),
+    hasPriorAmounts: row.before.setLines !== undefined,
+    priorAmounts: Object.fromEntries((row.before.setLines ?? []).map((x) => [x.lineId, x.approvedAmount])),
   }
 }
 
@@ -420,10 +424,10 @@ export async function updateApprovedTotal(trx: ScopedTx, documentId: string, app
   await trx.updateTable('documents').set({ approved_total: approvedTotal }).where('id', '=', documentId).execute()
 }
 
-export async function markSigned(trx: ScopedTx, documentId: string, approvedTotal: string, discount: string): Promise<void> {
+export async function markSigned(trx: ScopedTx, documentId: string, approvedTotal: string, discount: string, signedAt: Date): Promise<void> {
   await trx
     .updateTable('documents')
-    .set({ approved_total: approvedTotal, discount, status: 'signed', signed_at: new Date() })
+    .set({ approved_total: approvedTotal, discount, status: 'signed', signed_at: signedAt })
     .where('id', '=', documentId)
     .execute()
 }

@@ -22,7 +22,7 @@
  * write after.
  */
 import {
-  MoneyError, agreedAmountsAfterUndo, confirmNeedsNewDiscount, discountAtIssue, totalsAfterUndoConfirm, applySetDecision, blocksJobBackToQuoted, canUndoConfirm, checkApprovedAmount,
+  MoneyError, agreedAmountsAfterUndo, confirmNeedsNewDiscount, discountAtIssue, discountExceedsApproved, totalsAfterUndoConfirm, applySetDecision, blocksJobBackToQuoted, canUndoConfirm, checkApprovedAmount,
   confirmReadiness, decisionCarries, formatSatang, jobOutcomeAtConfirm, jobStatusOnIssue,
   lineTotalSatang, offeredItemLineIds, planQuotationClose, quoteTotals, quoteTotalsDecimal,
   setsNeedingAmount, subStateAfterMove, toSatang, validateQuoteLine, warrantySnapshotOf,
@@ -34,6 +34,7 @@ import * as catalogRepo from '../repositories/catalog.js'
 import * as quotationRepo from '../repositories/quotation.js'
 import * as jobsRepo from '../repositories/jobs.js'
 import { writeAudit } from './audit.js'
+import { ConfirmAuditAfter, ConfirmAuditBefore } from '../lib/confirmAudit.js'
 import { createItem, findSimilar } from './catalogPricing.js'
 
 /** A job in one of these can no longer take a new quotation, revision or issue. */
@@ -101,6 +102,7 @@ export type QuotationError =
   | { code: 'decisions_incomplete'; lineIds: string[] }
   | { code: 'set_amount_required'; lineIds: string[] }
   | { code: 'discount_required' }
+  | { code: 'discount_exceeds_approved'; max: string }
   | { code: 'approved_amount_not_allowed'; lineId: string }
   | { code: 'amount_over_2x'; lineId: string; offered: string; max: string }
   | { code: 'amount_above_offer_free_set'; lineId: string }
@@ -665,6 +667,13 @@ export async function confirm(
     return err({ code: 'discount_required' })
   }
 
+  // A discount typed at confirm may not exceed what the customer approved: refused with a field error, not
+  // clamped silently (the clamp below is the last net only). Same before-any-write placement as above.
+  const linesAtConfirm = lineRows.map((r) => ({ ...toDomainLine(r), approvedAmount: agreedNow.get(r.id) ?? r.approved_amount }))
+  if (adjustments?.discount && discountExceedsApproved(linesAtConfirm, adjustments.discount.amount)) {
+    return err({ code: 'discount_exceeds_approved', max: formatSatang(quoteTotals(linesAtConfirm, 0).approvedSubtotal) })
+  }
+
   // What each cut set held before confirm, kept in the audit so undo can put it back exactly.
   const priorSetAmounts = (adjustments?.setLines ?? []).map((a) => ({ lineId: a.lineId, approvedAmount: byId.get(a.lineId)!.approved_amount }))
   for (const a of adjustments?.setLines ?? []) {
@@ -680,9 +689,12 @@ export async function confirm(
   const storedDiscount = formatSatang(quoteTotals(agreedLines, enteredDiscount).approvedDiscount)
   const totals = quoteTotalsDecimal(quoteTotals(agreedLines, storedDiscount))
 
-  await quotationRepo.markSigned(trx, documentId, totals.approvedTotal, totals.discount)
+  // The instant is chosen here (ms precision, which timestamptz keeps exactly) so the audit row can
+  // carry it and undo can find THIS confirm by documents.signed_at.
+  const signedAt = new Date()
+  await quotationRepo.markSigned(trx, documentId, totals.approvedTotal, totals.discount, signedAt)
 
-  const auditAfter: Record<string, unknown> = { approvedTotal: totals.approvedTotal, discount: totals.discount }
+  const auditAfter: Record<string, unknown> = { approvedTotal: totals.approvedTotal, discount: totals.discount, signedAt: signedAt.toISOString() }
   // What staff typed, kept only when the clamp changed it.
   if (toSatang(enteredDiscount) !== toSatang(totals.discount)) auditAfter.enteredDiscount = enteredDiscount
   if (adjustments?.discount) auditAfter.discountReason = adjustments.discount.reason
@@ -725,13 +737,14 @@ export async function confirm(
   // Written after the job move so the row records, as a structured field, whether THIS confirm
   // advanced the job: undo reads it back instead of guessing from the job's current status.
   auditAfter.jobAdvancedFrom = jobAdvancedFrom
+  // Same schema the reader (latestConfirmAfter) parses with: a shape change cannot reach one side only.
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_confirmed', entityType: 'documents', entityId: documentId,
-    before: {
+    before: ConfirmAuditBefore.parse({
       discount: doc.discount, offeredDiscount: doc.offered_discount,
       ...(priorSetAmounts.length > 0 ? { setLines: priorSetAmounts } : {}),
-    },
-    after: auditAfter,
+    }),
+    after: ConfirmAuditAfter.parse(auditAfter),
   })
 
   return ok({ document: (await quotationRepo.getDocument(trx, documentId))!, jobOutcome: outcome === 'approve_job' ? 'approve_job' : 'keep_quoted', jobStatusUnchanged })
@@ -759,7 +772,7 @@ export async function undoConfirm(trx: ScopedTx, shopId: string, documentId: str
   }
   // The confirm's own audit row says what it did: whether it moved the job (jobAdvancedFrom) and
   // which cut sets it wrote an agreed amount to (and what they held before).
-  const confirmRecord = await quotationRepo.latestConfirmAfter(trx, documentId)
+  const confirmRecord = await quotationRepo.latestConfirmAfter(trx, documentId, doc.signed_at)
 
   // Model A (owner ruling 14 Oct 2026): undo puts the AGREED figures back as they were before confirm.
   // Decided from the post-lock rows (doc, lineRows). The document goes first (signed -> issued carries

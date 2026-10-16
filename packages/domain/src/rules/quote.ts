@@ -471,6 +471,16 @@ export function confirmNeedsNewDiscount(lines: readonly QuoteLineMoney[], discou
   return t.discount > 0 && t.approvedSubtotal < t.offeredSubtotal;
 }
 
+/**
+ * A discount typed at confirm may not exceed what the customer approved (the approved
+ * subtotal, set amounts applied). Front gate for CLAUDE.md §4.5: the clamp that keeps a
+ * total from going negative stays as the last net, but a figure staff TYPED is refused
+ * with a field error rather than silently stored smaller. Equal is allowed (bill 0).
+ */
+export function discountExceedsApproved(lines: readonly QuoteLineMoney[], discount: string | number): boolean {
+  return toSatang(discount) > quoteTotals(lines, 0).approvedSubtotal;
+}
+
 /** The footing rule of the offer: subtotal - discount = total, in satang. */
 export function offeredFoots(offeredSubtotal: string, offeredDiscount: string, offeredTotal: string): boolean {
   return toSatang(offeredSubtotal) - toSatang(offeredDiscount) === toSatang(offeredTotal);

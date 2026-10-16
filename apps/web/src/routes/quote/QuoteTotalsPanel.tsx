@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { toSatang } from '@champpower/domain';
+import { MoneyError, toSatang } from '@champpower/domain';
 import type { QuotationTotals } from '@gsms/contracts/index.js';
 import { baht, typedSatang } from '../../lib/money';
 
@@ -34,7 +34,9 @@ export function QuoteTotalsPanel({ totals, confirmed = false, discountEditable, 
   let agreedDiffers = false;
   try {
     agreedDiffers = confirmed && toSatang(totals.discount) !== toSatang(totals.offeredDiscount);
-  } catch {
+  } catch (err) {
+    // A value the money parser refuses: show nothing rather than guess. Anything else is a bug.
+    if (!(err instanceof MoneyError)) throw err;
     agreedDiffers = false;
   }
   const error = invalid ? 'จำนวนเงินไม่ถูกต้อง — ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง' : discountError ?? null;
