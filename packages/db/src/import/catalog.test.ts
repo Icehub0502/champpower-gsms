@@ -258,6 +258,56 @@ describe('buildPlan', () => {
     expect(withUsage).toContain('quotation lines 5 in 3 quotations; receipt lines 2 in 2 receipts')
   })
 
+  it('leaves a locally merged item untouched and reports it (no write, no component noise)', () => {
+    const s = src()
+    s.service_item_components.push(comp('30', '1', 'part of merged'))
+    const state: ExistingState = {
+      terms: [],
+      items: [{
+        id: 'i0', legacy_id: '1', category: 'Rack', name: 'Rack OEM (old)', category_key: null, name_key: null,
+        is_set: false, is_active: false, base_price: '1.00', warranty_term_name: null, merged: true,
+      }],
+      components: [],
+    }
+    const p = buildPlan(s, state)
+    expect(p.items.find((i) => i.legacyId === '1')).toBeUndefined()
+    expect(p.ambiguities.filter((a) => a.code === 'item_merged_locally_skipped').map((a) => a.legacyId)).toEqual(['1'])
+    expect(p.components.some((c) => c.legacyId === '30')).toBe(false)
+    expect(p.ambiguities.some((a) => a.code === 'component_set_not_imported' && a.legacyId === '30')).toBe(false)
+  })
+
+  it('never modifies an existing warranty term of the same name; reports a difference', () => {
+    const state: ExistingState = {
+      terms: [{ id: 'staff', name: 'one year', days: 400, max_km: null }],
+      items: [], components: [],
+    }
+    const p = buildPlan(src(), state)
+    const t = p.terms.find((x) => x.name === 'one year')!
+    expect(t.action).toBe('unchanged')
+    expect(t.existingId).toBe('staff')
+    expect(p.terms.some((x) => x.action === 'update')).toBe(false)
+    expect(p.ambiguities.some((a) => a.code === 'warranty_exists_differs')).toBe(true)
+    // an identical existing term is linked silently
+    const same = buildPlan(src(), { terms: [{ id: 'x', name: 'one year', days: 365, max_km: 100000 }], items: [], components: [] })
+    expect(same.ambiguities.some((a) => a.code === 'warranty_exists_differs')).toBe(false)
+  })
+
+  it('reports an unreadable warranty value instead of reading it as 0 or unlimited', () => {
+    expect(convertWarranty(null, 6, 0)).toHaveProperty('problem')
+    expect(convertWarranty(0, 0, null)).toHaveProperty('problem')
+    expect(convertWarranty(0, 0, 3_000_000_000)).toHaveProperty('problem')
+    const s = src()
+    s.warranties = [
+      { id: '1', warranty_name: 'one year', warranty_year: 'abc', warranty_month: '0', warranty_km: '0' },
+      { id: '2', warranty_name: 'six months', warranty_year: '0', warranty_month: null, warranty_km: '0' },
+      W[2]!,
+    ]
+    const p = buildPlan(s, EMPTY)
+    expect(p.terms).toHaveLength(0)
+    expect(p.ambiguities.filter((a) => a.code === 'warranty_unreadable_value')).toHaveLength(2)
+    expect(p.items.find((i) => i.legacyId === '1')!.warrantyLegacyId).toBeNull()
+  })
+
   it('renders a report without throwing', () => {
     const md = renderReport(buildPlan(src(), EMPTY), { dryRun: true, shopSlug: 's', shopId: 'id', dump: 'd' })
     expect(md).toContain('DRY RUN')

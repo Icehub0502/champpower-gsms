@@ -48,13 +48,14 @@ export function convertWarranty(
   month: number | null,
   km: number | null,
 ): ConvertedWarranty | { problem: string } {
-  const y = year ?? 0
-  const m = month ?? 0
-  const k = km ?? 0
-  if (![y, m, k].every((v) => Number.isInteger(v) && v >= 0)) {
-    return { problem: `year/month/km must be non-negative integers (got ${year}/${month}/${km})` }
+  // null / undefined is "unreadable", NOT zero: 0 means "no limit of that kind".
+  if (year == null || month == null || km == null || ![year, month, km].every((v) => Number.isInteger(v) && v >= 0)) {
+    return { problem: `year/month/km must be non-negative whole numbers (got ${year}/${month}/${km})` }
   }
+  const [y, m, k] = [year, month, km]
   const days = warrantyDays(y, m)
+  // warranty_terms.days / max_km are 32-bit integers.
+  if (days > 2147483647 || k > 2147483647) return { problem: `value too large for the integer column (days=${days}, km=${k})` }
   const out = { days: days > 0 ? days : null, maxKm: k > 0 ? k : null }
   if (out.days === null && out.maxKm === null) {
     return { problem: 'no time limit and no km limit (all zero); warranty_terms requires at least one' }
@@ -227,7 +228,14 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
       flag({ code: 'warranty_duplicate_name', table: 'warranties', legacyId: id, detail: `two prototype warranties are both named "${name}"; terms are matched by name, so neither is imported` })
       continue
     }
-    const from = { year: int(w.warranty_year), month: int(w.warranty_month), km: int(w.warranty_km) }
+    // A value that cannot be read is reported and skipped. It must never fall
+    // through as 0 (= "no limit of that kind") or as unlimited.
+    const y = int(w.warranty_year), m = int(w.warranty_month), k = int(w.warranty_km)
+    if (y === null || m === null || k === null) {
+      flag({ code: 'warranty_unreadable_value', table: 'warranties', legacyId: id, detail: `"${name}": year/month/km = ${JSON.stringify([w.warranty_year, w.warranty_month, w.warranty_km])} is not three whole numbers; term skipped, items using it import with no warranty` })
+      continue
+    }
+    const from = { year: y, month: m, km: k }
     const conv = convertWarranty(from.year, from.month, from.km)
     if ('problem' in conv) {
       flag({ code: 'warranty_unconvertible', table: 'warranties', legacyId: id, detail: `"${name}": ${conv.problem}; items using it import with no warranty` })
@@ -235,11 +243,17 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
     }
     const matches = existing.terms.filter((t) => t.name === name)
     if (matches.length > 1) {
-      flag({ code: 'warranty_target_ambiguous', table: 'warranties', legacyId: id, detail: `${matches.length} warranty_terms in the shop are already named "${name}"; not updating any of them` })
+      flag({ code: 'warranty_target_ambiguous', table: 'warranties', legacyId: id, detail: `${matches.length} warranty_terms in the shop are already named "${name}"; not touching any of them` })
       continue
     }
     const hit = matches[0]
-    const action: Action = !hit ? 'insert' : hit.days === conv.days && hit.max_km === conv.maxKm ? 'unchanged' : 'update'
+    // warranty_terms has no legacy key, so an existing term of the same name
+    // may have been made by staff. Insert-if-missing ONLY: an existing term is
+    // linked to but never modified, and a difference is reported for a person.
+    if (hit && (hit.days !== conv.days || hit.max_km !== conv.maxKm)) {
+      flag({ code: 'warranty_exists_differs', table: 'warranties', legacyId: id, detail: `"${name}": the shop already has a term with this name (days=${hit.days ?? 'NULL'}, max_km=${hit.max_km ?? 'NULL'}); dump says days=${conv.days ?? 'NULL'}, max_km=${conv.maxKm ?? 'NULL'}. Existing term kept and linked, not changed` })
+    }
+    const action: Action = hit ? 'unchanged' : 'insert'
     const plan: TermPlan = { action, legacyId: id, name, days: conv.days, maxKm: conv.maxKm, existingId: hit?.id ?? null, from, isActive: !INACTIVE_WARRANTY_LEGACY_IDS.includes(id) }
     terms.push(plan)
     termByLegacy.set(id, plan)
@@ -250,6 +264,7 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
   for (const c of src.service_item_components) compCount.set(c.service_item_id!, (compCount.get(c.service_item_id!) ?? 0) + 1)
   const items: ItemPlan[] = []
   const importedItemIds = new Set<string>()
+  const mergedSkipped = new Set<string>()
   for (const r of src.service_items) {
     const legacyId = r.id!
     const category = (r.category ?? '').trim()
@@ -271,6 +286,13 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
       }
     }
     const prior = existingByLegacy.get(legacyId)
+    if (prior?.merged) {
+      // A person merged this item into another in the app. Writing to it again
+      // would fight their decision (and trip ck_catalog_merged_inactive).
+      mergedSkipped.add(legacyId)
+      flag({ code: 'item_merged_locally_skipped', table: 'service_items', legacyId, detail: `"${name}": merged into another item in the app; left untouched` })
+      continue
+    }
     const clash = liveByKey.get(key)
     if (clash && clash.legacy_id !== legacyId) {
       flag({ code: 'item_name_taken', table: 'service_items', legacyId, detail: `"${category}" / "${name}" already exists in the shop as a different catalog row (${clash.legacy_id === null ? 'created by hand' : 'legacy ' + clash.legacy_id}); not overwritten` })
@@ -337,6 +359,7 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
     const legacyId = c.id!
     const setLegacy = c.service_item_id!
     const set = itemByLegacy.get(setLegacy)
+    if (!set && mergedSkipped.has(setLegacy)) continue // already reported with its parent
     if (!set) {
       flag({ code: 'component_set_not_imported', table: 'service_item_components', legacyId, detail: `parent item ${setLegacy} was not imported (missing or skipped); component skipped` })
       continue

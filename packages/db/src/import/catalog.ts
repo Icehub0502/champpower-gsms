@@ -15,6 +15,10 @@
  *   npm run import:catalog -w packages/db -- --dry-run
  *   npm run import:catalog -w packages/db            (the real run)
  *
+ * Warranty terms are insert-if-missing only: a same-named term already in the
+ * shop is linked to, never modified (it may be staff-made). Locally merged
+ * items are left untouched.
+ *
  * Known limitation, accepted for this phase: warranty_terms (keyed on name) and
  * catalog_set_components (keyed on set + sort_order) have no legacy_source /
  * legacy_id columns. The later phase should add them by migration and move
@@ -132,11 +136,9 @@ async function applyPlan(trx: ScopedTx, shopId: string, plan: Plan): Promise<{ a
         .returning('id').executeTakeFirstOrThrow()
       termId.set(t.legacyId, row.id)
     } else {
+      // Existing terms are linked, never modified: with no legacy key on
+      // warranty_terms a same-named term may be staff-made.
       termId.set(t.legacyId, t.existingId!)
-      if (t.action === 'update') {
-        await trx.updateTable('warranty_terms').set({ days: t.days, max_km: t.maxKm })
-          .where('shop_id', '=', shopId).where('id', '=', t.existingId!).execute()
-      }
     }
   }
 
