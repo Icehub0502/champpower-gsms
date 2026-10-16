@@ -97,7 +97,13 @@ export const QuotationTotals = z
   .object({
     offeredSubtotal: MoneyString,
     approvedSubtotal: MoneyString,
-    // The discount as entered, and the part of it that really applies to each base (clamped).
+    // Two discounts (model A, owner ruling 14 Oct 2026, migration 0024):
+    //   offeredDiscount  the discount on the OFFER: stored at issue, never changes.
+    //                    offeredSubtotal - offeredDiscount = offeredTotal, always.
+    //                    (Clamped to the offered subtotal. On a draft it is computed.)
+    //   discount         the AGREED discount: equal to offeredDiscount until "ยืนยันผลลูกค้า"
+    //                    changes it (reason mandatory); undo puts it back.
+    // approvedDiscount is the part of the agreed one that applies to the approved subtotal (clamped).
     discount: MoneyString,
     offeredDiscount: MoneyString,
     approvedDiscount: MoneyString,
@@ -114,6 +120,9 @@ export const QuotationNext = z
     canIssue: z.boolean(),
     canDecide: z.boolean(), // issued
     canConfirm: z.boolean(),
+    // The confirm dialog may be opened: issued, caller may decide, no line undecided. True even when
+    // cut sets still lack an agreed amount (the dialog collects it). canConfirm stays the stricter test.
+    canOpenConfirm: z.boolean(),
     canUndoConfirm: z.boolean(),
     canRevise: z.boolean(),
     // Top-level lines still pending (blocks confirm).
@@ -128,6 +137,10 @@ export const Quotation = z
   .object({
     id: uuid,
     jobId: uuid,
+    // The job's vehicle, for PUT /api/vehicles/:id/model; null if the job has none.
+    vehicleId: uuid.nullable(),
+    // The vehicle is already linked to a catalog model (so the screen need not search to find out).
+    vehicleModelLinked: z.boolean(),
     revision: z.number().int().min(1),
     status: QuotationStatus,
     // null while draft.

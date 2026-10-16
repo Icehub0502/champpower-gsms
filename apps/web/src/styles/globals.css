@@ -57,6 +57,8 @@
   --sidebar-active: #26292E;
   --radius-lg: 16px;
   --radius-btn: 12px;
+  /* Text inputs and small form boxes — the 8px every .field input already uses. */
+  --radius-input: 8px;
 
   /* Elevation — flat bordered boxes read as dated; a soft two-layer shadow
      gives every card real depth without looking glossy. */
@@ -1785,3 +1787,92 @@ button:focus-visible, a:focus-visible {
 
 .prov-group { padding: 8px 12px 2px; font-size: 12px; font-weight: 700; color: var(--text-2); border-top: 1px solid var(--border); margin-top: 4px; }
 .prov-note { margin-left: 8px; font-size: 12.5px; font-weight: 400; color: var(--text-2); }
+
+/* =========================================================================
+   /jobs/:jobId/quote — ใบเสนอราคา (P3.1, prototype panel A). One tree at
+   every width; only these rules change between phone (one column: lines,
+   totals, then the picker) and ≥1024 (lines left, picker right). Tokens only.
+   ========================================================================= */
+.qt-page { max-width: 1320px; }
+.qt-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 10px 16px; margin-bottom: 14px; }
+.qt-header h1 { margin: 6px 0 4px; font-size: 22px; color: var(--text-strong); }
+.qt-header .page-sub { margin: 0; }
+.qt-header-side { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.qt-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 16px; align-items: start; }
+.qt-actions { margin-bottom: 12px; }
+.qt-actions .row-flex { margin-bottom: 6px; }
+
+.qt-lines-section h4 { margin: 14px 0 6px; font-size: 14px; color: var(--text-strong); }
+.qt-group { list-style: none; margin: 0; padding: 0; border-bottom: 1px solid var(--border); }
+.qt-group:last-child { border-bottom: none; }
+.qt-line { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 12px; padding: 10px 2px; }
+.qt-line.is-child { padding: 6px 2px 6px 18px; border-left: 3px solid var(--paper-2); margin-left: 6px; }
+.qt-line.is-declined .qt-line-name strong { text-decoration: line-through; color: var(--text-2); }
+.qt-line-main { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.qt-line-name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 14.5px; }
+.qt-line-sub { color: var(--text-2); font-size: 12.5px; font-weight: 400; }
+.qt-line-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.qt-line-note { margin: 0; font-size: 12.5px; color: var(--text-2); font-style: italic; }
+.qt-line-money { flex: 0 0 auto; text-align: right; font-size: 14px; }
+/* The controls wrap as ONE block — the prototype's fix for buttons scattering at 390px. */
+.qt-line-controls { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.qt-qty { display: inline-flex; align-items: center; gap: 6px; }
+.qt-qty .mono { min-width: 2.5em; text-align: center; }
+.qt-price { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); }
+.qt-price input { width: 110px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-input); font: inherit; text-align: right; }
+.qt-price.has-error input { border: 2px solid var(--red); }
+.qt-decline-form { flex: 1 1 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 10px; padding: 10px 12px; background: var(--paper); border-radius: var(--radius); }
+.qt-decline-form .field { margin-bottom: 8px; }
+
+.qt-totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.qt-totals-col { background: var(--paper); border-radius: var(--radius); padding: 10px 12px; }
+.qt-totals-col.is-approved { border: 2px solid var(--success); }
+.qt-totals-col h4 { margin: 0 0 6px; font-size: 13px; color: var(--text-2); }
+.qt-totals-col dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 0; font-size: 12.5px; color: var(--text-2); }
+.qt-totals-col dd { margin: 0; text-align: right; }
+.qt-totals-sum { margin: 6px 0 0; text-align: right; font-size: 20px; font-weight: 800; color: var(--text-strong); }
+.qt-discount { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.qt-discount .field { flex: 1 1 160px; margin-bottom: 0; }
+
+.qt-textarea { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-input); font: inherit; font-size: 15px; color: var(--text); resize: vertical; }
+.modal-card:has(.qt-confirm) { max-width: 560px; }
+.qt-confirm-set { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin: 0; }
+.qt-confirm-set legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 4px; font-weight: 700; font-size: 14px; }
+.qt-confirm-set .field { margin-bottom: 8px; }
+.qt-hint { font-size: 13px; font-weight: 700; }
+.qt-hint.tone-info { color: var(--info); }
+.qt-hint.tone-warning { color: var(--warning); }
+.qt-hint.tone-danger { color: var(--red); }
+.qt-confirm-total { font-size: 15px; }
+
+.qt-catalog .qt-search { margin-bottom: 10px; }
+.qt-unlinked { display: flex; flex-direction: column; gap: 8px; }
+.qt-hits { list-style: none; margin: 0 0 12px; padding: 0; max-height: min(420px, 55vh); overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.qt-hits-heading { padding: 8px 12px 4px; font-size: 12px; font-weight: 700; color: var(--text-2); background: var(--paper); }
+.qt-hit { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; border: none; border-bottom: 1px solid var(--paper-2); background: var(--card-bg); font: inherit; text-align: left; color: var(--text); cursor: pointer; }
+.qt-hit.is-active { background: var(--paper); outline: 2px solid var(--navy); outline-offset: -2px; }
+.qt-hit-name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-weight: 600; }
+.qt-hit-price { flex: 0 0 auto; font-weight: 700; }
+.qt-price-entry, .qt-similar { padding: 10px 12px; margin-bottom: 12px; border: 2px solid var(--warning); border-radius: var(--radius); background: var(--col-inspect-bg); }
+.qt-price-entry p, .qt-similar p { margin: 0 0 8px; font-size: 14px; }
+.qt-free { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.qt-free h4 { margin: 0 0 10px; font-size: 14px; }
+.qt-check { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+.qt-model-pick { position: relative; margin-top: 8px; }
+.qt-model-pick input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-input); font: inherit; }
+.qt-model-list { position: static; margin-top: 4px; }
+.qt-model-list .prov-option { width: 100%; border: none; background: none; font: inherit; text-align: left; }
+
+@media (min-width: 768px) {
+  .qt-decline-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .qt-decline-form .row-flex { grid-column: 1 / -1; }
+  .qt-line-controls { flex: 0 1 auto; }
+}
+@media (min-width: 1024px) {
+  .qt-layout { grid-template-columns: minmax(0, 1.55fr) minmax(320px, 1fr); }
+  .qt-side { position: sticky; top: 12px; }
+}
+@media (pointer: coarse) {
+  .qt-line-controls .btn, .qt-hit, .qt-actions .btn, .qt-price input { min-height: var(--touch-min); }
+}
+.qt-reject { display: flex; justify-content: flex-end; margin-bottom: 12px; }

@@ -196,6 +196,12 @@ export type JobNumberSeriesMissingError = z.infer<typeof JobNumberSeriesMissingE
 export const DocumentFrozenError = payloadless('document_frozen');
 export type DocumentFrozenError = z.infer<typeof DocumentFrozenError>;
 
+// 409 — SQLSTATE GS002, table documents, HINT document_job_id_immutable (0023): a
+// document's job_id was asked to change after it was attached. The fix is a new
+// document, never a retry.
+export const DocumentJobImmutableError = payloadless('document_job_immutable');
+export type DocumentJobImmutableError = z.infer<typeof DocumentJobImmutableError>;
+
 // 409 — same refusal for a LINE of a numbered document (SQLSTATE GS002, table
 // document_lines): the line's content is locked, or its document no longer
 // accepts line changes at all.
@@ -311,6 +317,31 @@ export const SetAmountRequiredError = z
   .strict();
 export type SetAmountRequiredError = z.infer<typeof SetAmountRequiredError>;
 
+// 400 — DECISION-2026-10-15 §1: the customer approved less than was offered and the
+// quotation carries a discount, so confirm needs a NEW discount typed by staff in
+// adjustments.discount. Never carried or clamped silently. The field error uses the
+// same nested-path style as the rest of the confirm body.
+export const DiscountRequiredError = z
+  .object({
+    error: z.literal('discount_required'),
+    message: z.string(),
+    fields: z.object({ 'adjustments.discount.amount': z.array(z.string()) }).strict(),
+  })
+  .strict();
+export type DiscountRequiredError = z.infer<typeof DiscountRequiredError>;
+
+// 400 — the discount typed at confirm is larger than the approved subtotal. Refused, not
+// clamped silently (the clamp is only the last net). `max` is the approved subtotal.
+export const DiscountExceedsApprovedError = z
+  .object({
+    error: z.literal('discount_exceeds_approved'),
+    message: z.string(),
+    fields: z.object({ 'adjustments.discount.amount': z.array(z.string()) }).strict(),
+    max: z.string(),
+  })
+  .strict();
+export type DiscountExceedsApprovedError = z.infer<typeof DiscountExceedsApprovedError>;
+
 // 422 — an agreed amount above 2x the offer (almost certainly a typo). Revise instead.
 export const ApprovedAmountTooHighError = z
   .object({
@@ -422,6 +453,8 @@ export const QuotationRefusal = z.discriminatedUnion('error', [
   QuotationEmptyError,
   DecisionsIncompleteError,
   SetAmountRequiredError,
+  DiscountRequiredError,
+  DiscountExceedsApprovedError,
   ApprovedAmountTooHighError,
   ApprovedAmountAboveFreeSetError,
   ApprovedAmountNotAllowedError,
@@ -478,5 +511,8 @@ export const QuotationBody = z.union([
   JobNotOpenError,
   QuotationMissingError,
   QuotationNotConfirmedError,
+  DocumentFrozenError,
+  DocumentJobImmutableError,
+  DocumentLineFrozenError,
 ]);
 export type QuotationBody = z.infer<typeof QuotationBody>;

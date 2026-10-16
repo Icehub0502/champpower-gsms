@@ -23,7 +23,7 @@
  *     the same one for different things. The register belongs in CLAUDE.md §9;
  *     it is NOT in this file, and this list is a mirror, not the source:
  *         GS001  document series missing (allocate_document_number, 0014)
- *         GS002  document / document line immutable (0022)
+ *         GS002  document / document line immutable (0022, 0023)
  *   - The API maps on `err.code` ONLY. Nothing here reads `err.message` — a
  *     message is for the server log and can be reworded, translated or
  *     localised by the server's lc_messages without warning.
@@ -39,7 +39,7 @@
  */
 import type { Response } from 'express'
 import type {
-  BookingAlreadyArrivedError, DocumentFrozenError, DocumentLineFrozenError,
+  BookingAlreadyArrivedError, DocumentFrozenError, DocumentJobImmutableError, DocumentLineFrozenError,
   JobNumberSeriesMissingError, QueueNoTakenError,
 } from '@gsms/contracts/index.js'
 
@@ -49,6 +49,8 @@ interface PgErrorLike {
   constraint?: string
   /** Set by RAISE ... USING TABLE = ...; how GS002 tells a document from a line. */
   table?: string
+  /** Set by RAISE ... USING HINT = ...; how GS002 on documents tells job_id from the rest. */
+  hint?: string
   message?: string
 }
 
@@ -69,6 +71,7 @@ export interface MappedError {
     | QueueNoTakenError
     | JobNumberSeriesMissingError
     | DocumentFrozenError
+    | DocumentJobImmutableError
     | DocumentLineFrozenError
     | { error: 'bay_slot_taken'; message: string }
 }
@@ -157,6 +160,16 @@ export function mapPgError(err: unknown, ctx: PgErrorContext = {}): MappedError 
       const body: DocumentLineFrozenError = {
         error: 'document_line_frozen',
         message: 'เอกสารนี้ออกเลขแล้ว แก้รายการไม่ได้ ต้องออกใบฉบับใหม่',
+      }
+      return { status: 409, body }
+    }
+    // 0023: a document tied to a job cannot be re-pointed at another (or at
+    // none). Keyed on err.hint, which the trigger sets; a different hint, or
+    // none, falls through to the generic frozen answer below.
+    if (pg.table === 'documents' && pg.hint === 'document_job_id_immutable') {
+      const body: DocumentJobImmutableError = {
+        error: 'document_job_immutable',
+        message: 'ใบนี้ผูกกับงานแล้ว เปลี่ยนงานไม่ได้ ต้องสร้างใบใหม่',
       }
       return { status: 409, body }
     }

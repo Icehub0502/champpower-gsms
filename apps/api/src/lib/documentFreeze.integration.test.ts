@@ -4,7 +4,10 @@
  * with straight SQL through withShop (no API route exists for these yet; the
  * route-level tests belong with the endpoints).
  *
- * TIER 2. Needs PostgreSQL with migrations 0001-0022 applied and the
+ * Migration 0023 (documents.job_id immutable once attached) is proved in its own
+ * describe block at the bottom.
+ *
+ * TIER 2. Needs PostgreSQL with migrations 0001-0024 applied and the
  * connection made as gsms_app. Skipped (never silently passed) otherwise.
  *
  * Every refusal asserted here must carry SQLSTATE GS002 and the right TABLE:
@@ -20,7 +23,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { sql } from 'kysely'
 import pg from 'pg'
 import { withShop } from '@gsms/db/client.js'
-import { DocumentFrozenError, DocumentLineFrozenError } from '@gsms/contracts/index.js'
+import { DocumentFrozenError, DocumentJobImmutableError, DocumentLineFrozenError } from '@gsms/contracts/index.js'
 import { db } from './db.js'
 import { mapPgError } from './pgError.js'
 import { adminDatabaseUrl, hasDatabase, tier2 } from '../test/env.js'
@@ -95,13 +98,16 @@ describe.skipIf(!hasDatabase)(tier2('document + line freeze (migration 0022)'), 
   }
 
   /** Run a statement in its own transaction and demand GS002 on `table`. */
-  async function refused(table: 'documents' | 'document_lines', fn: (trx: Tx) => Promise<unknown>) {
+  async function refused(
+    table: 'documents' | 'document_lines', fn: (trx: Tx) => Promise<unknown>, hint?: string,
+  ) {
     let caught: unknown
     try { await inShop(fn) } catch (e) { caught = e }
     expect(caught, 'the statement should have been refused').toBeTruthy()
-    const e = caught as { code?: string; table?: string }
+    const e = caught as { code?: string; table?: string; hint?: string }
     expect(e.code, `expected SQLSTATE GS002, got ${e.code}`).toBe('GS002')
     expect(e.table).toBe(table)
+    if (hint !== undefined) expect(e.hint).toBe(hint)
     return caught
   }
 
@@ -217,12 +223,14 @@ describe.skipIf(!hasDatabase)(tier2('document + line freeze (migration 0022)'), 
 
   // ---------------------------------------------------------------------------
   describe('issued quotation: the document row', () => {
-    it('allows approved_total and discount to change (decisions + adjustment at confirm)', async () => {
+    it('allows approved_total to change (decisions); discount only back to offered_discount (0024)', async () => {
       const { doc } = await quotation('issued')
-      await inShop((trx) => sql`update documents set approved_total = 900, discount = 100 where id = ${doc}`.execute(trx))
-      const s = await status(doc)
-      expect(Number(s.approved_total)).toBe(900)
-      expect(Number(s.discount)).toBe(100)
+      await inShop((trx) => sql`update documents set approved_total = 900 where id = ${doc}`.execute(trx))
+      expect(Number((await status(doc)).approved_total)).toBe(900)
+      // the agreed discount moves at confirm (issued -> signed), never inside issued
+      await refused('documents', (trx) => sql`update documents set discount = 100 where id = ${doc}`.execute(trx), 'document_frozen_columns')
+      // setting it equal to offered_discount (0 here) is the permitted heal
+      await inShop((trx) => sql`update documents set discount = offered_discount where id = ${doc}`.execute(trx))
     })
 
     it.each([
@@ -321,12 +329,10 @@ describe.skipIf(!hasDatabase)(tier2('document + line freeze (migration 0022)'), 
       await inShop((trx) => sql`update document_lines set approval_status = 'approved' where id = ${line}`.execute(trx))
     })
 
-    it('refuses an un-confirm that also changes the discount, approved_total or number', async () => {
+    it('refuses an un-confirm that sets the discount to anything but offered_discount, or changes the number', async () => {
       const { doc } = await quotation('signed')
       await refused('documents', (trx) => sql`
         update documents set status = 'issued', signed_at = null, discount = 9 where id = ${doc}`.execute(trx))
-      await refused('documents', (trx) => sql`
-        update documents set status = 'issued', signed_at = null, approved_total = 9 where id = ${doc}`.execute(trx))
       await refused('documents', (trx) => sql`
         update documents set status = 'issued', signed_at = null, number = 'X' where id = ${doc}`.execute(trx))
     })
@@ -444,6 +450,236 @@ describe.skipIf(!hasDatabase)(tier2('document + line freeze (migration 0022)'), 
       const mapped = mapPgError(err)
       expect(mapped?.status).toBe(409)
       expect(DocumentFrozenError.parse(mapped?.body).error).toBe('document_frozen')
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // Migration 0023: documents.job_id is NULL -> value once, on a draft, then fixed.
+  // ---------------------------------------------------------------------------
+  describe('job_id immutable (migration 0023)', () => {
+    const HINT = 'document_job_id_immutable'
+
+    async function newJob(): Promise<string> {
+      const n = ++seq
+      const v = await inShop((trx) => sql<{ id: string }>`
+        insert into vehicles (shop_id, customer_id, plate, brand, model)
+        values (${fx.shopA}, ${customerId}, ${'JOB' + n + '-' + Date.now()}, 'Toyota', 'Vigo') returning id`.execute(trx))
+      const j = await inShop((trx) => sql<{ id: string }>`
+        insert into jobs (shop_id, job_number, vehicle_id, customer_id)
+        values (${fx.shopA}, ${'T0023-' + n + '-' + Date.now()}, ${v.rows[0]!.id}, ${customerId}) returning id`.execute(trx))
+      return j.rows[0]!.id
+    }
+
+    async function draftWith(jobId: string | null): Promise<string> {
+      const r = await inShop((trx) => sql<{ id: string }>`
+        insert into documents (shop_id, customer_id, type, series, job_id)
+        values (${fx.shopA}, ${customerId}, 'quotation', 'IV', ${jobId}) returning id`.execute(trx))
+      return r.rows[0]!.id
+    }
+
+    /** The whole row as JSON, updated_at included, so "unchanged" means unchanged. */
+    const snapshot = async (id: string) => (await inShop((trx) => sql<{ r: Record<string, unknown> }>`
+      select to_jsonb(d) as r from documents d where id = ${id}`.execute(trx))).rows[0]!.r
+
+    const setJob = (id: string, jobId: string | null) => (trx: Tx) =>
+      sql`update documents set job_id = ${jobId} where id = ${id}`.execute(trx)
+
+    /** Refuse with the job hint and prove the row did not move. */
+    async function refusedJob(id: string, jobId: string | null) {
+      const before = await snapshot(id)
+      await refused('documents', setJob(id, jobId), HINT)
+      expect(await snapshot(id)).toEqual(before)
+    }
+
+    it('1. a draft with job A cannot be re-pointed at job B', async () => {
+      const a = await newJob(); const b = await newJob()
+      const doc = await draftWith(a)
+      await refusedJob(doc, b)
+    })
+
+    it('2. a draft with job A cannot be detached (A -> NULL)', async () => {
+      const doc = await draftWith(await newJob())
+      await refusedJob(doc, null)
+    })
+
+    it('3. NULL -> job attaches once; afterwards A->B, A->NULL and re-attach are refused, A->A is allowed', async () => {
+      const a = await newJob(); const b = await newJob()
+      const doc = await draftWith(null)
+      await inShop(setJob(doc, a))
+      expect((await snapshot(doc)).job_id).toBe(a)
+      await refusedJob(doc, b)
+      await refusedJob(doc, null)
+      await refusedJob(doc, b)                 // a second "first attach" is still just A -> B
+      await inShop(setJob(doc, a))             // A -> A: not a change, the trigger does not fire
+      expect((await snapshot(doc)).job_id).toBe(a)
+    })
+
+    it('4. issued, signed, superseded and void rows refuse a job_id change in the 0022 trigger (pinned hints)', async () => {
+      // One job per document: uq_live_quotation_per_job allows a single live quotation per job.
+      const b = await newJob()
+
+      const issued = await draftWith(await newJob()); await issue(issued)
+      await refused('documents', setJob(issued, b), 'document_frozen_columns')
+
+      const signed = await draftWith(await newJob()); await issue(signed); await confirm(signed)
+      await refused('documents', setJob(signed, b), 'document_signed')
+
+      const superseded = await draftWith(await newJob()); await issue(superseded); await confirm(superseded)
+      await inShop((trx) => sql`update documents set status = 'superseded' where id = ${superseded}`.execute(trx))
+      await refused('documents', setJob(superseded, b), 'document_closed')
+
+      const voided = await draftWith(await newJob()); await issue(voided)
+      await inShop((trx) => sql`
+        update documents set status = 'void', void_reason = 'wrong customer', voided_at = now(),
+               voided_by = ${fx.userId} where id = ${voided}`.execute(trx))
+      await refused('documents', setJob(voided, b), 'document_closed')
+    })
+
+    it('5. an issued document with NULL job_id cannot be attached afterwards', async () => {
+      const doc = await draftWith(null)
+      await issue(doc)                          // a jobless draft can be issued: the schema allows it
+      const before = await snapshot(doc)
+      await refused('documents', setJob(doc, await newJob()), 'document_frozen_columns')
+      expect(await snapshot(doc)).toEqual(before)
+    })
+
+    it('6. PINNED: one UPDATE that attaches AND issues a draft is allowed (draft rows are free in 0022; NULL -> value on a draft in 0023)', async () => {
+      const a = await newJob()
+      const doc = await draftWith(null)
+      await inShop((trx) => sql`
+        update documents set job_id = ${a}, status = 'issued', number = ${'T-ATT-' + (++seq)},
+               numbered_on = current_date, issued_at = now() where id = ${doc}`.execute(trx))
+      const s = await snapshot(doc)
+      expect(s.status).toBe('issued')
+      expect(s.job_id).toBe(a)
+      // and from then on it is fixed
+      await refused('documents', setJob(doc, await newJob()), 'document_frozen_columns')
+    })
+
+    it('7. ordinary draft updates and a successful attach still advance updated_at', async () => {
+      const doc = await draftWith(null)
+      const t0 = (await snapshot(doc)).updated_at
+      await inShop((trx) => sql`update documents set discount = 5 where id = ${doc}`.execute(trx))
+      const t1 = (await snapshot(doc)).updated_at
+      expect(t1).not.toBe(t0)
+      await inShop(setJob(doc, await newJob()))
+      const t2 = (await snapshot(doc)).updated_at
+      expect(t2).not.toBe(t1)
+    })
+
+    it('8. two transactions attach different jobs to one NULL draft: the loser is refused after re-reading', async () => {
+      const a = await newJob(); const b = await newJob()
+      const doc = await draftWith(null)
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      let attached!: () => void
+      const attachedStarted = new Promise<void>((r) => { attached = r })
+
+      const winner = inShop(async (trx) => {
+        await setJob(doc, a)(trx)
+        attached()
+        await gate                              // row lock held until released
+      })
+      await attachedStarted
+
+      const loser = inShop(setJob(doc, b)).then(() => null, (e: unknown) => e)
+      await new Promise((r) => setTimeout(r, 300))   // let the loser reach the row lock
+      release()
+      await winner
+
+      const err = (await loser) as { code?: string; table?: string; hint?: string } | null
+      expect(err?.code).toBe('GS002')
+      expect(err?.table).toBe('documents')
+      expect(err?.hint).toBe(HINT)
+      expect((await snapshot(doc)).job_id).toBe(a)
+    })
+
+    it('9. shop B cannot touch shop A\'s draft (RLS: zero rows, nothing changes)', async () => {
+      const a = await newJob()
+      const doc = await draftWith(null)
+      const before = await snapshot(doc)
+      const res = await withShop(db, fx.shopB, (trx) => sql`
+        update documents set job_id = ${a} where id = ${doc}`.execute(trx))
+      expect(Number(res.numAffectedRows ?? 0)).toBe(0)
+      expect(await snapshot(doc)).toEqual(before)
+    })
+
+    it.todo('cross-shop attach refused by composite FK (0025)')
+
+    it('the refusal maps to 409 document_job_immutable, matching the strict contract', async () => {
+      const doc = await draftWith(await newJob())
+      const err = await refused('documents', setJob(doc, await newJob()), HINT)
+      const mapped = mapPgError(err)
+      expect(mapped?.status).toBe(409)
+      expect(DocumentJobImmutableError.parse(mapped?.body).error).toBe('document_job_immutable')
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // Migration 0024 — offered_discount vs agreed discount (test 6 of the brief)
+  // ---------------------------------------------------------------------------
+  describe('offered discount (migration 0024)', () => {
+    /** An issued quotation whose offer carried a 150 discount (offered_discount = discount = 150). */
+    async function issuedWithOffer(offered = 150) {
+      const doc = await newDraft()
+      const line = await addLine(doc)
+      await inShop((trx) => sql`update documents set discount = ${offered}, offered_discount = ${offered} where id = ${doc}`.execute(trx))
+      await issue(doc)
+      return { doc, line }
+    }
+    const signWith = (doc: string, agreed: number) => inShop((trx) => sql`
+      update documents set status = 'signed', signed_at = now(), discount = ${agreed}, approved_total = 700 where id = ${doc}`.execute(trx))
+    const row = async (id: string) => (await inShop((trx) => sql<{ discount: string; offered_discount: string; approved_total: string }>`
+      select discount, offered_discount, approved_total from documents where id = ${id}`.execute(trx))).rows[0]!
+
+    it('a draft is issued with discount = offered_discount; a mismatch is refused (document_frozen_columns)', async () => {
+      const doc = await newDraft()
+      await addLine(doc)
+      await inShop((trx) => sql`update documents set discount = 100, offered_discount = 50 where id = ${doc}`.execute(trx))
+      await refused('documents', (trx) => sql`
+        update documents set status = 'issued', number = ${'T-D-' + (++seq)}, numbered_on = current_date, issued_at = now()
+         where id = ${doc}`.execute(trx), 'document_frozen_columns')
+    })
+
+    it('confirm may move discount away from offered_discount; offered_discount itself is frozen on issued and signed', async () => {
+      const { doc } = await issuedWithOffer()
+      await refused('documents', (trx) => sql`update documents set offered_discount = 1 where id = ${doc}`.execute(trx))
+      await signWith(doc, 300)
+      expect(Number((await row(doc)).discount)).toBe(300)
+      expect(Number((await row(doc)).offered_discount)).toBe(150)
+      await refused('documents', (trx) => sql`update documents set offered_discount = 1 where id = ${doc}`.execute(trx))
+    })
+
+    it('signed -> issued: discount may only be set equal to offered_discount (with approved_total)', async () => {
+      const { doc } = await issuedWithOffer()
+      await signWith(doc, 300)
+      await refused('documents', (trx) => sql`
+        update documents set status = 'issued', signed_at = null, discount = 300 where id = ${doc}`.execute(trx), 'document_unconfirm_invalid')
+      await inShop((trx) => sql`
+        update documents set status = 'issued', signed_at = null, discount = offered_discount, approved_total = 850
+         where id = ${doc}`.execute(trx))
+      const r = await row(doc)
+      expect(Number(r.discount)).toBe(150)
+      expect(Number(r.approved_total)).toBe(850)
+    })
+
+    it.each([
+      ['offered_total', 'offered_total = 1'],
+      ['grand_total', 'grand_total = 1'],
+      ['number', "number = 'HACKED'"],
+      ['offered_discount', 'offered_discount = 0'],
+    ])('signed -> issued is refused (GS002) when it also changes %s', async (_c, clause) => {
+      const { doc } = await issuedWithOffer()
+      await signWith(doc, 300)
+      await refused('documents', (trx) => sql`
+        update documents set status = 'issued', signed_at = null, discount = ${sql.raw(clause === 'offered_discount = 0' ? '0' : 'offered_discount')}, ${sql.raw(clause)}
+         where id = ${doc}`.execute(trx))
+    })
+
+    it('superseded and void rows keep offered_discount frozen', async () => {
+      const { doc } = await issuedWithOffer()
+      await inShop((trx) => sql`update documents set status = 'superseded' where id = ${doc}`.execute(trx))
+      await refused('documents', (trx) => sql`update documents set offered_discount = 1 where id = ${doc}`.execute(trx))
     })
   })
 })

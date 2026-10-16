@@ -69,7 +69,7 @@ interface Toast {
  * phone layout, the 2-visible tablet strip and the 4-column desktop grid —
  * so rotating a tablet mid-drag or mid-search never remounts this page.
  */
-export function TodayPage() {
+export function TodayPage({ canOpenQuote = false }: { canOpenQuote?: boolean }) {
   const { data, error, reload, applyMove, applySubState } = useTodayBoard();
 
   // The card check-in just created (App.tsx CheckInRoute navigates here with
@@ -368,6 +368,7 @@ export function TodayPage() {
           job={openJob}
           busy={busyJobId === openJob.jobId}
           errorText={sheetError}
+          quoteHref={canOpenQuote ? `/jobs/${encodeURIComponent(openJob.jobId)}/quote` : null}
           onClose={() => setOpenJobId(null)}
           onMoveStatus={(to) => requestMove(openJob, to)}
           onSetSubState={(s) => void setSubState(openJob, s)}

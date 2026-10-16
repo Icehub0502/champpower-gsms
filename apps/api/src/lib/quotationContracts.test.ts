@@ -12,6 +12,7 @@ import {
   ConfirmInput,
   DecideLineInput,
   PatchLineInput,
+  QuotationBody,
   QuotationRefusal,
   UndoConfirmInput,
   UpdateJobStatusInput,
@@ -144,5 +145,15 @@ describe('error codes are strict schemas', () => {
   })
   it('refuses a code nobody registered', () => {
     expect(QuotationRefusal.safeParse({ error: 'something_else', message: 'm' }).success).toBe(false)
+  })
+})
+
+describe('QuotationBody carries the freeze refusals', () => {
+  it('document_job_immutable is strict: a stray field fails', () => {
+    expect(QuotationBody.safeParse({ error: 'document_job_immutable', message: 'm', jobId: 'x' }).success).toBe(false)
+  })
+  it.each(['document_frozen', 'document_line_frozen', 'document_job_immutable'])('parses %s', (code) => {
+    const r = QuotationBody.safeParse({ error: code, message: 'm' })
+    expect(r.success).toBe(true)
   })
 })

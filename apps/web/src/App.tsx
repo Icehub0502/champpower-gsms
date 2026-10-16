@@ -10,6 +10,8 @@ import { AppShell } from './components/AppShell';
 import { HomeLauncherPage } from './routes/home/HomeLauncherPage';
 import { NotYetAvailable } from './components/ui/NotYetAvailable';
 import { TodayPage } from './routes/today/TodayPage';
+import { QuoteRoute } from './routes/quote/QuotePage';
+import { canReadQuote } from './routes/quote/quoteLabels';
 
 // /board (waiting-room display) and /lookup (customer "find my car" page, reached via
 // QR code) are both public and must never require login — matched before the authed
@@ -79,8 +81,12 @@ function AuthedApp() {
           <ShellLayout user={auth.user} role={auth.role} online={online} onLogout={auth.logout} />
         )}
       >
-        <Route path="/today" element={<TodayPage />} />
+        <Route path="/today" element={<TodayPage canOpenQuote={canReadQuote(auth.role)} />} />
         <Route path="/checkin" element={<CheckInRoute />} />
+        {/* P3.1 — the quotation of one job. Matched before the closed
+            /jobs/:jobId below. The role check inside is for what to SHOW;
+            the API refuses a technician on every quotation door anyway. */}
+        <Route path="/jobs/:jobId/quote" element={<QuoteRoute role={auth.role} />} />
         <Route path="/print/blank-checkin" element={<BlankFormPage />} />
 
         {/* Not yet ported onto the new API (WO-004/T6) — see

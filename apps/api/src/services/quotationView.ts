@@ -56,7 +56,16 @@ function carriedFrom(r: LineRow): string | null {
   return decisionCarries(src, cur) ? r.source_line_id : null
 }
 
-export function buildQuotationView(doc: DocumentRow, lineRows: LineRow[], jobStatus: string | null): Quotation {
+export interface ViewJob {
+  status: string | null
+  vehicleId: string | null
+  vehicleModelLinked: boolean
+  /** The caller's role may write intake (decide/confirm). Read from the JWT by the route. */
+  callerMayDecide: boolean
+}
+
+export function buildQuotationView(doc: DocumentRow, lineRows: LineRow[], job: ViewJob): Quotation {
+  const jobStatus = job.status
   const lines = lineRows.map((r) => ({
     id: r.id, parentLineId: r.parent_line_id, qty: r.qty, unitPrice: r.unit_price,
     approvalStatus: r.approval_status as 'pending' | 'approved' | 'declined',
@@ -65,14 +74,17 @@ export function buildQuotationView(doc: DocumentRow, lineRows: LineRow[], jobSta
   const totalsRaw = quoteTotals(lines, doc.discount)
   const computed = quoteTotalsDecimal(totalsRaw)
   // A NUMBERED document is read from what was frozen on it, never recomputed (CLAUDE.md §4.4): the
-  // stored net totals and discount are the truth. Subtotals come from the (immutable) lines, and the
-  // applied discount is derived from stored net, so the five numbers can never disagree.
+  // stored figures are the truth. Two discounts, both stored (0024, model A):
+  //   offeredDiscount  the discount on the offer; offeredSubtotal - offeredDiscount = offeredTotal
+  //   discount         the AGREED discount (= offeredDiscount until confirm changes it)
+  // Subtotals come from the (immutable) lines; approvedDiscount is derived from the stored approved
+  // total, so the figures can never disagree.
   const totals = doc.number === null ? computed : {
     ...computed,
     discount: doc.discount,
+    offeredDiscount: doc.offered_discount,
     offeredTotal: doc.offered_total,
     approvedTotal: doc.approved_total,
-    offeredDiscount: formatSatang(Math.max(0, totalsRaw.offeredSubtotal - toSatang(doc.offered_total))),
     approvedDiscount: formatSatang(Math.max(0, totalsRaw.approvedSubtotal - toSatang(doc.approved_total))),
   }
   const readiness = confirmReadiness(lines.map((l) => ({
@@ -86,6 +98,8 @@ export function buildQuotationView(doc: DocumentRow, lineRows: LineRow[], jobSta
   return {
     id: doc.id,
     jobId: doc.job_id!,
+    vehicleId: job.vehicleId,
+    vehicleModelLinked: job.vehicleModelLinked,
     revision: doc.revision,
     status: doc.status as DomainQuotationStatus,
     number: doc.number,
@@ -101,6 +115,9 @@ export function buildQuotationView(doc: DocumentRow, lineRows: LineRow[], jobSta
       canIssue: doc.status === 'draft' && lineRows.length > 0,
       canDecide: doc.status === 'issued',
       canConfirm: doc.status === 'issued' && readiness.ready,
+      // Enough to open the confirm dialog: nothing left undecided. Cut sets still lacking an agreed
+      // amount do not block opening it — entering that amount is what the dialog is for.
+      canOpenConfirm: doc.status === 'issued' && job.callerMayDecide && readiness.undecidedLineIds.length === 0,
       canUndoConfirm: doc.status === 'signed' && undo.ok,
       canRevise: doc.status === 'issued' || doc.status === 'signed',
       undecidedLineIds: readiness.undecidedLineIds,

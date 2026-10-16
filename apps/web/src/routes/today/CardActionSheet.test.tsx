@@ -8,6 +8,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TodayJob } from '@gsms/contracts/index.js';
+import { MemoryRouter } from 'react-router-dom';
 import { CardActionSheet } from './CardActionSheet';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -147,5 +148,32 @@ describe('CardActionSheet — closing moves', () => {
   it('never shows an appointment-date field (scheduled is gone, decision 6)', () => {
     render(JOB);
     expect(document.querySelector('input[type="date"]')).toBeNull();
+  });
+});
+
+describe('CardActionSheet — the way to the quotation (P3.1)', () => {
+  it('links to /jobs/:id/quote when the page passes a link', () => {
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CardActionSheet
+            job={JOB}
+            busy={false}
+            errorText={null}
+            quoteHref={`/jobs/${JOB.jobId}/quote`}
+            onClose={() => {}}
+            onMoveStatus={onMoveStatus}
+            onSetSubState={() => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+    const link = [...document.querySelectorAll('a')].find((a) => a.textContent?.includes('ใบเสนอราคา'));
+    expect(link?.getAttribute('href')).toBe(`/jobs/${JOB.jobId}/quote`);
+  });
+
+  it('shows no link at all for a role that sees no prices (no quoteHref)', () => {
+    render(JOB);
+    expect(document.querySelector('a')).toBeNull();
   });
 });

@@ -7,6 +7,8 @@ import {
   type SubState,
 } from '@champpower/domain';
 import type { TodayJob } from '@gsms/contracts/index.js';
+import { Link } from 'react-router-dom';
+import { Icon } from '../../components/ui/Icon';
 import { Modal } from '../../components/ui/Modal';
 import { leavesBoard } from './legalMoves';
 
@@ -14,6 +16,8 @@ interface CardActionSheetProps {
   job: TodayJob;
   busy: boolean;
   errorText: string | null;
+  /** Where "ใบเสนอราคา" goes, or null/absent for a role that sees no prices (technician). */
+  quoteHref?: string | null;
   onClose: () => void;
   onMoveStatus: (to: StatusKey) => void;
   onSetSubState: (subState: SubState | null) => void;
@@ -51,7 +55,7 @@ function moveLabel(from: StatusKey, to: StatusKey): string {
  * moves are the card's own `allowedMoves`, decided by the server from the
  * job's real history and the caller's role — never recomputed here.
  */
-export function CardActionSheet({ job, busy, errorText, onClose, onMoveStatus, onSetSubState }: CardActionSheetProps) {
+export function CardActionSheet({ job, busy, errorText, quoteHref, onClose, onMoveStatus, onSetSubState }: CardActionSheetProps) {
   // ไม่อนุมัติ and เอารถลง close the job and take the card off the board for
   // good (DECISION-7-today.md §6), so neither is ever one tap: they wait here
   // for a confirmation that names the car and says what will happen.
@@ -73,6 +77,12 @@ export function CardActionSheet({ job, busy, errorText, onClose, onMoveStatus, o
         <p className="kb-sheet-now">
           สถานะตอนนี้: <strong>{job.statusLabel}</strong>
         </p>
+
+        {quoteHref && confirmTo === null && (
+          <Link className="btn secondary" to={quoteHref}>
+            <Icon name="list" size={15} /> ใบเสนอราคา
+          </Link>
+        )}
 
         {confirmTo === null ? (
           <>
