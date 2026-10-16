@@ -1,9 +1,12 @@
 import { useState } from 'react';
+import { MoneyError, toSatang } from '@champpower/domain';
 import type { QuotationTotals } from '@gsms/contracts/index.js';
 import { baht, typedSatang } from '../../lib/money';
 
 interface QuoteTotalsPanelProps {
   totals: QuotationTotals;
+  /** Confirmed ("ยืนยันผลลูกค้า" done): the agreed discount may differ from the offered one. */
+  confirmed?: boolean;
   /** Draft only: the discount can be edited here (later only inside "ยืนยันผลลูกค้า"). */
   discountEditable: boolean;
   /** Any mutation in flight: the button is disabled. */
@@ -22,10 +25,20 @@ interface QuoteTotalsPanelProps {
  * is the server's (packages/domain quoteTotals, computed in the API); nothing
  * is added up here. The discount is its own line, as on the paper (v2 §8.4).
  */
-export function QuoteTotalsPanel({ totals, discountEditable, busy, saving, discountError, onSaveDiscount }: QuoteTotalsPanelProps) {
+export function QuoteTotalsPanel({ totals, confirmed = false, discountEditable, busy, saving, discountError, onSaveDiscount }: QuoteTotalsPanelProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const shown = draft ?? totals.discount;
   const invalid = draft !== null && typedSatang(draft) === null;
+  // Compared in satang through the domain parser ("200" vs "200.00" is the same discount).
+  // Only after confirm: before it the two can differ only by the offer's clamp, which is not an agreement.
+  let agreedDiffers = false;
+  try {
+    agreedDiffers = confirmed && toSatang(totals.discount) !== toSatang(totals.offeredDiscount);
+  } catch (err) {
+    // A value the money parser refuses: show nothing rather than guess. Anything else is a bug.
+    if (!(err instanceof MoneyError)) throw err;
+    agreedDiffers = false;
+  }
   const error = invalid ? 'จำนวนเงินไม่ถูกต้อง — ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง' : discountError ?? null;
 
   function save() {
@@ -55,6 +68,13 @@ export function QuoteTotalsPanel({ totals, discountEditable, busy, saving, disco
           <dd className="mono">−{baht(totals.approvedDiscount)}</dd>
         </dl>
         <p className="qt-totals-sum mono">{baht(totals.approvedTotal)}</p>
+        {agreedDiffers && (
+          // DECISION-2026-10-15 §1: confirm set a new discount — the offer's stays on the paper, so show both.
+          <p className="qt-line-sub" data-testid="discount-offered-agreed">
+            ส่วนลดที่เสนอ <span className="mono">{baht(totals.offeredDiscount)}</span>
+            {' · '}ส่วนลดที่ตกลง <span className="mono">{baht(totals.discount)}</span>
+          </p>
+        )}
       </div>
 
       {discountEditable && onSaveDiscount && (

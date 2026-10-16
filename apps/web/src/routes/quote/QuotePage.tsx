@@ -160,6 +160,7 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
               <QuoteLines jobId={jobId} quotation={quotation} canWrite={canWrite} busy={busy} run={run} />
               <QuoteTotalsPanel
                 totals={quotation.totals}
+                confirmed={quotation.confirmedAt !== null}
                 discountEditable={canWrite && quotation.next.canEditContent}
                 busy={busy !== null}
                 saving={busy === 'discount'}

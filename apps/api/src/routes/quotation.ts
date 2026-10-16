@@ -91,6 +91,8 @@ function sendServiceError(res: Response, error: quotationSvc.QuotationError): vo
     case 'decline_note_required': return invalid(res, 'กรุณาพิมพ์เหตุผลเพิ่มเติม', { note: ['required'] })
     case 'decisions_incomplete': return refuse(res, 409, { error: 'decisions_incomplete', message: 'ยังมีบรรทัดที่ลูกค้ายังไม่ตัดสินใจ', lineIds: error.lineIds })
     case 'set_amount_required': return refuse(res, 409, { error: 'set_amount_required', message: 'ชุดที่ตัดบางรายการออกต้องกรอกยอดใหม่ก่อนยืนยัน', lineIds: error.lineIds })
+    case 'discount_required': return refuse(res, 400, { error: 'discount_required', message: 'ลูกค้าอนุมัติน้อยกว่าที่เสนอ กรุณาใส่ส่วนลดใหม่ก่อนยืนยัน', fields: { 'adjustments.discount.amount': ['required'] } })
+    case 'discount_exceeds_approved': return refuse(res, 400, { error: 'discount_exceeds_approved', message: 'ส่วนลดมากกว่ายอดที่ลูกค้าอนุมัติ', fields: { 'adjustments.discount.amount': ['exceeds_approved'] }, max: error.max })
     case 'approved_amount_not_allowed': return refuse(res, 400, { error: 'approved_amount_not_allowed', message: 'บรรทัดนี้ไม่ต้องกรอกยอดใหม่', lineId: error.lineId })
     case 'amount_over_2x': return refuse(res, 422, { error: 'amount_over_2x', message: 'ยอดนี้เกิน 2 เท่าของราคาที่เสนอ น่าจะพิมพ์ผิด ถ้าตั้งใจจริงให้ออกใบเสนอราคาฉบับใหม่', lineId: error.lineId, offered: error.offered, max: error.max })
     case 'amount_above_offer_free_set': return refuse(res, 422, { error: 'amount_above_offer_free_set', message: 'ชุดนี้เสนอไว้ที่ 0 บาท จะเพิ่มราคาต้องออกใบเสนอราคาฉบับใหม่', lineId: error.lineId })

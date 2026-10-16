@@ -269,6 +269,7 @@ export interface Documents {
   job_id: string | null;
   number: string | null;
   numbered_on: Timestamp | null;
+  offered_discount: Generated<Numeric>;
   offered_total: Generated<Numeric>;
   pdf_file_id: string | null;
   revision: Generated<number>;

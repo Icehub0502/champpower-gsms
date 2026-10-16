@@ -16,6 +16,7 @@
  */
 import { sql } from 'kysely'
 import type { ScopedTx } from '@gsms/db/client.js'
+import { ConfirmAuditAfter, ConfirmAuditBefore } from '../lib/confirmAudit.js'
 
 export interface DocumentRow {
   id: string
@@ -31,12 +32,15 @@ export interface DocumentRow {
   voided_by: string | null
   offered_total: string
   approved_total: string
+  /** The AGREED discount: = offered_discount until confirm changes it; undo restores it. */
   discount: string
+  /** The discount on the offer. Written once at issue, immutable after (0024). */
+  offered_discount: string
 }
 
 const DOCUMENT_COLUMNS = [
   'id', 'job_id', 'customer_id', 'revision', 'status', 'number', 'supersedes_document_id',
-  'issued_at', 'signed_at', 'void_reason', 'voided_by', 'offered_total', 'approved_total', 'discount',
+  'issued_at', 'signed_at', 'void_reason', 'voided_by', 'offered_total', 'approved_total', 'discount', 'offered_discount',
 ] as const
 
 /** The one quotation still live for this job (draft/issued/signed) — uq_live_quotation_per_job guarantees at most one. */
@@ -87,8 +91,9 @@ export async function insertDraftQuotation(
   return (await getDocument(trx, row.id))!
 }
 
+/** A draft has one discount; both columns carry it so issue starts from discount = offered_discount (0024). */
 export async function setDraftDiscount(trx: ScopedTx, documentId: string, discount: string): Promise<void> {
-  await trx.updateTable('documents').set({ discount }).where('id', '=', documentId).execute()
+  await trx.updateTable('documents').set({ discount, offered_discount: discount }).where('id', '=', documentId).execute()
 }
 
 export interface LineRow {
@@ -305,27 +310,49 @@ export async function applyDecisions(trx: ScopedTx, changes: readonly DecisionWr
   }
 }
 
+export interface ConfirmRecord {
+  jobAdvancedFrom: string | null
+  /** Lines confirm wrote an agreed amount to. */
+  writtenLineIds: string[]
+  /** What each of them held BEFORE confirm (absent = it held nothing; rows written before 0024 have none). */
+  priorAmounts: Record<string, string | null>
+  /** false when the audit row has no before.setLines (a confirm recorded before prior amounts were kept). */
+  hasPriorAmounts: boolean
+}
+
 /**
- * What the current confirm of this document recorded about the job, read from the
- * structured `after` of its newest `quotation_confirmed` audit row (never from any
- * message text). `jobAdvancedFrom` is the status confirm moved the job FROM, or null
- * when confirm left the job alone. undefined = no such row (confirmed before this
- * field existed): the caller must then not move the job.
+ * What the confirm that produced the document's CURRENT signed state recorded: whether it
+ * moved the job (`jobAdvancedFrom`: the status it moved the job FROM, or null) and which
+ * cut sets it wrote an agreed amount to, with what they held before. Read from the
+ * structured `quotation_confirmed` audit row (never from any message text), parsed with
+ * the same schema the writer uses (lib/confirmAudit.ts); a malformed row THROWS.
+ *
+ * The row is picked by `signedAt` === documents.signed_at, so an earlier confirm of the
+ * same document (confirm, undo, confirm again) is never mistaken for the current one.
+ * Rows written before signedAt was recorded fall back to the newest row.
+ * undefined = no row, or a row from before jobAdvancedFrom existed: the caller must then
+ * not move the job.
  * Relies on idx_audit_entity (shop_id, entity_type, entity_id).
  */
-export async function latestConfirmAfter(trx: ScopedTx, documentId: string): Promise<{ jobAdvancedFrom: string | null } | undefined> {
-  const row = await trx
+export async function latestConfirmAfter(trx: ScopedTx, documentId: string, signedAt: Date | null): Promise<ConfirmRecord | undefined> {
+  const rows = await trx
     .selectFrom('audit_logs')
-    .select(sql<string | null>`after ->> 'jobAdvancedFrom'`.as('job_advanced_from'))
-    .select(sql<boolean>`jsonb_exists(after, 'jobAdvancedFrom')`.as('has_field'))
+    .select(['before', 'after'])
     .where('entity_type', '=', 'documents')
     .where('entity_id', '=', documentId)
     .where('action', '=', 'quotation_confirmed')
     .orderBy('at', 'desc')
-    .limit(1)
-    .executeTakeFirst()
-  if (!row || !row.has_field) return undefined
-  return { jobAdvancedFrom: row.job_advanced_from }
+    .limit(50)
+    .execute()
+  const parsed = rows.map((r) => ({ before: ConfirmAuditBefore.parse(r.before), after: ConfirmAuditAfter.parse(r.after) }))
+  const row = (signedAt && parsed.find((p) => p.after.signedAt !== undefined && new Date(p.after.signedAt).getTime() === signedAt.getTime())) || parsed[0]
+  if (!row || row.after.jobAdvancedFrom === undefined) return undefined
+  return {
+    jobAdvancedFrom: row.after.jobAdvancedFrom,
+    writtenLineIds: (row.after.setLines ?? []).map((x) => x.lineId),
+    hasPriorAmounts: row.before.setLines !== undefined,
+    priorAmounts: Object.fromEntries((row.before.setLines ?? []).map((x) => [x.lineId, x.approvedAmount])),
+  }
 }
 
 /**
@@ -368,7 +395,8 @@ export interface IssueWrite {
   number: string
   offeredTotal: string
   approvedTotal: string
-  discount: string
+  /** Written to BOTH offered_discount and discount: the agreed discount starts equal to the offered one. */
+  offeredDiscount: string
   grandTotal: string
   issuedBy: string
 }
@@ -384,7 +412,8 @@ export async function markIssued(trx: ScopedTx, documentId: string, w: IssueWrit
       issued_by: w.issuedBy,
       offered_total: w.offeredTotal,
       approved_total: w.approvedTotal,
-      discount: w.discount,
+      discount: w.offeredDiscount,
+      offered_discount: w.offeredDiscount,
       grand_total: w.grandTotal,
     })
     .where('id', '=', documentId)
@@ -395,16 +424,26 @@ export async function updateApprovedTotal(trx: ScopedTx, documentId: string, app
   await trx.updateTable('documents').set({ approved_total: approvedTotal }).where('id', '=', documentId).execute()
 }
 
-export async function markSigned(trx: ScopedTx, documentId: string, approvedTotal: string, discount: string): Promise<void> {
+export async function markSigned(trx: ScopedTx, documentId: string, approvedTotal: string, discount: string, signedAt: Date): Promise<void> {
   await trx
     .updateTable('documents')
-    .set({ approved_total: approvedTotal, discount, status: 'signed', signed_at: new Date() })
+    .set({ approved_total: approvedTotal, discount, status: 'signed', signed_at: signedAt })
     .where('id', '=', documentId)
     .execute()
 }
 
-export async function markUnsigned(trx: ScopedTx, documentId: string): Promise<void> {
-  await trx.updateTable('documents').set({ status: 'issued', signed_at: null }).where('id', '=', documentId).execute()
+/**
+ * Undo confirm: status and signed_at revert, the agreed discount goes back to the
+ * offered one and approved_total is the figure the caller rebuilt from the
+ * decisions and that discount. One UPDATE: migration 0024 allows exactly these
+ * four columns on signed -> issued, and only with discount = offered_discount.
+ */
+export async function markUnsigned(trx: ScopedTx, documentId: string, restored: { discount: string; approvedTotal: string }): Promise<void> {
+  await trx
+    .updateTable('documents')
+    .set({ status: 'issued', signed_at: null, discount: restored.discount, approved_total: restored.approvedTotal })
+    .where('id', '=', documentId)
+    .execute()
 }
 
 export async function markSuperseded(trx: ScopedTx, documentId: string): Promise<void> {
@@ -425,7 +464,7 @@ export async function markVoid(
 
 export async function insertRevision(
   trx: ScopedTx,
-  input: { shopId: string; jobId: string; customerId: string; revision: number; supersedesDocumentId: string; discount: string },
+  input: { shopId: string; jobId: string; customerId: string; revision: number; supersedesDocumentId: string; carriedDiscount: string },
 ): Promise<DocumentRow> {
   const row = await trx
     .insertInto('documents')
@@ -437,7 +476,9 @@ export async function insertRevision(
       series: 'QUO',
       revision: input.revision,
       supersedes_document_id: input.supersedesDocumentId,
-      discount: input.discount,
+      // The revision's offer starts from the discount AGREED on the source (owner ruling, 14 Oct 2026).
+      discount: input.carriedDiscount,
+      offered_discount: input.carriedDiscount,
     })
     .returning(['id'])
     .executeTakeFirstOrThrow()

@@ -66,6 +66,23 @@ const STALE_CODES = new Set([
   'document_job_immutable',
 ]);
 
+// DECISION-2026-10-15 §1: approved < offered with a discount — staff decide the new discount, the system does not.
+const DISCOUNT_REQUIRED_TEXT = 'ยอดอนุมัติน้อยกว่ายอดที่เสนอ และใบนี้มีส่วนลด — กรอกส่วนลดใหม่ก่อนยืนยัน (ไม่ให้ส่วนลดใส่ 0)';
+/**
+ * discount_exceeds_approved in words. Also shown by the confirm dialog before submit, so the
+ * screen and the server say the same thing. `max` is the approved subtotal already as "฿…" text.
+ */
+export function discountExceedsApprovedText(max: string): string {
+  return `ส่วนลดมากกว่ายอดที่ลูกค้าอนุมัติ (${max}) — ใส่ส่วนลดไม่เกินยอดนี้`;
+}
+
+// Refusals about ONE field of the confirm body: the same words go on each field the parsed body names.
+function fieldRefusalText(body: QuotationBodyT): string | null {
+  if (body.error === 'discount_required') return DISCOUNT_REQUIRED_TEXT;
+  if (body.error === 'discount_exceeds_approved') return discountExceedsApprovedText(baht(body.max));
+  return null;
+}
+
 function textOf(body: QuotationBodyT): string {
   switch (body.error) {
     case 'quotation_not_found': return 'ไม่พบใบเสนอราคานี้ — อาจถูกปิดหรือมีฉบับใหม่แล้ว โหลดข้อมูลใหม่ให้แล้ว';
@@ -82,6 +99,8 @@ function textOf(body: QuotationBodyT): string {
     case 'quotation_empty': return 'ยังไม่มีรายการในใบเสนอราคา — เพิ่มรายการก่อนออกใบ';
     case 'decisions_incomplete': return `ยังมี ${body.lineIds.length} รายการที่ลูกค้ายังไม่ตัดสินใจ — ตัดสินให้ครบก่อนยืนยัน`;
     case 'set_amount_required': return 'ชุดที่ตัดบางรายการออกต้องกรอกยอดใหม่ก่อนยืนยัน';
+    case 'discount_required': return DISCOUNT_REQUIRED_TEXT;
+    case 'discount_exceeds_approved': return discountExceedsApprovedText(baht(body.max));
     case 'amount_over_2x':
       return `ยอดนี้เกิน 2 เท่าของราคาที่เสนอ (เสนอ ${baht(body.offered)} · สูงสุด ${baht(body.max)}) น่าจะพิมพ์ผิด ถ้าตั้งใจจริงให้ออกใบเสนอราคาฉบับใหม่`;
     case 'amount_above_offer_free_set': return 'ชุดนี้เสนอไว้ที่ 0 บาท จะเพิ่มราคาต้องออกใบเสนอราคาฉบับใหม่';
@@ -128,8 +147,13 @@ export function describeQuoteError(err: unknown): QuoteFailure {
     if (body.error === 'invalid_request' && body.fields) {
       for (const [k, codes] of Object.entries(body.fields)) fields[k] = fieldCodeText(codes[0]);
     }
+    // The field keys come from the parsed contract (strict), so the words land on the discount box.
+    const fieldRefusal = fieldRefusalText(body);
+    if (fieldRefusal && 'fields' in body && body.fields) {
+      for (const k of Object.keys(body.fields)) fields[k] = fieldRefusal;
+    }
     return {
-      text: textOf(body),
+      text: fieldRefusal ?? textOf(body),
       fields,
       lineIds: lineIdsOf(body),
       body,

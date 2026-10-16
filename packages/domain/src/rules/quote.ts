@@ -435,6 +435,86 @@ export function checkApprovedAmount(offeredSatang: number, agreedSatang: number)
   return { ok: true, kind, delta, requiresReason: true };
 }
 
+// -----------------------------------------------------------------------------
+// Offered vs agreed discount (model A, owner ruling 14 Oct 2026)
+//
+// documents.offered_discount = the discount on the offer, written at issue and
+// never changed. documents.discount = the AGREED discount: equal to the offered
+// one until confirm changes it, and put back to it by undo-confirm.
+// -----------------------------------------------------------------------------
+
+/**
+ * The discount stored at issue, as BOTH offered_discount and discount: what the
+ * entered discount really takes off the offered subtotal (clamped to
+ * [0, subtotal]). Storing the clamped figure is what makes
+ * offeredSubtotal - offeredDiscount = offeredTotal hold on the paper.
+ */
+export function discountAtIssue(lines: readonly QuoteLineMoney[], entered: string | number): string {
+  return formatSatang(quoteTotals(lines, entered).offeredDiscount);
+}
+
+/**
+ * DECISION-2026-10-15 §1. When the customer approved LESS than was offered
+ * (agreed set amounts included) and the quotation carries a discount, confirm
+ * must be given a NEW discount by staff: a discount bargained on 2,000 means
+ * nothing on the 100 that is left, and carrying or clamping it silently bills
+ * 0 baht. The system forces the decision, it does not take it.
+ *
+ * `lines` are the lines as they will be AT confirm (decisions recorded, agreed
+ * set amounts applied); `discount` is the current discount (equal to the offered
+ * one while the document is issued). The API refuses a confirm without an
+ * explicit adjustments.discount when this is true; the confirm dialog uses the
+ * same function to start its discount field empty.
+ */
+export function confirmNeedsNewDiscount(lines: readonly QuoteLineMoney[], discount: string | number): boolean {
+  const t = quoteTotals(lines, discount);
+  return t.discount > 0 && t.approvedSubtotal < t.offeredSubtotal;
+}
+
+/**
+ * A discount typed at confirm may not exceed what the customer approved (the approved
+ * subtotal, set amounts applied). Front gate for CLAUDE.md §4.5: the clamp that keeps a
+ * total from going negative stays as the last net, but a figure staff TYPED is refused
+ * with a field error rather than silently stored smaller. Equal is allowed (bill 0).
+ */
+export function discountExceedsApproved(lines: readonly QuoteLineMoney[], discount: string | number): boolean {
+  return toSatang(discount) > quoteTotals(lines, 0).approvedSubtotal;
+}
+
+/** The footing rule of the offer: subtotal - discount = total, in satang. */
+export function offeredFoots(offeredSubtotal: string, offeredDiscount: string, offeredTotal: string): boolean {
+  return toSatang(offeredSubtotal) - toSatang(offeredDiscount) === toSatang(offeredTotal);
+}
+
+/**
+ * The line amounts after undo-confirm. `written` are the lines confirm wrote an
+ * agreed amount to and `prior` is what each held BEFORE confirm (absent = null).
+ * Those lines go back to it; every other line is untouched. Pure so the same
+ * answer drives the write and the totals.
+ */
+export function agreedAmountsAfterUndo(
+  lines: ReadonlyArray<{ id: string; approvedAmount: string | null }>,
+  written: readonly string[],
+  prior: Readonly<Record<string, string | null>>,
+): Map<string, string | null> {
+  const w = new Set(written);
+  return new Map(lines.map((l) => [l.id, w.has(l.id) ? (prior[l.id] ?? null) : l.approvedAmount]));
+}
+
+/**
+ * What undo-confirm restores on the document: the agreed discount goes back to
+ * the offered one and approved_total is rebuilt from the decisions, the restored
+ * amounts and that discount — the same arithmetic decideLine uses before
+ * confirm, so reversing a confirm reproduces the pre-confirm totals exactly.
+ */
+export function totalsAfterUndoConfirm(
+  lines: readonly QuoteLineMoney[],
+  offeredDiscount: string,
+): { discount: string; approvedTotal: string } {
+  const t = quoteTotals(lines, offeredDiscount);
+  return { discount: offeredDiscount, approvedTotal: formatSatang(t.approvedTotal) };
+}
+
 export type JobOutcomeAtConfirm = 'approve_job' | 'keep_quoted' | 'not_ready';
 
 /**

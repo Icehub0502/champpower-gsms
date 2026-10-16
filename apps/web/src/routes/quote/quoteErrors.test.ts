@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { QuotationBody } from '@gsms/contracts/index.js';
 import { ApiError } from '../../lib/api/client';
 import { SessionCancelledError } from '../../lib/api/sessionCancelled';
-import { GENERIC_QUOTE_FAILURE, describeQuoteError } from './quoteErrors';
+import { GENERIC_QUOTE_FAILURE, discountExceedsApprovedText, describeQuoteError } from './quoteErrors';
 
 const LINE = '00000000-0000-4000-8000-000000000101';
 const ITEM = '00000000-0000-4000-8000-000000000201';
@@ -32,6 +32,8 @@ const BODIES: QuotationBody[] = [
   { error: 'quotation_empty', message: 'x' },
   { error: 'decisions_incomplete', message: 'x', lineIds: [LINE] },
   { error: 'set_amount_required', message: 'x', lineIds: [LINE] },
+  { error: 'discount_required', message: 'x', fields: { 'adjustments.discount.amount': ['required'] } },
+  { error: 'discount_exceeds_approved', message: 'x', fields: { 'adjustments.discount.amount': ['too_big'] }, max: '100.00' },
   { error: 'amount_over_2x', message: 'x', lineId: LINE, offered: '20000.00', max: '40000.00' },
   { error: 'amount_above_offer_free_set', message: 'x', lineId: LINE },
   { error: 'approved_amount_not_allowed', message: 'x', lineId: LINE },
@@ -81,6 +83,21 @@ describe('describeQuoteError', () => {
     const f = describeQuoteError(refusal(400, { error: 'invalid_request', message: 'x', fields: { reason: ['required'], unitPrice: ['invalid_money'] } }));
     expect(f.fields.reason).toBe('จำเป็นต้องกรอก');
     expect(f.fields.unitPrice).toContain('จำนวนเงินไม่ถูกต้อง');
+  });
+
+  it('discount_required puts its words on the discount amount field of the confirm body', () => {
+    const f = describeQuoteError(refusal(400, { error: 'discount_required', message: 'x', fields: { 'adjustments.discount.amount': ['required'] } }));
+    expect(f.fields['adjustments.discount.amount']).toContain('กรอกส่วนลดใหม่');
+    expect(f.stale).toBe(false);
+  });
+
+  it('discount_exceeds_approved puts the dialog\'s own words, with the ceiling, on the discount amount field', () => {
+    const f = describeQuoteError(refusal(400, {
+      error: 'discount_exceeds_approved', message: 'x', fields: { 'adjustments.discount.amount': ['too_big'] }, max: '100.00',
+    }));
+    expect(f.fields['adjustments.discount.amount']).toBe(discountExceedsApprovedText('฿100.00'));
+    expect(f.fields['adjustments.discount.amount']).toContain('฿100.00');
+    expect(f.text).toBe(f.fields['adjustments.discount.amount']);
   });
 
   it('a refusal that means the page is out of date asks for a reload', () => {

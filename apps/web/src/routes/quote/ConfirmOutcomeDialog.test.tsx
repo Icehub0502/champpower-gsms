@@ -9,9 +9,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ConfirmInput } from '@gsms/contracts/index.js';
 import { ConfirmOutcomeDialog } from './ConfirmOutcomeDialog';
 import { amountHint } from './quoteView';
-import type { QuoteFailure } from './quoteErrors';
-import { cutSetQuotation } from './quoteFixtures';
-import { button, click, field, flush, mount, type, type Mounted } from './quoteTestDom';
+import { describeQuoteError, discountExceedsApprovedText, type QuoteFailure } from './quoteErrors';
+import { cutSetQuotation, line, next, quotation, totals } from './quoteFixtures';
+import { button, click, field, flush, mount, submit, type, type Mounted } from './quoteTestDom';
+import { ApiError } from '../../lib/api/client';
 
 let m: Mounted | null = null;
 afterEach(() => {
@@ -189,5 +190,175 @@ describe('M1 — an amount the totals cannot hold', () => {
     expect(document.querySelector('.qt-confirm')).not.toBeNull();
     expect(document.querySelector('.qt-confirm-total')!.textContent).toContain('ยอดเกินที่ระบบรองรับ');
     expect((field('ยอดใหม่ของชุด', set) as HTMLInputElement).value).toBe('9999999999');
+  });
+});
+
+/**
+ * DECISION-2026-10-15 §1: approved < offered with a discount > 0 → staff must
+ * type a NEW discount. The box starts empty, the old deal is shown as a
+ * reference, and nothing is sent until a discount (0 counts) and a reason are in.
+ */
+describe('DECISION-2026-10-15 §1 — a new discount when the customer approved less', () => {
+  // The pass criterion: offer 2,000 with a discount of 200, the customer approves 100.
+  function shrunkQuotation() {
+    const kept = line({ name: 'น้ำมันเครื่อง', unitPrice: '100.00', lineTotal: '100.00', approvalStatus: 'approved', sortOrder: 1 });
+    const gone = line({ name: 'โช้คหน้า', unitPrice: '1900.00', lineTotal: '1900.00', approvalStatus: 'declined', declineReason: 'too_expensive', sortOrder: 2 });
+    return quotation({
+      lines: [kept, gone],
+      totals: totals({
+        offeredSubtotal: '2000.00', offeredDiscount: '200.00', offeredTotal: '1800.00', discount: '200.00',
+        approvedSubtotal: '100.00', approvedDiscount: '100.00', approvedTotal: '0.00',
+      }),
+      next: next({ canDecide: true, canOpenConfirm: true, canConfirm: true, canRevise: true }),
+    });
+  }
+
+  function openShrunk(onSubmit: (i: ConfirmInput) => Promise<QuoteFailure | null>) {
+    m = mount(<ConfirmOutcomeDialog quotation={shrunkQuotation()} busy={false} onSubmit={onSubmit} onClose={() => {}} />);
+  }
+
+  it('the discount box starts EMPTY and the old deal is shown as reference', () => {
+    openShrunk(vi.fn());
+    expect((field('ส่วนลด') as HTMLInputElement).value).toBe('');
+    expect(document.body.textContent).toContain('ส่วนลดที่ตกลงไว้ 200.00 บาท บนยอด 2,000.00 · ยอดอนุมัติตอนนี้ 100.00 บาท');
+  });
+
+  it('pass criterion: clicking confirm without a discount sends nothing and says why, on the box', async () => {
+    const onSubmit = vi.fn(async () => null);
+    openShrunk(onSubmit);
+    // The button stays enabled so the click can explain itself (review M1).
+    expect(button('ยืนยันผลลูกค้า').disabled).toBe(false);
+    click(button('ยืนยันผลลูกค้า'));
+    await flush();
+    expect(onSubmit).not.toHaveBeenCalled();
+    const input = field('ส่วนลด') as HTMLInputElement;
+    const err = input.closest('label')!.querySelector('.ci-field-error')!;
+    expect(err.textContent).toContain('กรอกส่วนลดใหม่ก่อนยืนยัน');
+    // The reason error shows alongside, in the same click.
+    expect(document.body.textContent).toContain('เปลี่ยนส่วนลดต้องกรอกเหตุผล');
+    // The input is tied to its error and to the reference text.
+    const described = (input.getAttribute('aria-describedby') ?? '').split(' ');
+    expect(described).toContain(err.id);
+    expect(described).toContain(document.querySelector('[data-testid="discount-reference"]')!.id);
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+
+    // Enter (a direct form submit) sends nothing either.
+    submit(document.querySelector('form.qt-confirm') as HTMLFormElement);
+    await flush();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('0 is a valid explicit entry', async () => {
+    const onSubmit = vi.fn(async (_i: ConfirmInput) => null);
+    openShrunk(onSubmit);
+    type(field('ส่วนลด'), '0');
+    type(field('เหตุผลที่เปลี่ยนส่วนลด'), 'ไม่ให้ส่วนลดกับยอดที่เหลือ');
+    click(button('ยืนยันผลลูกค้า'));
+    await flush();
+    expect(onSubmit.mock.calls[0]![0]).toEqual({ adjustments: { discount: { amount: '0', reason: 'ไม่ให้ส่วนลดกับยอดที่เหลือ' } } });
+  });
+
+  it('a discount above the approved subtotal is warned before submit with the server\'s words, and not sent', async () => {
+    const onSubmit = vi.fn(async (_i: ConfirmInput) => null);
+    openShrunk(onSubmit);
+    type(field('ส่วนลด'), '150'); // approved is 100
+    const err = field('ส่วนลด').closest('label')!.querySelector('.ci-field-error');
+    expect(err?.textContent).toBe(discountExceedsApprovedText('฿100.00'));
+    type(field('เหตุผลที่เปลี่ยนส่วนลด'), 'x');
+    click(button('ยืนยันผลลูกค้า'));
+    await flush();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    type(field('ส่วนลด'), '100'); // equal to approved: allowed
+    expect(field('ส่วนลด').closest('label')!.querySelector('.ci-field-error')).toBeNull();
+    click(button('ยืนยันผลลูกค้า'));
+    await flush();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it('a typed discount still needs its reason, and is always sent — even when equal to the old one', async () => {
+    // Old discount 50 on an offer of 2,000, approved 100: re-typing 50 is a decision too, and it fits under 100.
+    const q = shrunkQuotation();
+    const small = { ...q, totals: { ...q.totals, discount: '50.00', offeredDiscount: '50.00', offeredTotal: '1950.00', approvedDiscount: '50.00', approvedTotal: '50.00' } };
+    const onSubmit = vi.fn(async (_i: ConfirmInput) => null);
+    m = mount(<ConfirmOutcomeDialog quotation={small} busy={false} onSubmit={onSubmit} onClose={() => {}} />);
+    expect((field('ส่วนลด') as HTMLInputElement).value).toBe('');
+    type(field('ส่วนลด'), '50.00');
+    click(button('ยืนยันผลลูกค้า'));
+    await flush();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain('เปลี่ยนส่วนลดต้องกรอกเหตุผล');
+
+    type(field('เหตุผลที่เปลี่ยนส่วนลด'), 'ลูกค้าขอคงส่วนลด');
+    click(button('ยืนยันผลลูกค้า'));
+    await flush();
+    expect(onSubmit.mock.calls[0]![0]).toEqual({ adjustments: { discount: { amount: '50.00', reason: 'ลูกค้าขอคงส่วนลด' } } });
+  });
+
+  it('the rule does not apply (nothing cut) → the agreed discount is prefilled as before, no reference text', () => {
+    const q = shrunkQuotation();
+    const all = { ...q, lines: q.lines.map((l) => ({ ...l, approvalStatus: 'approved' as const, declineReason: null })),
+      totals: { ...q.totals, approvedSubtotal: '2000.00', approvedDiscount: '200.00', approvedTotal: '1800.00' } };
+    m = mount(<ConfirmOutcomeDialog quotation={all} busy={false} onSubmit={vi.fn()} onClose={() => {}} />);
+    expect((field('ส่วนลด') as HTMLInputElement).value).toBe('200.00');
+    expect(document.body.textContent).not.toContain('ส่วนลดที่ตกลงไว้');
+    expect(button('ยืนยันผลลูกค้า').disabled).toBe(false);
+  });
+
+  it('judged on the lines as they will be: a lower set amount typed in the dialog switches the rule on, Z follows it', async () => {
+    const { q, head } = cutSetQuotation();
+    const withDiscount = { ...q, totals: { ...q.totals, discount: '500.00', offeredDiscount: '500.00', approvedDiscount: '500.00', offeredTotal: '19500.00', approvedTotal: '19500.00' } };
+    const onSubmit = vi.fn(async (_i: ConfirmInput) => null);
+    m = mount(<ConfirmOutcomeDialog quotation={withDiscount} busy={false} onSubmit={onSubmit} onClose={() => {}} />);
+    const set = document.querySelector(`[data-set-id="${head.id}"]`) as HTMLElement;
+    // Nothing typed yet: approved (20,000 as offered) is not below the offer → prefilled as before.
+    expect((field('ส่วนลด') as HTMLInputElement).value).toBe('500.00');
+    type(field('ยอดใหม่ของชุด', set), '18000');
+    expect((field('ส่วนลด') as HTMLInputElement).value).toBe('');
+    expect(document.querySelector('[data-testid="discount-reference"]')!.textContent)
+      .toContain('ส่วนลดที่ตกลงไว้ 500.00 บาท บนยอด 20,000.00 · ยอดอนุมัติตอนนี้ 18,000.00 บาท');
+
+    type(field('เหตุผล', set), 'ตัดตั้งศูนย์');
+    type(field('ส่วนลด'), '300');
+    type(field('เหตุผลที่เปลี่ยนส่วนลด'), 'ลดตามยอดใหม่');
+    click(button('ยืนยันผลลูกค้า'));
+    await flush();
+    expect(onSubmit.mock.calls[0]![0]).toEqual({
+      adjustments: {
+        setLines: [{ lineId: head.id, approvedAmount: '18000', reason: 'ตัดตั้งศูนย์' }],
+        discount: { amount: '300', reason: 'ลดตามยอดใหม่' },
+      },
+    });
+  });
+
+  it('a discount typed BEFORE the rule switched on is dropped when it switches on — staff decide again', () => {
+    const { q, head } = cutSetQuotation();
+    const withDiscount = { ...q, totals: { ...q.totals, discount: '500.00', offeredDiscount: '500.00', approvedDiscount: '500.00', offeredTotal: '19500.00', approvedTotal: '19500.00' } };
+    m = mount(<ConfirmOutcomeDialog quotation={withDiscount} busy={false} onSubmit={vi.fn()} onClose={() => {}} />);
+    const set = document.querySelector(`[data-set-id="${head.id}"]`) as HTMLElement;
+    // Rule off (nothing cut yet in money terms): staff change the discount against 20,000.
+    type(field('ส่วนลด'), '400');
+    expect((field('ส่วนลด') as HTMLInputElement).value).toBe('400');
+    // A lower set amount switches the rule on: the 400 was typed against the old total, so the box empties.
+    type(field('ยอดใหม่ของชุด', set), '18000');
+    expect((field('ส่วนลด') as HTMLInputElement).value).toBe('');
+    // Typed after the switch, it stays.
+    type(field('ส่วนลด'), '300');
+    type(field('เหตุผล', set), 'ตัดตั้งศูนย์');
+    expect((field('ส่วนลด') as HTMLInputElement).value).toBe('300');
+  });
+
+  it('a discount_required refusal from the server lands on the discount box', async () => {
+    const body = { error: 'discount_required' as const, message: 'x', fields: { 'adjustments.discount.amount': ['required'] } };
+    const onSubmit = vi.fn(async () => describeQuoteError(new ApiError(400, 'discount_required', body)));
+    // The cut-set fixture has no discount, so the screen lets it through; the server says otherwise.
+    const { set } = open(onSubmit);
+    type(field('ยอดใหม่ของชุด', set), '18000');
+    type(field('เหตุผล', set), 'ตัดตั้งศูนย์');
+    click(button('ยืนยันผลลูกค้า'));
+    await flush();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    const err = field('ส่วนลด').closest('label')!.querySelector('.ci-field-error');
+    expect(err?.textContent).toContain('กรอกส่วนลดใหม่');
   });
 });
