@@ -100,6 +100,8 @@ export function parseCreateColumns(createLines: string[]): string[] {
 export async function extractTables(
   lines: AsyncIterable<string> | Iterable<string>,
   wanted: readonly string[],
+  /** Per table, the only columns kept. Every other cell is dropped as soon as the tuple is tokenised; it never reaches a row object. */
+  keepColumns: Readonly<Record<string, readonly string[]>> = {},
 ): Promise<Record<string, DumpRow[]>> {
   const want = new Set(wanted)
   const columns = new Map<string, string[]>()
@@ -135,7 +137,8 @@ export async function extractTables(
         if (cells.length !== cols.length) {
           throw new Error(`${table}: row has ${cells.length} cells, CREATE TABLE has ${cols.length} columns`)
         }
-        result[table]!.push(Object.fromEntries(cols.map((c, k) => [c, cells[k]!])))
+        const keep = keepColumns[table]
+        result[table]!.push(Object.fromEntries(cols.flatMap((c, k) => (!keep || keep.includes(c) ? [[c, cells[k]!] as const] : []))))
       }
     }
   }

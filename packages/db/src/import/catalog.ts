@@ -34,7 +34,10 @@ import { sql } from 'kysely'
 import { createDb, withShop, type Db, type ScopedTx } from '../client.js'
 import { extractTables, linesOfFile } from './mysqlDump.js'
 import {
-  ITEM_SOURCE, buildPlan, countByAction,
+  USAGE_COLUMNS, countWarrantyUse, duplicateGroups, duplicatesCsv, type WarrantyUsage,
+} from './catalogReview.js'
+import {
+  INACTIVE_WARRANTY_LEGACY_IDS, ITEM_SOURCE, buildPlan, countByAction,
   type ExistingState, type Plan, type SourceTables,
 } from './catalogPlan.js'
 
@@ -209,15 +212,35 @@ export function renderReport(plan: Plan, meta: { dryRun: boolean; shopSlug: stri
   return L.join('\n') + '\n'
 }
 
+/**
+ * Counts of old document lines per inactive warranty. Reads ONLY the parent id
+ * and warranty_name of quotation_items / receipt_items: every other cell of
+ * those rows is dropped at tokenising time (see extractTables keepColumns), no
+ * customer table is opened, and only counts are returned.
+ */
+export async function readWarrantyUsage(dump: string, src: SourceTables): Promise<Map<string, WarrantyUsage>> {
+  const out = new Map<string, WarrantyUsage>()
+  const targets = src.warranties.filter((w) => INACTIVE_WARRANTY_LEGACY_IDS.includes(w.id ?? ''))
+  if (targets.length === 0) return out
+  const t = await extractTables(linesOfFile(dump), ['quotation_items', 'receipt_items'], USAGE_COLUMNS)
+  for (const w of targets) {
+    out.set(w.id!, countWarrantyUse(t.quotation_items!, t.receipt_items!, (w.warranty_name ?? '').trim()))
+  }
+  return out
+}
+
 /** Short readable note for the owner about each warranty imported inactive. */
-export function renderWarrantyReview(plan: Plan, src: SourceTables): string {
+export function renderWarrantyReview(plan: Plan, src: SourceTables, usageById: Map<string, WarrantyUsage> = new Map()): string {
   const L = ['# Warranties imported INACTIVE -- for review', '']
   for (const t of plan.terms.filter((x) => !x.isActive)) {
     const items = src.service_items.filter((r) => r.warranty_id === t.legacyId)
     L.push(`## #${t.legacyId} "${t.name}"`, '')
     L.push(`- days: ${t.days ?? 'none'}   max_km: ${t.maxKm ?? 'none'}   (from ${t.from.year ?? 0}y ${t.from.month ?? 0}m ${t.from.km ?? 0}km)`)
     L.push(`- catalog items that reference it: ${items.length}${items.length ? ' -- ' + items.map((r) => r.product_name).join(', ') : ''}`)
-    L.push('- old documents that reference it: NOT COUNTED. Old quotation_items / receipt_items store only a text copy (warranty_name), not a warranty id, and those tables belong to customer quotations and receipts, which this phase does not read. Counting needs an explicit go-ahead to read them (names and counts only).')
+    const u = usageById.get(t.legacyId)
+    L.push(u
+      ? `- old documents using it (exact match on the warranty text, counts only): quotation lines ${u.quotationLines} in ${u.quotationDocs} quotations; receipt lines ${u.receiptLines} in ${u.receiptDocs} receipts`
+      : '- old documents using it: not counted in this run')
     L.push('- state: is_active = false, so new quotes cannot pick it. Re-activate it in the warranty settings if you want it back; a re-run of the import will not switch it off again.', '')
   }
   if (L.length === 2) L.push('No inactive warranties in this run.')
@@ -247,6 +270,8 @@ export async function main(): Promise<void> {
   const src = await readSource(dump)
   console.log(`read dump: service_items=${src.service_items.length} service_item_components=${src.service_item_components.length} warranties=${src.warranties.length}`)
 
+  const usage = await readWarrantyUsage(dump, src)
+
   const db: Db = createDb(url)
   try {
     const who = await sql<{ current_user: string }>`select current_user`.execute(db)
@@ -267,7 +292,8 @@ export async function main(): Promise<void> {
     const reportPath = join(reportDir, `catalog-import-report${dryRun ? '-dryrun' : ''}.md`)
     await writeFile(reportPath, renderReport(result, { dryRun, shopSlug: shop.slug, shopId: shop.id, dump }), 'utf8')
 
-    await writeFile(join(reportDir, 'warranty-4-for-review.md'), renderWarrantyReview(result, src), 'utf8')
+    await writeFile(join(reportDir, 'warranty-4-for-review.md'), renderWarrantyReview(result, src, usage), 'utf8')
+    await writeFile(join(reportDir, 'review-duplicates.csv'), duplicatesCsv(duplicateGroups(src.service_items)), 'utf8')
 
     const ct = (rows: { action: 'insert' | 'update' | 'unchanged' }[]) => JSON.stringify(countByAction(rows))
     console.log(`${dryRun ? 'DRY RUN -- nothing written' : 'WRITTEN'}`)

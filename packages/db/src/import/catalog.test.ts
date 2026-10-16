@@ -5,6 +5,7 @@ import {
   type ExistingState, type SourceTables,
 } from './catalogPlan.js'
 import { resolve } from 'node:path'
+import { countWarrantyUse, duplicateGroups, duplicatesCsv } from './catalogReview.js'
 import { assertAppRole, assertLocalDatabase, renderReport, renderWarrantyReview, resolveReportDir } from './catalog.js'
 
 // Synthetic data only: invented names, no real rows.
@@ -200,13 +201,23 @@ describe('buildPlan', () => {
     expect(a.detail).toContain('set_price=999.00')
   })
 
-  it('does not import two prototype rows that normalise to the same name', () => {
+  it('imports only the lowest legacy id of a duplicate pair and reports the other', () => {
     const s = src()
     s.service_items.push(item('6', 'Rack', 'rack-oem'))
     const p = buildPlan(s, EMPTY)
-    expect(p.items.find((i) => i.legacyId === '1')).toBeUndefined()
+    expect(p.items.find((i) => i.legacyId === '1')).toBeDefined()
     expect(p.items.find((i) => i.legacyId === '6')).toBeUndefined()
-    expect(p.ambiguities.filter((a) => a.code === 'item_duplicate_in_source')).toHaveLength(2)
+    expect(p.ambiguities.filter((a) => a.code === 'item_duplicate_in_source').map((a) => a.legacyId)).toEqual(['6'])
+    // the held-back row is still listed in the review CSV, with its partner
+    expect(duplicateGroups(s.service_items).map((g) => g.legacyIds)).toEqual([['1', '6']])
+  })
+
+  it('picks the winner by number, not by order in the dump or string order', () => {
+    const s = src()
+    s.service_items.push(item('100', 'Misc', 'Dup'), item('20', 'Misc', 'dup'))
+    const p = buildPlan(s, EMPTY)
+    expect(p.items.find((i) => i.legacyId === '20')).toBeDefined()
+    expect(p.items.find((i) => i.legacyId === '100')).toBeUndefined()
   })
 
   it('does not overwrite a hand-made catalog row that already owns the name', () => {
@@ -242,13 +253,46 @@ describe('buildPlan', () => {
     const md = renderWarrantyReview(p, s)
     expect(md).toContain('"heavy"')
     expect(md).toContain('catalog items that reference it: 1')
-    expect(md).toContain('NOT COUNTED')
+    expect(md).toContain('not counted in this run')
+    const withUsage = renderWarrantyReview(p, s, new Map([['4', { quotationLines: 5, quotationDocs: 3, receiptLines: 2, receiptDocs: 2 }]]))
+    expect(withUsage).toContain('quotation lines 5 in 3 quotations; receipt lines 2 in 2 receipts')
   })
 
   it('renders a report without throwing', () => {
     const md = renderReport(buildPlan(src(), EMPTY), { dryRun: true, shopSlug: 's', shopId: 'id', dump: 'd' })
     expect(md).toContain('DRY RUN')
     expect(md).toContain('price_zero_to_null')
+  })
+})
+
+describe('review artefacts', () => {
+  it('projects columns: unlisted cells never reach a row object', async () => {
+    const lines = [
+      'CREATE TABLE `t` (', '  `id` int NOT NULL,', '  `secret` varchar(20) DEFAULT NULL,', '  `w` varchar(20) DEFAULT NULL,', ') ENGINE=InnoDB;',
+      "INSERT INTO `t` VALUES (1,'private','x'),(2,'private','y');",
+    ]
+    const out = await extractTables(lines, ['t'], { t: ['id', 'w'] })
+    expect(out.t).toEqual([{ id: '1', w: 'x' }, { id: '2', w: 'y' }])
+    expect(JSON.stringify(out)).not.toContain('private')
+  })
+  it('counts lines and distinct parent documents for one warranty text', () => {
+    const q = [
+      { quotation_id: '1', warranty_name: 'W4' }, { quotation_id: '1', warranty_name: ' W4 ' },
+      { quotation_id: '2', warranty_name: 'other' }, { quotation_id: '3', warranty_name: null },
+    ]
+    const r = [{ receipt_id: '9', warranty_name: 'W4' }]
+    expect(countWarrantyUse(q, r, 'W4')).toEqual({ quotationLines: 2, quotationDocs: 1, receiptLines: 1, receiptDocs: 1 })
+  })
+  it('lists every duplicate group in the CSV, with the WO-004 style columns', () => {
+    const s = [
+      item('1', 'Rack', 'Rack OEM', { created_at: '2026-01-01' }), item('6', 'Rack', 'rack-oem', { created_at: '2026-02-02' }),
+      item('2', 'Rack', 'Unique'),
+    ]
+    const g = duplicateGroups(s)
+    expect(g).toHaveLength(1)
+    const csv = duplicatesCsv(g)
+    expect(csv).toContain('kind,normalised_key,legacy_ids,names,categories,created_at')
+    expect(csv).toContain('catalog_item,rack|rackoem,1 | 6,Rack OEM | rack-oem')
   })
 })
 

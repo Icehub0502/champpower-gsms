@@ -261,8 +261,14 @@ export function buildPlan(src: SourceTables, existing: ExistingState): Plan {
     const key = `${priceKey(category)}\u0000${priceKey(name)}`
     const group = sourceKeyCount.get(key)!
     if (group.length > 1) {
-      flag({ code: 'item_duplicate_in_source', table: 'service_items', legacyId, detail: `"${category}" / "${name}" appears ${group.length} times in the prototype; none imported, pick the real one. Side by side: ${group.map((g) => describeRow(byId.get(g)!, compCount)).join(' || ')}` })
-      continue
+      // Owner decision (option A): the catalog allows one live item per
+      // normalised (category, name), so the lowest legacy id is imported and the
+      // others are held for review (they are all listed in review-duplicates.csv).
+      const winner = [...group].sort((a, b) => Number(a) - Number(b))[0]!
+      if (legacyId !== winner) {
+        flag({ code: 'item_duplicate_in_source', table: 'service_items', legacyId, detail: `"${category}" / "${name}" appears ${group.length} times in the prototype; #${winner} (lowest id) is imported, this one is NOT, listed in review-duplicates.csv for a person to merge. Side by side: ${group.map((g) => describeRow(byId.get(g)!, compCount)).join(' || ')}` })
+        continue
+      }
     }
     const prior = existingByLegacy.get(legacyId)
     const clash = liveByKey.get(key)
