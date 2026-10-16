@@ -56,6 +56,20 @@ describe('the two totals', () => {
     expect(approved.textContent).toContain('−฿500.00');
   });
 
+  it('shows the offered and the agreed discount apart only when confirm changed it (DECISION-2026-10-15 §1)', () => {
+    m = mount(<QuoteTotalsPanel totals={totals({ offeredDiscount: '200.00', discount: '20.00' })} confirmed discountEditable={false} busy={false} />);
+    const agreed = m.container.querySelector('[data-testid="discount-offered-agreed"]')!;
+    expect(agreed.textContent).toContain('ส่วนลดที่เสนอ ฿200.00');
+    expect(agreed.textContent).toContain('ส่วนลดที่ตกลง ฿20.00');
+    m.unmount();
+    m = mount(<QuoteTotalsPanel totals={totals({ offeredDiscount: '200.00', discount: '200.00' })} confirmed discountEditable={false} busy={false} />);
+    expect(m.container.querySelector('[data-testid="discount-offered-agreed"]')).toBeNull();
+    m.unmount();
+    // Not confirmed (a draft's clamp): never shown as an agreement.
+    m = mount(<QuoteTotalsPanel totals={totals({ offeredDiscount: '50.00', discount: '200.00' })} discountEditable={false} busy={false} />);
+    expect(m.container.querySelector('[data-testid="discount-offered-agreed"]')).toBeNull();
+  });
+
   it('still shows the approved total when nothing is approved yet (฿0.00, not hidden)', () => {
     m = mount(<QuoteTotalsPanel totals={totals({ offeredTotal: '900.00' })} discountEditable={false} busy={false} />);
     expect(m.container.querySelector('[data-testid="approved-total"]')!.textContent).toContain('฿0.00');

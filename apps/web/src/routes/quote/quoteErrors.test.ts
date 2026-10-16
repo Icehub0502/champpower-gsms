@@ -32,6 +32,7 @@ const BODIES: QuotationBody[] = [
   { error: 'quotation_empty', message: 'x' },
   { error: 'decisions_incomplete', message: 'x', lineIds: [LINE] },
   { error: 'set_amount_required', message: 'x', lineIds: [LINE] },
+  { error: 'discount_required', message: 'x', fields: { 'adjustments.discount.amount': ['required'] } },
   { error: 'amount_over_2x', message: 'x', lineId: LINE, offered: '20000.00', max: '40000.00' },
   { error: 'amount_above_offer_free_set', message: 'x', lineId: LINE },
   { error: 'approved_amount_not_allowed', message: 'x', lineId: LINE },
@@ -81,6 +82,12 @@ describe('describeQuoteError', () => {
     const f = describeQuoteError(refusal(400, { error: 'invalid_request', message: 'x', fields: { reason: ['required'], unitPrice: ['invalid_money'] } }));
     expect(f.fields.reason).toBe('จำเป็นต้องกรอก');
     expect(f.fields.unitPrice).toContain('จำนวนเงินไม่ถูกต้อง');
+  });
+
+  it('discount_required puts its words on the discount amount field of the confirm body', () => {
+    const f = describeQuoteError(refusal(400, { error: 'discount_required', message: 'x', fields: { 'adjustments.discount.amount': ['required'] } }));
+    expect(f.fields['adjustments.discount.amount']).toContain('กรอกส่วนลดใหม่');
+    expect(f.stale).toBe(false);
   });
 
   it('a refusal that means the page is out of date asks for a reload', () => {

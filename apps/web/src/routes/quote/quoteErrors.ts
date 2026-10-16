@@ -66,6 +66,9 @@ const STALE_CODES = new Set([
   'document_job_immutable',
 ]);
 
+// DECISION-2026-10-15 §1: approved < offered with a discount — staff decide the new discount, the system does not.
+const DISCOUNT_REQUIRED_TEXT = 'ยอดอนุมัติน้อยกว่ายอดที่เสนอ และใบนี้มีส่วนลด — กรอกส่วนลดใหม่ก่อนยืนยัน (ไม่ให้ส่วนลดใส่ 0)';
+
 function textOf(body: QuotationBodyT): string {
   switch (body.error) {
     case 'quotation_not_found': return 'ไม่พบใบเสนอราคานี้ — อาจถูกปิดหรือมีฉบับใหม่แล้ว โหลดข้อมูลใหม่ให้แล้ว';
@@ -82,6 +85,7 @@ function textOf(body: QuotationBodyT): string {
     case 'quotation_empty': return 'ยังไม่มีรายการในใบเสนอราคา — เพิ่มรายการก่อนออกใบ';
     case 'decisions_incomplete': return `ยังมี ${body.lineIds.length} รายการที่ลูกค้ายังไม่ตัดสินใจ — ตัดสินให้ครบก่อนยืนยัน`;
     case 'set_amount_required': return 'ชุดที่ตัดบางรายการออกต้องกรอกยอดใหม่ก่อนยืนยัน';
+    case 'discount_required': return DISCOUNT_REQUIRED_TEXT;
     case 'amount_over_2x':
       return `ยอดนี้เกิน 2 เท่าของราคาที่เสนอ (เสนอ ${baht(body.offered)} · สูงสุด ${baht(body.max)}) น่าจะพิมพ์ผิด ถ้าตั้งใจจริงให้ออกใบเสนอราคาฉบับใหม่`;
     case 'amount_above_offer_free_set': return 'ชุดนี้เสนอไว้ที่ 0 บาท จะเพิ่มราคาต้องออกใบเสนอราคาฉบับใหม่';
@@ -127,6 +131,10 @@ export function describeQuoteError(err: unknown): QuoteFailure {
     const fields: Record<string, string> = {};
     if (body.error === 'invalid_request' && body.fields) {
       for (const [k, codes] of Object.entries(body.fields)) fields[k] = fieldCodeText(codes[0]);
+    }
+    // The field key comes from the parsed contract (strict: only this one key), so it lands on the discount box.
+    if (body.error === 'discount_required') {
+      for (const k of Object.keys(body.fields)) fields[k] = DISCOUNT_REQUIRED_TEXT;
     }
     return {
       text: textOf(body),
