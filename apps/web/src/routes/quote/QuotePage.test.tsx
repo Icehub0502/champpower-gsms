@@ -336,7 +336,8 @@ describe('M3 — the job read is refreshed after a step that moves the job', () 
     currentJob = { ...JOB, status: 'approved', statusLabel: 'อนุมัติ', allowedMoves: ['repairing'] };
     apiPost.mockResolvedValueOnce({ ...quotation({ status: 'signed', lines: [a], next: next() }), jobStatusUnchanged: null });
     click(button('ยืนยันผลลูกค้า'));
-    click(document.querySelector('.qt-confirm button[type="submit"]') as HTMLButtonElement); // the dialog's submit
+    // The dialog's submit — in the modal's footer since P3.1 polish #3, tied to the form by form=.
+    click(document.querySelector('.modal-foot button[type="submit"]') as HTMLButtonElement);
     await flush();
     expect(document.querySelector('.qt-header')!.textContent).toContain('สถานะงาน อนุมัติ');
     // allowedMoves came with it: rejecting is no longer offered.

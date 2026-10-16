@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   MoneyError, confirmNeedsNewDiscount, discountExceedsApproved, quoteTotals, setsNeedingAmount, toSatang, type QuoteLineDecisionState, type QuoteLineMoney,
 } from '@champpower/domain';
@@ -53,6 +53,18 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
   const [failure, setFailure] = useState<QuoteFailure | null>(null);
   const discountRefId = useId();
   const discountErrorId = useId();
+  const formId = useId();
+  const formRef = useRef<HTMLFormElement>(null);
+  // Bumped after a refused submit (screen check or server): the effect below moves focus to
+  // the first box marked aria-invalid, once the errors of that attempt are on screen.
+  const [focusErrorTick, setFocusErrorTick] = useState(0);
+  // Esc / backdrop / × with typed data: ask before throwing it away (ux P3.1 #6).
+  const [askDiscard, setAskDiscard] = useState(false);
+
+  useEffect(() => {
+    if (focusErrorTick === 0) return;
+    formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [focusErrorTick]);
 
   const setNeedsSending = (s: QuotationLine) => missing.has(s.id) || s.approvedAmount === null || (amounts[s.id] ?? '').trim() !== s.approvedAmount;
 
@@ -153,7 +165,10 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
   // A preview of the approved total with what is typed, from the domain's one
   // totals function — so the counter can say the number to the customer. The
   // server recomputes it on confirm; this is never sent.
-  const allTyped = sets.every((s) => typedSatang(amounts[s.id] ?? '') !== null) && discountSatang !== null;
+  // Only for a discount the server would accept: one above the approved subtotal is clamped by
+  // the totals function and would preview as ฿0.00 — a number the counter might read out (ux P3.1 #5).
+  const allTyped = sets.every((s) => typedSatang(amounts[s.id] ?? '') !== null)
+    && discountSatang !== null && !discountMissing && !discountExceeds;
   // A sum beyond numeric(12,2) makes the domain throw MoneyError — by design,
   // it refuses to compute a number the database could not hold. Here that is
   // a preview, so it must not take the dialog (and what was typed) down with it.
@@ -183,7 +198,10 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
       const typed = (amounts[s.id] ?? '').trim();
       return setNeedsSending(s) && (typed === '' || typedSatang(typed) === null || (reasons[s.id] ?? '').trim() === '');
     }) || discountMissing || discountSatang === null || discountExceeds || (discountChanged && discountReason.trim() === '');
-    if (invalid) return;
+    if (invalid) {
+      setFocusErrorTick((t) => t + 1);
+      return;
+    }
 
     const setLines = sets.filter(setNeedsSending).map((s) => ({
       lineId: s.id, approvedAmount: (amounts[s.id] ?? '').trim(), reason: (reasons[s.id] ?? '').trim(),
@@ -199,14 +217,54 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
     }
     setFailure(null);
     const refused = await onSubmit(parsed.data);
-    if (refused && !refused.cancelled) setFailure(refused);
+    if (refused && !refused.cancelled) {
+      setFailure(refused);
+      setFocusErrorTick((t) => t + 1);
+    }
+  }
+
+  // Anything typed that closing would lose. The discount counts only once staff typed in it.
+  const dirty = sets.some((s) => (amounts[s.id] ?? '') !== (s.approvedAmount ?? ''))
+    || Object.values(reasons).some((r) => r.trim() !== '')
+    || (discountEntered && discount !== quotation.totals.discount)
+    || discountReason.trim() !== '';
+
+  /** Esc, backdrop and ×: close at once when nothing was typed, otherwise ask first. */
+  function requestClose() {
+    if (busy) return;
+    if (dirty) setAskDiscard(true);
+    else onClose();
   }
 
   const dialogText = failure && failure.lineIds.length === 0 ? failure.text : null;
 
   return (
-    <Modal title="ยืนยันผลลูกค้า" onClose={() => { if (!busy) onClose(); }}>
-      <form className="ci-dialog qt-confirm" onSubmit={(e) => { e.preventDefault(); void submit(); }} noValidate>
+    <Modal
+      title="ยืนยันผลลูกค้า"
+      onClose={requestClose}
+      // The action row is the modal's footer, outside the scrolling body, so "ยืนยันผลลูกค้า"
+      // is on screen at 390px and at 1180x820 however many sets there are (ux P3.1 #3). The
+      // submit button reaches the form through form={formId}, so Enter in a box still submits.
+      footer={askDiscard ? (
+        <div className="qt-confirm-discard" role="group" aria-label="ทิ้งข้อมูลที่กรอก?">
+          <p role="alert"><strong>ทิ้งข้อมูลที่กรอก?</strong> ยอดและเหตุผลที่พิมพ์ไว้จะหายไป</p>
+          <div className="row-flex">
+            <button type="button" className="btn danger" onClick={onClose}>ทิ้งข้อมูล</button>
+            <button type="button" className="btn secondary" autoFocus onClick={() => {
+              setAskDiscard(false);
+              // The button goes away with the question: put the cursor back in the form, not on <body>.
+              formRef.current?.querySelector<HTMLElement>('input:not([disabled])')?.focus();
+            }}>กลับไปกรอกต่อ</button>
+          </div>
+        </div>
+      ) : (
+        <div className="row-flex">
+          <button type="submit" form={formId} className="btn" disabled={busy}>{busy ? 'กำลังยืนยัน...' : 'ยืนยันผลลูกค้า'}</button>
+          <button type="button" className="btn secondary" disabled={busy} onClick={onClose}>ยกเลิก</button>
+        </div>
+      )}
+    >
+      <form id={formId} ref={formRef} className="ci-dialog qt-confirm" onSubmit={(e) => { e.preventDefault(); void submit(); }} noValidate>
         <p>
           ลูกค้าอนุมัติ <strong>{approvedCount}</strong> รายการ · ไม่อนุมัติ <strong>{declinedCount}</strong> รายการ
           — ยืนยันแล้วใบนี้จะแก้ไม่ได้ (ถอยการยืนยันได้ภายในวันนี้เท่านั้น)
@@ -274,7 +332,11 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
           {discountChanged && (
             <label className={`field ci-field${discountReasonError ? ' has-error' : ''}`}>
               <span className="ci-field-label">เหตุผลที่เปลี่ยนส่วนลด</span>
-              <input value={discountReason} maxLength={500} disabled={busy} onChange={(e) => setDiscountReason(e.target.value)} />
+              <input
+                value={discountReason} maxLength={500} disabled={busy}
+                aria-invalid={discountReasonError ? true : undefined}
+                onChange={(e) => setDiscountReason(e.target.value)}
+              />
               {discountReasonError && <span className="ci-field-error">{discountReasonError}</span>}
             </label>
           )}
@@ -284,11 +346,6 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
           ยอดที่ลูกค้าอนุมัติหลังยืนยัน: <strong className="mono">{preview === null ? '—' : `฿${formatSatangText(preview)}`}</strong>
           {previewOverflow && <span className="ci-field-error"> ยอดเกินที่ระบบรองรับ</span>}
         </p>
-
-        <div className="row-flex">
-          <button type="submit" className="btn" disabled={busy}>{busy ? 'กำลังยืนยัน...' : 'ยืนยันผลลูกค้า'}</button>
-          <button type="button" className="btn secondary" disabled={busy} onClick={onClose}>ยกเลิก</button>
-        </div>
       </form>
     </Modal>
   );

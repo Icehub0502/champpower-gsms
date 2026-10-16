@@ -10,7 +10,7 @@ import { api } from '../../lib/api/client';
 import { CatalogPanel } from './CatalogPanel';
 import { QuoteActions } from './QuoteActions';
 import { QuoteLines } from './QuoteLines';
-import { QuoteTotalsPanel } from './QuoteTotalsPanel';
+import { QuoteTotalsBar, QuoteTotalsPanel } from './QuoteTotalsPanel';
 import { RejectJobAction } from './RejectJobAction';
 import { VehicleModelPicker } from './VehicleModelPicker';
 import { canReadQuote, canWriteQuote, QUOTATION_STATUS_LABEL } from './quoteLabels';
@@ -85,11 +85,17 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
   const [jobMovedElsewhere, setJobMovedElsewhere] = useState(false);
   const mayReject = canWrite && closedLabel === null && (job.data?.allowedMoves.includes('rejected') ?? false);
 
+  // Set by a successful "สร้างใบเสนอราคา": the add panel then mounts with the cursor in its
+  // search box, so the first line is one tap away (ux P3.1 #7). Not on an ordinary open of an
+  // existing draft — focusing there would pop the phone keyboard over the lines being read.
+  const [justCreated, setJustCreated] = useState(false);
+
   async function create() {
     setCreateFailure(null);
     const body: CreateQuotationInput = {};
     const result = await run('create', () => api.post<Quotation>(quotationPath(jobId), body));
-    if (!result.ok && !result.failure.cancelled) setCreateFailure(result.failure);
+    if (result.ok) setJustCreated(true);
+    else if (!result.failure.cancelled) setCreateFailure(result.failure);
   }
 
   async function saveDiscount(amount: string): Promise<boolean> {
@@ -99,6 +105,22 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
     // The panel clears its typed draft only on true — so the box then shows the server's value.
     return result.ok;
   }
+
+  // The right column holds the add panel while lines can be added; once they cannot (issued,
+  // decided, confirmed) it would stand empty, so the totals move there and stick (≥1024).
+  // Decided by the quotation's state, never by width: one tree at every width.
+  const withCatalog = quotation !== null && canWrite && quotation.next.canEditContent;
+  const totalsPanel = quotation && (
+    <QuoteTotalsPanel
+      totals={quotation.totals}
+      confirmed={quotation.confirmedAt !== null}
+      discountEditable={withCatalog}
+      busy={busy !== null}
+      saving={busy === 'discount'}
+      discountError={discountFailure ? discountFailure.fields.discount ?? discountFailure.text : null}
+      onSaveDiscount={saveDiscount}
+    />
+  );
 
   return (
     <div className="qt-page">
@@ -149,41 +171,40 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
       )}
 
       {quotation && (
-        <div className="qt-layout">
-          <div className="qt-main">
-            {quotation.closedByJob && (
-              <p className="ci-nomatch">ใบนี้ถูกระบบปิดเพราะงานจบแล้ว (ไม่ใช่การยกเลิกเอกสาร) — เก็บไว้เป็นบันทึกว่าเสนออะไรไปบ้าง</p>
-            )}
-            <QuoteActions jobId={jobId} quotation={quotation} canWrite={canWrite} busy={busy} run={run} onJobMoved={() => job.reload?.()} />
-            <section className="card qt-lines-card" aria-label="รายการในใบเสนอราคา">
-              <h3>รายการ ({quotation.lines.filter((l) => l.parentLineId === null).length})</h3>
-              <QuoteLines jobId={jobId} quotation={quotation} canWrite={canWrite} busy={busy} run={run} />
-              <QuoteTotalsPanel
-                totals={quotation.totals}
-                confirmed={quotation.confirmedAt !== null}
-                discountEditable={canWrite && quotation.next.canEditContent}
-                busy={busy !== null}
-                saving={busy === 'discount'}
-                discountError={discountFailure ? discountFailure.fields.discount ?? discountFailure.text : null}
-                onSaveDiscount={saveDiscount}
-              />
-            </section>
-          </div>
-          {canWrite && quotation.next.canEditContent && (
+        <>
+          <div className="qt-layout">
+            <div className="qt-main">
+              {quotation.closedByJob && (
+                <p className="ci-nomatch">ใบนี้ถูกระบบปิดเพราะงานจบแล้ว (ไม่ใช่การยกเลิกเอกสาร) — เก็บไว้เป็นบันทึกว่าเสนออะไรไปบ้าง</p>
+              )}
+              <QuoteActions jobId={jobId} quotation={quotation} canWrite={canWrite} busy={busy} run={run} onJobMoved={() => job.reload?.()} />
+              <section className="card qt-lines-card" aria-label="รายการในใบเสนอราคา">
+                <h3>รายการ ({quotation.lines.filter((l) => l.parentLineId === null).length})</h3>
+                <QuoteLines jobId={jobId} quotation={quotation} canWrite={canWrite} busy={busy} run={run} />
+                {withCatalog && totalsPanel}
+              </section>
+            </div>
             <aside className="qt-side">
-              <CatalogPanel
-                jobId={jobId}
-                busyKey={busy}
-                run={run}
-                guard={guard}
-                vehicleModelLinked={quotation.vehicleModelLinked}
-                modelPicker={quotation.vehicleId && !quotation.vehicleModelLinked ? (
-                  <VehicleModelPicker vehicleId={quotation.vehicleId} busyKey={busy} guard={guard} onAssigned={() => void reload()} />
-                ) : null}
-              />
+              {withCatalog ? (
+                <CatalogPanel
+                  jobId={jobId}
+                  busyKey={busy}
+                  run={run}
+                  guard={guard}
+                  autoFocusSearch={justCreated}
+                  vehicleModelLinked={quotation.vehicleModelLinked}
+                  modelPicker={quotation.vehicleId && !quotation.vehicleModelLinked ? (
+                    <VehicleModelPicker vehicleId={quotation.vehicleId} busyKey={busy} guard={guard} onAssigned={() => void reload()} />
+                  ) : null}
+                />
+              ) : (
+                <div className="card qt-totals-card">{totalsPanel}</div>
+              )}
             </aside>
-          )}
-        </div>
+          </div>
+          {/* Both totals in view at all times (CLAUDE.md §5.1 #3): sticky above the phone dock. */}
+          <QuoteTotalsBar totals={quotation.totals} withCatalog={withCatalog} />
+        </>
       )}
     </div>
   );

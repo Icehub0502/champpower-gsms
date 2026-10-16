@@ -20,6 +20,22 @@ interface QuoteTotalsPanelProps {
 }
 
 /**
+ * The two totals in one line, kept in view by CSS (position: sticky above the
+ * phone dock) wherever the full panel is not: below 1024px always, and at any
+ * width while the add panel holds the right column (`withCatalog`). Same
+ * server figures as the panel; nothing is computed here.
+ */
+export function QuoteTotalsBar({ totals, withCatalog }: { totals: QuotationTotals; withCatalog: boolean }) {
+  return (
+    <p className={`qt-totals-bar${withCatalog ? ' is-with-catalog' : ''}`} data-testid="totals-bar">
+      <span>ยอดเสนอ <strong className="mono">{baht(totals.offeredTotal)}</strong></span>
+      <span aria-hidden="true" className="qt-totals-bar-sep">·</span>
+      <span className="is-approved">ยอดอนุมัติ <strong className="mono">{baht(totals.approvedTotal)}</strong></span>
+    </p>
+  );
+}
+
+/**
  * The two totals, always both (CLAUDE.md §5.1 #3): what was offered and what
  * the customer approved — the second is what flows to the receipt. Every figure
  * is the server's (packages/domain quoteTotals, computed in the API); nothing
@@ -27,8 +43,13 @@ interface QuoteTotalsPanelProps {
  */
 export function QuoteTotalsPanel({ totals, confirmed = false, discountEditable, busy, saving, discountError, onSaveDiscount }: QuoteTotalsPanelProps) {
   const [draft, setDraft] = useState<string | null>(null);
-  const shown = draft ?? totals.discount;
-  const invalid = draft !== null && typedSatang(draft) === null;
+  // No discount = an EMPTY box with "0.00" as placeholder, not "0.00" as a value: typed after,
+  // "200" became "0.00200" and an error (ux P3.1 #2). Chosen over select-all-on-focus, which
+  // iOS Safari undoes on the tap's mouseup, and which a second tap into the box loses anyway.
+  const shown = draft ?? (typedSatang(totals.discount) === 0 ? '' : totals.discount);
+  // An emptied box means what the empty box shows: no discount.
+  const typedAmount = draft === null ? null : draft.trim() === '' ? '0' : draft.trim();
+  const invalid = typedAmount !== null && typedSatang(typedAmount) === null;
   // Compared in satang through the domain parser ("200" vs "200.00" is the same discount).
   // Only after confirm: before it the two can differ only by the offer's clamp, which is not an agreement.
   let agreedDiffers = false;
@@ -42,9 +63,8 @@ export function QuoteTotalsPanel({ totals, confirmed = false, discountEditable, 
   const error = invalid ? 'จำนวนเงินไม่ถูกต้อง — ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง' : discountError ?? null;
 
   function save() {
-    if (draft === null || invalid) return;
-    const typed = draft.trim();
-    void onSaveDiscount?.(typed).then((ok) => { if (ok) setDraft(null); });
+    if (typedAmount === null || invalid) return;
+    void onSaveDiscount?.(typedAmount).then((ok) => { if (ok) setDraft(null); });
   }
 
   return (
@@ -90,6 +110,7 @@ export function QuoteTotalsPanel({ totals, confirmed = false, discountEditable, 
             <input
               inputMode="decimal"
               value={shown}
+              placeholder="0.00"
               disabled={busy}
               aria-invalid={error ? true : undefined}
               onChange={(e) => setDraft(e.target.value)}

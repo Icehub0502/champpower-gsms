@@ -79,6 +79,11 @@ export function QuoteLineRow({ line, isChild, childCount, mode, revision, needsA
   const qtyError = fields.qty ?? null;
   const editable = mode === 'draft' && !isChild;
   const isSet = childCount > 0;
+  // The decision buttons' accessible names carry the line's name: a screen reader lists
+  // "อนุมัติ ผ้าเบรกหน้า", not ten identical "อนุมัติ". Each starts with the visible text
+  // (WCAG 2.5.3 label in name), so voice control by what is on screen still works.
+  const approveText = busyKey === key('approve') ? 'กำลังบันทึก...' : 'อนุมัติ';
+  const declineText = line.approvalStatus === 'declined' ? 'เปลี่ยนเหตุผล' : 'ไม่อนุมัติ';
 
   function savePrice() {
     if (priceDraft === null || priceInvalid) return;
@@ -174,20 +179,22 @@ export function QuoteLineRow({ line, isChild, childCount, mode, revision, needsA
           <button
             type="button"
             className={`btn small${line.approvalStatus === 'approved' ? '' : ' secondary'}`}
+            aria-label={`${approveText} ${line.name}`}
             aria-pressed={line.approvalStatus === 'approved'}
             disabled={busy || line.approvalStatus === 'approved'}
             onClick={() => actions.onApprove(line)}
           >
-            {busyKey === key('approve') ? 'กำลังบันทึก...' : 'อนุมัติ'}
+            {approveText}
           </button>
           <button
             type="button"
             className="btn danger small"
+            aria-label={`${declineText} ${line.name}`}
             aria-pressed={line.approvalStatus === 'declined'}
             disabled={busy}
             onClick={() => setDeclining(true)}
           >
-            {line.approvalStatus === 'declined' ? 'เปลี่ยนเหตุผล' : 'ไม่อนุมัติ'}
+            {declineText}
           </button>
         </div>
       )}
