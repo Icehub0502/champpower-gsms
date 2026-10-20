@@ -70,4 +70,7 @@ export const BLOCKER_TEXT: Record<ReceiptBlocker, string> = {
   discount_reason_required: 'ส่วนลดต้องมีเหตุผล',
   discount_requires_manager: 'ส่วนลดเกินเพดาน — ต้องให้ผู้จัดการขึ้นไปปิดบิล',
   nothing_to_bill: 'ยอดบิลเป็น 0 — ไม่มีอะไรให้เก็บเงิน',
+  deposit_held: 'ลูกค้ารายนี้มีมัดจำค้างอยู่ — ระบบยังหักมัดจำไม่ได้ แจ้งผู้จัดการ',
+  bill_not_presented: 'ยังไม่ได้แจ้งยอดให้ลูกค้าดู',
+  presentation_stale: 'รายการเปลี่ยนหลังแจ้งยอด — ต้องแจ้งยอดลูกค้าใหม่',
 };

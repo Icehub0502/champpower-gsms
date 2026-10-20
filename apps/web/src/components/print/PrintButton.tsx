@@ -1,6 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react';
-import type { CreatePrintInput, PrintHistory, PrintResult } from '@gsms/contracts/index.js';
-import type { AnyPrintDocType } from '../../lib/pendingContracts';
+import type { CreatePrintInput, PrintDocType, PrintHistory, PrintResult } from '@gsms/contracts/index.js';
 import { useAuth } from '../../hooks/useAuth';
 import { api } from '../../lib/api/client';
 import { describeBillError } from '../../routes/bill/billErrors';
@@ -14,7 +13,7 @@ export function printsPath(jobId: string): string {
 
 interface PrintButtonProps<D> {
   jobId: string;
-  docType: AnyPrintDocType;
+  docType: PrintDocType;
   label: string;
   title: string;
   /** Fetches the content fresh, right before the print is recorded — the paper shows what the server holds now. */
@@ -51,8 +50,7 @@ export function PrintButton<D>({
 
   async function record(acknowledgeChange: boolean) {
     const data = await loadData();
-    // 'bill_statement' is not in the contract yet (pendingContracts.ts); the body is otherwise CreatePrintInput.
-    const body: Omit<CreatePrintInput, 'docType'> & { docType: AnyPrintDocType } = { docType, copySet: 'customer_shop', acknowledgeChange };
+    const body: CreatePrintInput = { docType, copySet: 'customer_shop', acknowledgeChange };
     const result = await api.post<PrintResult>(printsPath(jobId), body);
     setJob({ result, data });
   }

@@ -1,5 +1,5 @@
 import { baht } from '../../lib/money';
-import type { PendingReceipt } from '../../lib/pendingContracts';
+import type { Receipt } from '@gsms/contracts/index.js';
 import { qtyText } from '../../lib/printFormat';
 import { PartyBlock } from './sheetParts';
 
@@ -8,7 +8,7 @@ import { PartyBlock } from './sheetParts';
  * not a receipt and says so in large type on every page: no number, no
  * payment, no change. Figures are the draft's, as the server computed them.
  */
-export function BillStatementSheet({ receipt }: { receipt: PendingReceipt }) {
+export function BillStatementSheet({ receipt }: { receipt: Receipt }) {
   const top = receipt.lines.filter((l) => l.parentLineId === null).sort((a, b) => a.sortOrder - b.sortOrder);
   const p = receipt.party;
   const t = receipt.totals;
@@ -40,7 +40,7 @@ export function BillStatementSheet({ receipt }: { receipt: PendingReceipt }) {
               <td>
                 <div className="pr-name">{l.name}</div>
                 {l.state === 'not_done' && <div className="pr-sub pr-strong">อนุมัติแต่ไม่ได้ทำ — ไม่คิดเงิน</div>}
-                {l.discount && l.discount !== '0.00' && <div className="pr-sub">ส่วนลดรายการ −{baht(l.discount)}</div>}
+                {l.discount !== '0.00' && <div className="pr-sub">ส่วนลดรายการ −{baht(l.discount)}</div>}
               </td>
               <td className="pr-c-qty">{qtyText(l.state === 'partial' || l.state === 'not_done' ? l.fulfilledQty : l.qty)}</td>
               <td className="pr-c-num">{l.charged !== null ? baht(l.charged) : '-'}</td>
@@ -52,7 +52,7 @@ export function BillStatementSheet({ receipt }: { receipt: PendingReceipt }) {
         <div />
         <dl className="pr-totals">
           <dt>รวมรายการที่ทำ</dt><dd>{baht(t.subtotal)}</dd>
-          {t.lineDiscountTotal !== undefined && (<><dt>ส่วนลดรายบรรทัด</dt><dd>{baht(t.lineDiscountTotal)}</dd></>)}
+          {t.lineDiscountTotal !== '0.00' && (<><dt>ส่วนลดรายบรรทัด</dt><dd>{baht(t.lineDiscountTotal)}</dd></>)}
           <dt>ส่วนลดท้ายบิล</dt><dd>{baht(receipt.discount.amount)}</dd>
           <dt className="pr-grand">ยอดที่ต้องชำระ</dt><dd className="pr-grand">{baht(t.billTotal)}</dd>
         </dl>

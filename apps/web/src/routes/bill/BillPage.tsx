@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import type {
-  CloseReceiptResult, JobDetail, Role, VoidReceiptInput,
+  CloseReceiptResult, JobDetail, Receipt, Role, VoidReceiptInput,
 } from '@gsms/contracts/index.js';
 import { ReceiptPrintButton } from '../../components/print/DocPrintButtons';
 import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
@@ -12,7 +12,6 @@ import { useDocument } from '../../hooks/useDocument';
 import { api } from '../../lib/api/client';
 import { baht } from '../../lib/money';
 import { thaiDateTime } from '../../lib/printFormat';
-import type { PendingReceipt as Receipt } from '../../lib/pendingContracts';
 import type { BillFailure } from './billErrors';
 import { PresentStep } from './PresentStep';
 import { canReadBill, canWriteBill, PAYMENT_METHOD_LABEL, RECEIPT_STATUS_LABEL } from './billLabels';
@@ -167,9 +166,17 @@ function TotalsCard({ receipt }: { receipt: Receipt }) {
       <h3>ยอด</h3>
       <dl className="bl-kv">
         <dt>รวมรายการที่ทำ</dt><dd className="mono">{baht(t.subtotal)}</dd>
-        <dt>ส่วนลด</dt><dd className="mono">{baht(t.discount)}</dd>
+        {t.lineDiscountTotal !== '0.00' && (<><dt>ส่วนลดรายบรรทัด</dt><dd className="mono">−{baht(t.lineDiscountTotal)}</dd></>)}
+        <dt>ส่วนลดท้ายบิล</dt><dd className="mono">−{baht(t.discount)}</dd>
       </dl>
       <p className="qt-totals-sum">ยอดบิล <span className="mono">{baht(t.billTotal)}</span></p>
+      {/* B3: a channel surcharge is its own line, on top of the bill; a draft's is always 0. */}
+      {t.surchargeTotal !== '0.00' && (
+        <dl className="bl-kv">
+          <dt>ค่าธรรมเนียมช่องทาง</dt><dd className="mono">{baht(t.surchargeTotal)}</dd>
+          <dt>รับชำระรวม</dt><dd className="mono">{baht(t.totalPaid)}</dd>
+        </dl>
+      )}
       <p className="qt-line-sub">ยอดที่ตกลงในใบเสนอราคา {baht(t.agreedTotal)}{receipt.quotationNumber && ` (${receipt.quotationNumber})`}</p>
     </section>
   );
@@ -207,8 +214,11 @@ function IssuedBody({ jobId, receipt, state, canWrite }: { jobId: string; receip
                 <div className="bl-line-main">
                   <span className="bl-line-name">{l.name}</span>
                   {l.state === 'not_done' && <span className="qt-line-sub">อนุมัติแต่ไม่ได้ทำ — ไม่คิดเงิน</span>}
+                  {l.discount !== '0.00' && (
+                    <span className="qt-line-sub">ส่วนลดรายการ −{baht(l.discount)}{l.discountReason ? ` (${l.discountReason})` : ''}</span>
+                  )}
                 </div>
-                <div className="bl-line-money"><strong className="mono">{l.charged !== null ? baht(l.charged) : '—'}</strong></div>
+                <div className="bl-line-money"><strong className="mono">{l.net !== null ? baht(l.net) : l.charged !== null ? baht(l.charged) : '—'}</strong></div>
               </li>
             ))}
           </ul>
@@ -217,7 +227,7 @@ function IssuedBody({ jobId, receipt, state, canWrite }: { jobId: string; receip
           <h3>รับเงิน</h3>
           <dl className="bl-kv">
             {receipt.payments.map((p) => (
-              <PaymentRow key={p.id} label={`${p.channelName ?? PAYMENT_METHOD_LABEL[p.method]}${p.surcharge && p.surcharge !== '0.00' ? ` (ค่าธรรมเนียม ${baht(p.surcharge)})` : ''}${p.reversed ? ' (คืนแล้ว)' : ''}`} amount={p.amount} change={p.method === 'cash' ? p.changeGiven : null} />
+              <PaymentRow key={p.id} label={`${p.channelName ?? PAYMENT_METHOD_LABEL[p.method]}${p.surcharge !== '0.00' ? ` (ค่าธรรมเนียม ${baht(p.surcharge)})` : ''}${p.reversed ? ' (คืนแล้ว)' : ''}`} amount={p.amount} change={p.method === 'cash' ? p.changeGiven : null} />
             ))}
             <dt>รับสุทธิ</dt><dd className="mono">{baht(receipt.paidNet)}</dd>
           </dl>

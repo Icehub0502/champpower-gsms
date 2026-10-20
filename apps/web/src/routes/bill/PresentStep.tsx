@@ -1,9 +1,9 @@
 import { useState } from 'react';
+import type { Receipt } from '@gsms/contracts/index.js';
 import { PrintButton } from '../../components/print/PrintButton';
 import { BillStatementSheet } from '../../components/print/BillStatementSheet';
 import { api } from '../../lib/api/client';
 import { baht } from '../../lib/money';
-import type { PendingReceipt as Receipt } from '../../lib/pendingContracts';
 import { qtyText, thaiDateTime } from '../../lib/printFormat';
 import type { BillFailure } from './billErrors';
 import { receiptPath, type ReceiptState } from './useReceipt';
@@ -32,7 +32,7 @@ export function PresentStep({ jobId, receipt, canWrite, state }: { jobId: string
     .sort((a, b) => a.sortOrder - b.sortOrder);
   const notDone = receipt.lines.filter((l) => l.parentLineId === null && l.state === 'not_done');
   const t = receipt.totals;
-  const p = receipt.presentation ?? null;
+  const p = receipt.presentation;
   const ready = readyToPresent(receipt);
   const presented = isPresented(receipt);
 
@@ -55,7 +55,7 @@ export function PresentStep({ jobId, receipt, canWrite, state }: { jobId: string
                   <td>
                     {l.name}
                     {l.state === 'partial' && <span className="qt-line-sub"> · ทำ {qtyText(l.fulfilledQty)} จาก {qtyText(l.qty)}</span>}
-                    {l.discount && l.discount !== '0.00' && <div className="qt-line-sub">ส่วนลดรายการ −{baht(l.discount)}</div>}
+                    {l.discount !== '0.00' && <div className="qt-line-sub">ส่วนลดรายการ −{baht(l.discount)}</div>}
                   </td>
                   <td className="num mono">{l.charged !== null ? baht(l.charged) : '—'}</td>
                 </tr>
@@ -67,13 +67,13 @@ export function PresentStep({ jobId, receipt, canWrite, state }: { jobId: string
           </table>
           <dl className="bl-kv bl-present-kv">
             <dt>รวมรายการที่ทำ</dt><dd className="mono">{baht(t.subtotal)}</dd>
-            {t.lineDiscountTotal !== undefined && (<><dt>ส่วนลดรายบรรทัด</dt><dd className="mono">−{baht(t.lineDiscountTotal)}</dd></>)}
+            {t.lineDiscountTotal !== '0.00' && (<><dt>ส่วนลดรายบรรทัด</dt><dd className="mono">−{baht(t.lineDiscountTotal)}</dd></>)}
             <dt>ส่วนลดท้ายบิล</dt><dd className="mono">−{baht(receipt.discount.amount)}</dd>
           </dl>
           <p className="bl-present-total">ยอดที่ต้องชำระ <span className="mono">{baht(t.billTotal)}</span></p>
 
           {p && !p.current && (
-            <p className="ci-form-error" role="alert">ยอดเปลี่ยนหลังจากแสดงให้ลูกค้าเมื่อ {thaiDateTime(p.presentedAt)} — แสดงยอดใหม่ให้ลูกค้าก่อนรับเงิน</p>
+            <p className="ci-form-error" role="alert">ยอดเปลี่ยนหลังจากแสดงให้ลูกค้าเมื่อ {thaiDateTime(p.presentedAt)} (ตอนนั้นแจ้ง {baht(p.billTotal)}) — แสดงยอดใหม่ให้ลูกค้าก่อนรับเงิน</p>
           )}
           {presented && p && (
             <p className="ci-match" role="status">แสดงยอดให้ลูกค้าแล้ว {thaiDateTime(p.presentedAt)} โดย {p.presentedByName ?? '-'} — รับเงินได้</p>

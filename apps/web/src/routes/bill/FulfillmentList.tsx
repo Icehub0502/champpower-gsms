@@ -1,7 +1,8 @@
 import { useId, useState } from 'react';
 import { discountExceedsSubtotal, fulfilledQtyIssue, toSatang, type FulfilledQtyIssue } from '@champpower/domain';
-import { FulfilledQtyString, type FulfillmentInput } from '@gsms/contracts/index.js';
-import type { LineDiscountInput, PendingReceipt as Receipt, PendingReceiptLine as ReceiptLine } from '../../lib/pendingContracts';
+import {
+  FulfilledQtyString, type FulfillmentInput, type LineDiscountInput, type Receipt, type ReceiptLine,
+} from '@gsms/contracts/index.js';
 import { api } from '../../lib/api/client';
 import { baht, typedSatang } from '../../lib/money';
 import { qtyText } from '../../lib/printFormat';
@@ -107,7 +108,7 @@ export function FulfillmentList({ jobId, receipt, busy, run }: FulfillmentListPr
               <strong className="mono">{line.charged !== null ? baht(line.charged) : '—'}</strong>
               {line.state === 'not_done' && <span className="qt-line-sub">ไม่คิดเงิน</span>}
               {hasLineDiscount(line) && (
-                <span className="qt-line-sub">ลดรายการนี้ −{baht(line.discount!)}{line.discountReason ? ` (${line.discountReason})` : ''}</span>
+                <span className="qt-line-sub">ลดรายการนี้ −{baht(line.discount)}{line.discountReason ? ` (${line.discountReason})` : ''}</span>
               )}
             </div>
             {canTick && (
@@ -187,7 +188,7 @@ export function FulfillmentList({ jobId, receipt, busy, run }: FulfillmentListPr
 }
 
 function hasLineDiscount(line: ReceiptLine): boolean {
-  return line.discount !== undefined && line.discount !== '0.00' && line.discount !== '0';
+  return line.discount !== '0.00';
 }
 
 /**
@@ -200,7 +201,7 @@ function LineDiscountForm({ line, busy, saving, onSave }: {
 }) {
   const amountId = useId();
   const reasonId = useId();
-  const [text, setText] = useState(hasLineDiscount(line) ? line.discount! : '');
+  const [text, setText] = useState(hasLineDiscount(line) ? line.discount : '');
   const [reason, setReason] = useState(line.discountReason ?? '');
   const [touched, setTouched] = useState(false);
   const typed = text.trim() === '' ? null : typedSatang(text.trim());
@@ -248,7 +249,7 @@ function PartialQtyForm({ line, busy, onSave }: { line: ReceiptLine; busy: boole
   const trimmed = text.trim();
   const parsed = FulfilledQtyString.safeParse(trimmed);
   // The same front gate the API uses (packages/domain), so the screen and the server agree on "valid".
-  const issue: FulfilledQtyIssue | null = parsed.success ? fulfilledQtyIssue(line, parsed.data) : 'invalid';
+  const issue: FulfilledQtyIssue | null = parsed.success ? fulfilledQtyIssue({ qty: line.qty, isSet: line.isSet }, parsed.data) : 'invalid';
   const error = touched && issue ? ISSUE_TEXT[issue] : null;
 
   return (

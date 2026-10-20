@@ -3,8 +3,7 @@ import {
   DISCOUNT_CEILING_PERCENT, discountExceedsCeiling, discountExceedsSubtotal, discountPercentText,
   receiptDiscountReasonRequired, sumSatang, toSatang,
 } from '@champpower/domain';
-import type { PatchReceiptInput } from '@gsms/contracts/index.js';
-import type { PendingReceipt as Receipt } from '../../lib/pendingContracts';
+import type { PatchReceiptInput, Receipt } from '@gsms/contracts/index.js';
 import { api } from '../../lib/api/client';
 import { baht, typedSatang } from '../../lib/money';
 import type { BillFailure } from './billErrors';

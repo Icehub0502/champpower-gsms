@@ -26,7 +26,8 @@ export const GENERIC_BILL_FAILURE = 'บันทึกไม่สำเร็�
 const STALE_CODES = new Set([
   'receipt_not_found', 'receipt_exists', 'receipt_not_draft', 'receipt_not_issued', 'quotation_changed',
   'receipt_line_not_found', 'fulfillment_incomplete', 'discount_entry_required', 'already_billed',
-  'revision_pending', 'quotation_not_confirmed',
+  'revision_pending', 'quotation_not_confirmed', 'bill_not_presented', 'presentation_stale',
+  'channel_not_found', 'channel_inactive',
 ]);
 
 function textOf(body: BillingBodyT): string {
@@ -60,8 +61,12 @@ function textOf(body: BillingBodyT): string {
     case 'print_content_changed':
       return `ใบนี้เคยพิมพ์ไปแล้ว ${body.printCount} ครั้ง (ล่าสุด ${thaiDateTime(body.lastPrintedAt)}) เนื้อหาเปลี่ยนหลังจากนั้น — เก็บใบเก่าคืนจากลูกค้า`;
     case 'print_not_allowed': return 'เอกสารนี้ยังพิมพ์ไม่ได้ในสถานะตอนนี้';
-    case 'recount_reason_required': return 'วันนี้นับเงินไปแล้ว — การนับใหม่ต้องกรอกเหตุผล';
-    case 'count_future_date': return 'นับเงินล่วงหน้าไม่ได้ — เลือกวันนี้หรือวันที่ผ่านมาแล้ว';
+    case 'bill_not_presented': return 'ยังไม่ได้แจ้งยอดให้ลูกค้าดู — กด “แจ้งยอดลูกค้า” ก่อนรับเงิน';
+    case 'presentation_stale': return 'รายการหรือส่วนลดเปลี่ยนหลังแจ้งยอดลูกค้าไปแล้ว — แจ้งยอดใหม่ให้ลูกค้าดูก่อนรับเงิน';
+    case 'channel_not_found': return 'ไม่พบช่องทางชำระนี้ — โหลดรายการช่องทางใหม่ให้แล้ว เลือกใหม่อีกครั้ง';
+    case 'channel_inactive': return 'ช่องทางชำระนี้ถูกปิดใช้งานแล้ว — เลือกช่องทางอื่น';
+    case 'channel_name_taken': return 'มีช่องทางชำระชื่อนี้อยู่แล้ว — ตั้งชื่ออื่น';
+    case 'last_active_channel': return 'ปิดช่องทางนี้ไม่ได้ เพราะเป็นช่องทางสุดท้ายที่ยังเปิดใช้อยู่ — เพิ่มหรือเปิดช่องทางอื่นก่อน';
     case 'record_append_only': return 'รายการนี้แก้หรือลบไม่ได้ (บันทึกเพิ่มได้อย่างเดียว)';
     case 'job_not_found': return 'ไม่พบงานนี้';
     case 'invalid_request': return 'ข้อมูลบางช่องไม่ถูกต้อง กรุณาตรวจช่องที่มีข้อความสีแดง';

@@ -3,7 +3,6 @@ import { Link } from 'react-router-dom';
 import type { DailySummary, Role } from '@gsms/contracts/index.js';
 import { useDocument } from '../../hooks/useDocument';
 import { baht } from '../../lib/money';
-import type { MoneyInChannelRow } from '../../lib/pendingContracts';
 import { bangkokTodayKey, dateKeyThai } from '../../lib/printFormat';
 import { canReadDaily, PAYMENT_METHOD_LABEL } from '../bill/billLabels';
 
@@ -72,18 +71,13 @@ export function DailySummaryPage() {
   );
 }
 
-/** B3 (ASSUMED shape, see lib/pendingContracts.ts): the API may add these to moneyIn; absent on the f25038f API. */
-type MoneyInPending = DailySummary['moneyIn'] & { byChannel?: MoneyInChannelRow[]; surchargeTotal?: string };
-
-const KIND_LABEL: Record<MoneyInChannelRow['kind'], string> = { cash: 'เงินสด', transfer: 'โอน', card: 'บัตร' };
-
 function MoneyInCard({ s, period }: { s: DailySummary; period: string }) {
-  const m: MoneyInPending = s.moneyIn;
+  const m = s.moneyIn;
   return (
     <section className="card dl-card dl-in" aria-label="เงินเข้าวันนี้">
       <h3>เงินเข้าวันนี้</h3>
       <p className="dl-basis">{period} · นับตาม<strong>วันที่รับเงิน</strong> · หักเงินทอนและเงินที่คืนลูกค้าแล้ว{m.label ? ` · ${m.label}` : ''}</p>
-      {m.byChannel && m.byChannel.length > 0 && (
+      {m.byChannel.length > 0 && (
         <>
           <h4 className="dl-sub">แยกตามช่องทางของร้าน</h4>
           <table className="dl-table">
@@ -93,7 +87,7 @@ function MoneyInCard({ s, period }: { s: DailySummary; period: string }) {
             <tbody>
               {m.byChannel.map((r) => (
                 <tr key={r.channelId ?? r.name}>
-                  <td>{r.name} <span className="qt-line-sub">({KIND_LABEL[r.kind]})</span></td>
+                  <td>{r.name} <span className="qt-line-sub">({PAYMENT_METHOD_LABEL[r.kind]})</span></td>
                   <td className="num mono">{baht(r.received)}</td>
                   <td className="num mono">{baht(r.surcharge)}</td>
                   <td className="num mono">{baht(r.changeGiven)} / {baht(r.reversed)}</td>
@@ -122,12 +116,16 @@ function MoneyInCard({ s, period }: { s: DailySummary; period: string }) {
           {m.byMethod.length === 0 && <tr><td colSpan={5}>ไม่มีเงินเข้าในวันนี้</td></tr>}
         </tbody>
       </table>
-      {m.surchargeTotal !== undefined && m.surchargeTotal !== '0.00' && (
+      {m.surchargeTotal !== '0.00' && (
         <p className="dl-basis">ในจำนวนนี้เป็นค่าธรรมเนียมช่องทางชำระ (เช่น รูดบัตร) {baht(m.surchargeTotal)} — ไม่ใช่ยอดขาย</p>
       )}
       <p className="dl-total">เงินเข้าสุทธิ <span className="mono">{baht(m.total)}</span></p>
       <p className="dl-basis">
         จาก {m.paymentCount} รายการรับเงิน · คืนเงิน {m.reversalCount} รายการ · ทอน {m.changeCount} ครั้ง รวม {baht(m.changeTotal)}
+      </p>
+      {/* Ice B7: no till count in P3.2 — the cash figure is information only. */}
+      <p className="dl-basis">
+        เงินสดที่รับสุทธิ (ทุกช่องทางเงินสด หักทอนและคืนแล้ว) <strong className="mono">{baht(s.cashReceivedNet)}</strong> — ข้อมูลประกอบเท่านั้น ระบบยังไม่มีการนับเงินในลิ้นชัก
       </p>
     </section>
   );
@@ -145,6 +143,9 @@ function SalesCard({ s, period }: { s: DailySummary; period: string }) {
         <dt>ส่วนลดรวม</dt><dd className="mono">{baht(x.discountTotal)}</dd>
       </dl>
       <p className="dl-total">ยอดขาย <span className="mono">{baht(x.billTotal)}</span></p>
+      {x.surchargeTotal !== '0.00' && (
+        <p className="dl-basis">ค่าธรรมเนียมรับชำระของบิลเหล่านี้ {baht(x.surchargeTotal)} — แยกประเภท ไม่รวมในยอดขายค่าซ่อม</p>
+      )}
       <p className="dl-basis">ตัวหาร: {x.billCount} บิลที่ปิดในวันนี้ · ไม่รวมงานเคลมประกัน · ไม่รวมใบเสร็จที่ยกเลิก</p>
 
       {x.overCeiling.length > 0 && (

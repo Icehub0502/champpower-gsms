@@ -6,10 +6,6 @@
  * Money is integer satang inside, numeric(12,2) text on the wire. Nothing here
  * adds, multiplies or compares baht as floats.
  */
-import {
-  MoneyError, clampDiscount, formatSatang, mulQty, sumSatang, toQtyCenti, toSatang,
-} from './money.js';
-import { approvedLineSatang } from './quote.js';
 
 // -----------------------------------------------------------------------------
 // Payment methods (Ice 20 Oct, P3.2 B3): cash, transfer, card. Transfer and QR are one

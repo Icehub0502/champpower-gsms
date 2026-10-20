@@ -1,12 +1,12 @@
 import { useId, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toQtyCenti } from '@champpower/domain';
-import type { Role } from '@gsms/contracts/index.js';
+import type {
+  CreatePaymentChannelInput, PatchPaymentChannelInput, PaymentChannel, PaymentChannelList, PaymentMethod as ChannelKind,
+  ReorderPaymentChannelsInput, Role,
+} from '@gsms/contracts/index.js';
 import { useDocument } from '../../hooks/useDocument';
 import { api } from '../../lib/api/client';
-import type {
-  ChannelKind, CreatePaymentChannelInput, PatchPaymentChannelInput, PaymentChannel, PaymentChannelList, ReorderPaymentChannelsInput,
-} from '../../lib/pendingContracts';
 import { describeBillError } from '../bill/billErrors';
 import { canManageChannels } from '../bill/billLabels';
 import { PAYMENT_CHANNELS_PATH } from '../bill/PaymentPanel';
@@ -49,7 +49,8 @@ export function PaymentChannelsRoute({ role }: { role: Role | null }) {
  * point at them.
  */
 export function PaymentChannelsPage() {
-  const doc = useDocument<PaymentChannelList>(PAYMENT_CHANNELS_PATH, 'payment-channel:changed');
+  // Settings lists the switched-off channels too, so they can be switched back on.
+  const doc = useDocument<PaymentChannelList>(`${PAYMENT_CHANNELS_PATH}?includeInactive=true`, 'payment-channel:changed');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const items = [...(doc.data?.items ?? [])].sort((a, b) => a.sortOrder - b.sortOrder);
@@ -127,7 +128,8 @@ export function PaymentChannelsPage() {
 
 function ChannelFields({ name, kind, percent, disabled, onName, onKind, onPercent, touched }: {
   name: string; kind: ChannelKind; percent: string; disabled: boolean; touched: boolean;
-  onName: (v: string) => void; onKind: (k: ChannelKind) => void; onPercent: (v: string) => void;
+  /** Absent = the kind is fixed (an existing channel: the API does not let it change). */
+  onName: (v: string) => void; onKind?: (k: ChannelKind) => void; onPercent: (v: string) => void;
 }) {
   const nameId = useId();
   const pctId = useId();
@@ -140,7 +142,13 @@ function ChannelFields({ name, kind, percent, disabled, onName, onKind, onPercen
         <input id={nameId} maxLength={40} value={name} disabled={disabled} placeholder="เช่น ออมสิน, รูดบัตร" onChange={(e) => onName(e.target.value)} />
         {nameBad && <span className="ci-field-error">จำเป็นต้องกรอก</span>}
       </label>
-      <div className="field">
+      {!onKind && (
+        <div className="field">
+          <span>ประเภท</span>
+          <span className="qt-line-sub">{KINDS.find((k) => k.kind === kind)?.label ?? kind} — เปลี่ยนประเภทไม่ได้ ถ้าผิดให้ปิดใช้แล้วเพิ่มช่องทางใหม่</span>
+        </div>
+      )}
+      {onKind && <div className="field">
         <span>ประเภท</span>
         <div className="row-flex" role="group" aria-label="ประเภทช่องทาง">
           {KINDS.map((k) => (
@@ -149,7 +157,7 @@ function ChannelFields({ name, kind, percent, disabled, onName, onKind, onPercen
             </button>
           ))}
         </div>
-      </div>
+      </div>}
       <label className={`field${pctBad ? ' has-error' : ''}`} htmlFor={pctId}>
         <span>ค่าธรรมเนียม % (เว้นว่าง = ไม่มี)</span>
         <input id={pctId} inputMode="decimal" value={percent} disabled={disabled} placeholder="0" onChange={(e) => onPercent(e.target.value)} />
@@ -165,7 +173,6 @@ function ChannelRow({ channel, busy, first, last, onMove, onSave }: {
 }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(channel.name);
-  const [kind, setKind] = useState<ChannelKind>(channel.kind);
   const [percent, setPercent] = useState(channel.surchargePercent.replace(/\.00$/, ''));
   const [touched, setTouched] = useState(false);
   const anyBusy = busy !== null;
@@ -187,10 +194,10 @@ function ChannelRow({ channel, busy, first, last, onMove, onSave }: {
             setTouched(true);
             const p = percentOk(percent);
             if (name.trim() === '' || p === null) return;
-            void onSave({ name: name.trim(), kind, surchargePercent: p }).then((ok) => { if (ok) setEditing(false); });
+            void onSave({ name: name.trim(), surchargePercent: p }).then((ok) => { if (ok) setEditing(false); });
           }}
         >
-          <ChannelFields name={name} kind={kind} percent={percent} disabled={anyBusy} touched={touched} onName={setName} onKind={setKind} onPercent={setPercent} />
+          <ChannelFields name={name} kind={channel.kind} percent={percent} disabled={anyBusy} touched={touched} onName={setName} onPercent={setPercent} />
           <div className="row-flex">
             <button type="submit" className="btn small" disabled={anyBusy}>{busy === `save:${channel.id}` ? 'กำลังบันทึก...' : 'บันทึก'}</button>
             <button type="button" className="btn secondary small" disabled={anyBusy} onClick={() => setEditing(false)}>ยกเลิก</button>

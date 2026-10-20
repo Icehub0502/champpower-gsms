@@ -1,14 +1,14 @@
 import { Fragment, useId, useState } from 'react';
-import { formatSatang, settlePayments, sumSatang, toSatang, type PaymentEntry, type PaymentSettlement } from '@champpower/domain';
-import type { CloseReceiptResult } from '@gsms/contracts/index.js';
+import {
+  MoneyError, formatSatang, settlePayments, sumSatang, surchargeSatang, toSatang, type PaymentEntry, type PaymentSettlement,
+} from '@champpower/domain';
+import type {
+  CloseReceiptInput, CloseReceiptResult, PaymentChannel, PaymentChannelList, Receipt,
+} from '@gsms/contracts/index.js';
 import { Modal } from '../../components/ui/Modal';
 import { useDocument } from '../../hooks/useDocument';
 import { api } from '../../lib/api/client';
 import { baht, typedSatang } from '../../lib/money';
-import type {
-  CloseReceiptChannelsInput, PaymentChannel, PaymentChannelList, PendingReceipt as Receipt,
-} from '../../lib/pendingContracts';
-import { previewSurchargeSatang } from '../../lib/pendingDomain';
 import type { BillFailure } from './billErrors';
 import { BLOCKER_TEXT } from './billLabels';
 import { isPresented } from './PresentStep';
@@ -36,6 +36,17 @@ function safeSatang(v: string): number {
   }
 }
 
+/** The channel's fee on one typed amount, from the one domain function; 0 while the amount or percent is not valid. */
+function rowSurcharge(satang: number | null, percent: string): number {
+  if (satang === null) return 0;
+  try {
+    return surchargeSatang(satang, percent);
+  } catch (e) {
+    if (e instanceof MoneyError) return 0;
+    throw e;
+  }
+}
+
 interface Row {
   channel: PaymentChannel;
   text: string;
@@ -50,17 +61,20 @@ function rowsOf(typed: Typed, channels: PaymentChannel[]): Row[] {
     .map((c) => {
       const text = typed[c.id]!.trim();
       const satang = text === '' ? null : typedSatang(text);
-      return { channel: c, text, satang, surcharge: satang === null ? 0 : previewSurchargeSatang(satang, c.surchargePercent) ?? 0 };
+      return { channel: c, text, satang, surcharge: rowSurcharge(satang, c.surchargePercent) };
     });
 }
 
-/** The settlement preview works per KIND (cash/transfer/card) — the domain function the API settles with. */
+/** One entry per channel — the same domain settle function the API closes with. */
 function entriesOf(rows: Row[]): PaymentEntry[] {
-  return rows.filter((r) => r.text !== '').map((r) => ({ method: r.channel.kind, amount: r.text }));
+  return rows
+    .filter((r) => r.text !== '')
+    .map((r) => ({ key: r.channel.id, method: r.channel.kind, surchargePercent: r.channel.surchargePercent, amount: r.text }));
 }
 
 function settlementText(s: PaymentSettlement): string | null {
-  if (s.ok) return null;
+  // `'code' in s` narrows the failure arm; apps/web compiles without strictNullChecks, where `!s.ok` does not.
+  if (!('code' in s)) return null;
   switch (s.code) {
     case 'payment_short': return `ขาดอีก ${baht(s.short)} — ปิดบิลไม่ได้จนกว่าจะรับครบ`;
     case 'payment_over_noncash': return `โอน/บัตร เกินยอดไป ${baht(s.over)} — ทอนได้เฉพาะเงินสด แก้ยอดให้พอดี`;
@@ -92,7 +106,8 @@ export function PaymentPanel({ jobId, receipt, busy, guard, show, onClosed }: Pa
   const rows = rowsOf(typed, channels);
   const entries = entriesOf(rows);
   const settlement = settlePayments(due, entries);
-  const surchargeTotal = sumSatang(rows.map((r) => r.surcharge));
+  // Once the money settles, the surcharge shown is the settle function's own figure.
+  const surchargeTotal = settlement.ok ? safeSatang(settlement.surchargeTotal) : sumSatang(rows.map((r) => r.surcharge));
   const next = receipt.next;
   const presented = isPresented(receipt);
   const ceilingBlocked = receipt.discount.exceedsCeiling && !next.canApproveOverCeiling;
@@ -117,13 +132,13 @@ export function PaymentPanel({ jobId, receipt, busy, guard, show, onClosed }: Pa
   function fillRemaining(c: PaymentChannel) {
     const others = entriesOf(rows.filter((r) => r.channel.id !== c.id));
     const s = settlePayments(due, others);
-    const remaining = others.length === 0 ? receipt.totals.billTotal : !s.ok && s.code === 'payment_short' ? s.short : null;
+    const remaining = others.length === 0 ? receipt.totals.billTotal : 'code' in s && s.code === 'payment_short' ? s.short : null;
     if (remaining !== null) setTyped((t) => ({ ...t, [c.id]: remaining }));
   }
 
   async function close(discountReason: string | undefined): Promise<void> {
     setFailure(null);
-    const body: CloseReceiptChannelsInput = {
+    const body: CloseReceiptInput = {
       payments: rows.filter((r) => r.text !== '').map((r) => ({ channelId: r.channel.id, amount: r.text })),
     };
     if (discountReason) body.discountReason = discountReason;
@@ -135,6 +150,9 @@ export function PaymentPanel({ jobId, receipt, busy, guard, show, onClosed }: Pa
       onClosed(result.value);
     } else if (!result.failure.cancelled) {
       setFailure(result.failure);
+      // A channel was switched off or removed while this screen was open: fetch the buttons again.
+      const code = result.failure.body?.error;
+      if (code === 'channel_inactive' || code === 'channel_not_found') channelsDoc.reload?.();
     }
   }
 
@@ -205,7 +223,7 @@ export function PaymentPanel({ jobId, receipt, busy, guard, show, onClosed }: Pa
 
       {next.blockers.length > 0 && receipt.status === 'draft' && (
         <ul className="bl-blockers" aria-label="สิ่งที่ยังต้องทำก่อนปิดบิล">
-          {next.blockers.map((b) => <li key={b}>{BLOCKER_TEXT[b] ?? b}</li>)}
+          {next.blockers.map((b) => <li key={b}>{BLOCKER_TEXT[b]}</li>)}
         </ul>
       )}
       {ceilingBlocked && <p className="qt-line-sub">ส่วนลดเกินเพดาน — ผู้จัดการ รองผู้จัดการ หรือเจ้าของต้องเข้าระบบด้วยชื่อตัวเองแล้วกดปิดบิล</p>}
