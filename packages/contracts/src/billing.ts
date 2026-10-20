@@ -8,19 +8,23 @@
 //   PATCH /api/jobs/:jobId/receipt                        PatchReceiptInput      -> Receipt (draft only; the discount)
 //   POST  /api/jobs/:jobId/receipt/close                  CloseReceiptInput      -> CloseReceiptResult (ONE transaction: payments + number + freeze)
 //   POST  /api/jobs/:jobId/receipt/void                   VoidReceiptInput       -> Receipt (owner only)
-//   PUT   /api/jobs/:jobId/tax-invoice-request            TaxInvoiceRequestInput -> TaxInvoiceRequest
+//   PUT   /api/jobs/:jobId/receipt/lines/:lineId/discount LineDiscountInput      -> Receipt (draft only; Ice 20 Oct B4)
+//   POST  /api/jobs/:jobId/receipt/present                PresentBillInput       -> Receipt (draft only; Ice 20 Oct B1: show the bill BEFORE money)
+//   GET   /api/payment-channels                           PaymentChannelList     (?includeInactive=true for settings)
+//   POST  /api/payment-channels                           CreatePaymentChannelInput -> PaymentChannel (owner, manager)
+//   PATCH /api/payment-channels/:id                       PatchPaymentChannelInput  -> PaymentChannel (rename / surcharge / deactivate)
+//   PUT   /api/payment-channels-order                     ReorderPaymentChannelsInput -> PaymentChannelList
 //   POST  /api/jobs/:jobId/prints                         CreatePrintInput       -> PrintResult   (record BEFORE window.print())
 //   GET   /api/jobs/:jobId/prints                         PrintHistoryQuery      -> PrintHistory
 //   GET   /api/daily-summary                              DailySummaryQuery      -> DailySummary
-//   POST  /api/daily-closings                             CashCountInput         -> CashClosing   (manager and up)
 //
 // Money is a numeric(12,2) string on the wire. The server computes every total
 // (packages/domain rules/receipt.ts) and says what the screen may do next; the
 // screen displays, it does not decide. Nothing here accepts a total from the
 // client (AC-E6). Payments are append-only: there is no PUT / DELETE for them.
 //
-// DEFAULT pending Ice (P3.2 B3): payment methods are cash, transfer (QR counts
-// as transfer) and card. No `credit`, no card fee.
+// Ice 20 Oct (P3.2 B3): payment CHANNELS are per shop (name + kind + surcharge %).
+// The kind is cash | transfer | card (QR counts as transfer). No `credit`.
 //
 // Everything is .strict().
 
@@ -36,8 +40,6 @@ export const FulfilledQtyString = z
   .string()
   .trim()
   .regex(/^\d{1,10}(\.\d{1,2})?$/, 'invalid_qty');
-// Signed: a drawer can be short. Used only where a negative is meaningful (cash variance).
-export const SignedMoneyString = z.string().trim().regex(/^-?[0-9]{1,10}([.][0-9]{1,2})?$/, 'invalid_money');
 const Reason = z.string().trim().min(1).max(500);
 
 export const PaymentMethod = z.enum(['cash', 'transfer', 'card']);
@@ -78,6 +80,10 @@ export const ReceiptLine = z
     // What the customer is charged for this line. null while unanswered;
     // "0.00" for a line approved but not done (shown, not charged - A-6).
     charged: MoneyString.nullable(),
+    // Ice 20 Oct (P3.2 B4): a discount on this line ("0.00" when none), why, and the line after it.
+    lineDiscount: MoneyString,
+    lineDiscountReason: z.string().nullable(),
+    net: MoneyString.nullable(),
     fulfilledAt: isoDateTime.nullable(),
     fulfilledByName: z.string().nullable(),
   })
@@ -93,13 +99,15 @@ export const ReceiptDiscount = z
     // needs_entry: something was not done, staff must type the discount (0 is allowed).
     // entered: staff typed it.
     state: ReceiptDiscountState,
-    // The discount in force ("0.00" while needs_entry).
+    // The DOCUMENT discount in force ("0.00" while needs_entry).
     amount: MoneyString,
+    // Line discounts + the document discount: what the ceiling is measured on.
+    total: MoneyString,
     // The discount agreed on the quotation at confirm, for reference.
     agreed: MoneyString,
-    // The base it is measured against: the charged lines before discount.
+    // The base it is measured against: the charged lines before ANY discount.
     base: MoneyString,
-    // "12.50" - amount / base, two places.
+    // "12.50" - total / base, two places.
     percent: z.string(),
     exceedsCeiling: z.boolean(),
     ceilingPercent: z.number().int(),
@@ -115,9 +123,19 @@ export const ReceiptTotals = z
   .object({
     // Charged lines before discount.
     subtotal: MoneyString,
+    // Sum of the line discounts (B4).
+    lineDiscountTotal: MoneyString,
+    // The document-level discount.
     discount: MoneyString,
-    // ยอดบิล - the bill total. There is no deposit in P3.2, so it is also what is due.
+    // lineDiscountTotal + discount.
+    totalDiscount: MoneyString,
+    // ยอดบิล - the bill total, before any channel surcharge. There is no deposit in P3.2.
     billTotal: MoneyString,
+    // Channel surcharges (B3): their own line on the receipt, not a discount, not in the 40% base.
+    // "0.00" until payment is taken (a draft cannot know the channel yet).
+    surchargeTotal: MoneyString,
+    // billTotal + surchargeTotal.
+    totalPaid: MoneyString,
     // The quotation's approved_total at the time the draft was built ("ยอดที่ตกลง").
     agreedTotal: MoneyString,
   })
@@ -128,8 +146,12 @@ export const ReceiptPayment = z
   .object({
     id: uuid,
     method: PaymentMethod,
-    // Handed over by the customer.
+    channelId: uuid.nullable(),
+    channelName: z.string().nullable(),
+    // Handed over by the customer through this channel = applied + surchargeAmount.
     amount: MoneyString,
+    // The channel's fee on top (B3).
+    surchargeAmount: MoneyString,
     // Given back (cash only).
     changeGiven: MoneyString,
     // amount - changeGiven: what stayed in the till or the account.
@@ -152,8 +174,11 @@ export const ReceiptBlocker = z.enum([
   'discount_reason_required',
   'discount_requires_manager',
   'nothing_to_bill',
-  // DEFAULT pending Ice (P3.2 B2): a deposit is held against this job and P3.2 cannot offset it.
+  // Ice 20 Oct (P3.2 B2): deposits are agreed outside the system; a held deposit blocks closing here.
   'deposit_held',
+  // Ice 20 Oct (P3.2 B1): the customer has not been shown this bill yet, or it changed since.
+  'bill_not_presented',
+  'presentation_stale',
 ]);
 export type ReceiptBlocker = z.infer<typeof ReceiptBlocker>;
 
@@ -163,6 +188,9 @@ export const ReceiptNext = z
     canEditDiscount: z.boolean(),
     // Everything is in place EXCEPT possibly the money: payments are validated at close.
     canClose: z.boolean(),
+    // Show the customer the bill (B1): everything except the presentation and the money is in place.
+    canPresent: z.boolean(),
+    canEditLineDiscount: z.boolean(),
     blockers: z.array(ReceiptBlocker),
     unansweredLineIds: z.array(uuid),
     // The caller's role may close a bill above the ceiling.
@@ -185,6 +213,22 @@ export const ReceiptParty = z
   })
   .strict();
 export type ReceiptParty = z.infer<typeof ReceiptParty>;
+
+// Ice 20 Oct (P3.2 B1): the bill as the customer was shown it, before money is taken.
+export const ReceiptPresentation = z
+  .object({
+    presentedAt: isoDateTime,
+    presentedByName: z.string().nullable(),
+    // The figures shown.
+    subtotal: MoneyString,
+    totalDiscount: MoneyString,
+    billTotal: MoneyString,
+    // false once ticks, line discounts or the document discount changed after presenting:
+    // present again before taking payment.
+    valid: z.boolean(),
+  })
+  .strict();
+export type ReceiptPresentation = z.infer<typeof ReceiptPresentation>;
 
 export const Receipt = z
   .object({
@@ -213,8 +257,7 @@ export const Receipt = z
     voidedAt: isoDateTime.nullable(),
     voidReason: z.string().nullable(),
     voidedByName: z.string().nullable(),
-    // Job-level flag (B8). No tax invoice is issued by this system yet.
-    taxInvoiceRequested: z.boolean(),
+    presentation: ReceiptPresentation.nullable(),
     next: ReceiptNext,
   })
   .strict();
@@ -253,14 +296,15 @@ export const PatchReceiptInput = z
   .refine((v) => v.discount !== undefined || v.discountReason !== undefined, { message: 'empty_patch' });
 export type PatchReceiptInput = z.infer<typeof PatchReceiptInput>;
 
-// Handed over per method. The server works out the change; the client sends no
-// total and no change (AC-E6).
-export const PaymentEntryInput = z.object({ method: PaymentMethod, amount: MoneyString }).strict();
+// Per channel: the amount APPLIED to the bill through it. The server adds the
+// channel's surcharge and works out the change; the client sends no total, no
+// fee and no change (AC-E6).
+export const PaymentEntryInput = z.object({ channelId: uuid, amount: MoneyString }).strict();
 export type PaymentEntryInput = z.infer<typeof PaymentEntryInput>;
 
 export const CloseReceiptInput = z
   .object({
-    payments: z.array(PaymentEntryInput).min(1).max(3),
+    payments: z.array(PaymentEntryInput).min(1).max(6),
     // Required when the discount is above the ceiling (the closer - manager and up -
     // types it personally) or differs from the agreed one; overrides the draft's.
     discountReason: Reason.optional(),
@@ -273,6 +317,8 @@ export const CloseReceiptResult = z
     receipt: Receipt,
     // Change to hand back, cash only. Also on the cash payment row.
     change: MoneyString,
+    // Channel surcharges collected on top of the bill.
+    surchargeTotal: MoneyString,
     // Stock lines handed back to available stock because they were not done.
     // 0 until the stock module reserves anything (known gap G6).
     unreservedLines: z.number().int().min(0),
@@ -285,18 +331,64 @@ export type CloseReceiptResult = z.infer<typeof CloseReceiptResult>;
 export const VoidReceiptInput = z.object({ reason: Reason }).strict();
 export type VoidReceiptInput = z.infer<typeof VoidReceiptInput>;
 
-export const TaxInvoiceRequestInput = z.object({ requested: z.boolean() }).strict();
-export type TaxInvoiceRequestInput = z.infer<typeof TaxInvoiceRequestInput>;
+export const PresentBillInput = z.object({}).strict();
+export type PresentBillInput = z.infer<typeof PresentBillInput>;
 
-export const TaxInvoiceRequest = z
+// Ice 20 Oct (P3.2 B4). 0 clears the line's discount; a reason is mandatory otherwise.
+export const LineDiscountInput = z
+  .object({ discount: MoneyString, reason: Reason.optional() })
+  .strict();
+export type LineDiscountInput = z.infer<typeof LineDiscountInput>;
+
+// -----------------------------------------------------------------------------
+// Payment channels (Ice 20 Oct, P3.2 B3)
+// -----------------------------------------------------------------------------
+
+export const PaymentChannel = z
   .object({
-    jobId: uuid,
-    requested: z.boolean(),
-    requestedAt: isoDateTime.nullable(),
-    requestedByName: z.string().nullable(),
+    id: uuid,
+    name: z.string(),
+    kind: PaymentMethod,
+    // numeric(5,2): "3.00" = 3% on top of the amount paid through the channel.
+    surchargePercent: z.string().regex(/^\d{1,3}(\.\d{1,2})?$/),
+    isActive: z.boolean(),
+    sortOrder: z.number().int(),
   })
   .strict();
-export type TaxInvoiceRequest = z.infer<typeof TaxInvoiceRequest>;
+export type PaymentChannel = z.infer<typeof PaymentChannel>;
+
+export const PaymentChannelList = z.object({ items: z.array(PaymentChannel) }).strict();
+export type PaymentChannelList = z.infer<typeof PaymentChannelList>;
+
+export const PaymentChannelQuery = z
+  .object({ includeInactive: z.enum(['true', 'false']).default('false') })
+  .strict();
+export type PaymentChannelQuery = z.infer<typeof PaymentChannelQuery>;
+
+const ChannelName = z.string().trim().min(1).max(60);
+const SurchargePercent = z
+  .string()
+  .trim()
+  .regex(/^\d{1,3}(\.\d{1,2})?$/, 'invalid_percent')
+  .refine((v) => Number(v) <= 100, 'invalid_percent');
+
+export const CreatePaymentChannelInput = z
+  .object({ name: ChannelName, kind: PaymentMethod, surchargePercent: SurchargePercent.default('0') })
+  .strict();
+export type CreatePaymentChannelInput = z.infer<typeof CreatePaymentChannelInput>;
+
+// There is no delete: payments reference the channel. Deactivate instead.
+export const PatchPaymentChannelInput = z
+  .object({ name: ChannelName.optional(), surchargePercent: SurchargePercent.optional(), isActive: z.boolean().optional() })
+  .strict()
+  .refine((v) => Object.values(v).some((x) => x !== undefined), { message: 'empty_patch' });
+export type PatchPaymentChannelInput = z.infer<typeof PatchPaymentChannelInput>;
+
+// Every channel id of the shop, in the order they should appear.
+export const ReorderPaymentChannelsInput = z
+  .object({ ids: z.array(uuid).min(1).max(100) })
+  .strict();
+export type ReorderPaymentChannelsInput = z.infer<typeof ReorderPaymentChannelsInput>;
 
 // -----------------------------------------------------------------------------
 // Print history (DECISION-2026-10-15 s2)
@@ -383,6 +475,21 @@ export type PrintHistory = z.infer<typeof PrintHistory>;
 export const DailySummaryQuery = z.object({ date: dateKey.optional() }).strict();
 export type DailySummaryQuery = z.infer<typeof DailySummaryQuery>;
 
+export const MoneyInChannel = z
+  .object({
+    // null = payments recorded before channels existed.
+    channelId: uuid.nullable(),
+    name: z.string(),
+    kind: PaymentMethod,
+    received: MoneyString,
+    changeGiven: MoneyString,
+    // Of `received`: the channel's surcharge (B3).
+    surcharge: MoneyString,
+    reversed: MoneyString,
+    net: MoneyString,
+  })
+  .strict();
+
 export const MoneyInMethod = z
   .object({
     method: PaymentMethod,
@@ -392,22 +499,6 @@ export const MoneyInMethod = z
     net: MoneyString, // received - changeGiven - reversed
   })
   .strict();
-
-export const CashClosing = z
-  .object({
-    id: uuid,
-    businessDate: dateKey,
-    revision: z.number().int().min(1),
-    expectedCash: MoneyString,
-    countedCash: MoneyString,
-    variance: SignedMoneyString,
-    note: z.string().nullable(),
-    recountReason: z.string().nullable(),
-    closedByName: z.string().nullable(),
-    closedAt: isoDateTime,
-  })
-  .strict();
-export type CashClosing = z.infer<typeof CashClosing>;
 
 export const DailySummary = z
   .object({
@@ -422,6 +513,10 @@ export const DailySummary = z
         paymentCount: z.number().int(),
         reversalCount: z.number().int(),
         byMethod: z.array(MoneyInMethod),
+        // The same money by the shop's own channel (ออมสิน, กสิกร, รูดบัตร...). Same total as byMethod.
+        byChannel: z.array(MoneyInChannel),
+        // Included in `total` and in each net: the channel surcharges received.
+        surchargeTotal: MoneyString,
         total: MoneyString,
         changeCount: z.number().int(),
         changeTotal: MoneyString,
@@ -436,6 +531,9 @@ export const DailySummary = z
         subtotal: MoneyString,
         discountTotal: MoneyString,
         billTotal: MoneyString,
+        // Channel surcharges on those bills ("ค่าธรรมเนียมรับชำระ"): a separate category, not repair revenue
+        // and not in billTotal. DEFAULT pending Ice (B3 surcharge display).
+        surchargeTotal: MoneyString,
         // Bills above the ceiling, with who approved - the owner reads these daily.
         overCeiling: z.array(
           z.object({
@@ -468,35 +566,12 @@ export const DailySummary = z
       .strict(),
     // Warranty-claim jobs delivered this day: no receipt, no revenue.
     warrantyClaimsDelivered: z.number().int(),
-    cash: z
-      .object({
-        // Cash net of change and refunds for the day: what the drawer should hold.
-        // No opening float (the schema has none; DEFAULT pending Ice, P3.2 B7).
-        expected: MoneyString,
-        // Latest count for the day, if any; history = every revision, oldest first.
-        closing: CashClosing.nullable(),
-        history: z.array(CashClosing),
-        // Cash received AFTER the latest count was saved (AC-F8).
-        receivedAfterCount: MoneyString,
-        // Caller may record a count.
-        canCount: z.boolean(),
-      })
-      .strict(),
+    // Ice 20 Oct (P3.2 B7): no till count. The cash received total is information only.
+    // Cash handed over minus change minus cash refunds dated this day, over all cash channels.
+    cashReceivedNet: MoneyString,
   })
   .strict();
 export type DailySummary = z.infer<typeof DailySummary>;
-
-export const CashCountInput = z
-  .object({
-    date: dateKey,
-    countedCash: MoneyString,
-    // Required when counted differs from expected.
-    note: Reason.optional(),
-    // Required when a count for the date already exists (it is a NEW row, never an update).
-    recountReason: Reason.optional(),
-  })
-  .strict();
-export type CashCountInput = z.infer<typeof CashCountInput>;
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -549,7 +624,7 @@ export const PaymentCashUnneededError = refusal('payment_cash_unneeded');
 export const AlreadyBilledError = z
   .object({ error: z.literal('already_billed'), message: z.string(), receiptId: uuid, number: z.string() })
   .strict();
-export const DepositHeldError = refusal('deposit_held'); // B2: a held deposit cannot be offset in P3.2
+export const DepositHeldError = refusal('deposit_held'); // Ice 20 Oct (P3.2 B2): deposits are agreed outside the system
 export const ReceiptRequiredError = refusal('receipt_required'); // B1: deliver needs a closed receipt
 export const ReceiptIssuedError = refusal('receipt_issued'); // delivered -> ready while a receipt stands
 export const PrintContentChangedError = z
@@ -561,8 +636,12 @@ export const PrintContentChangedError = z
   })
   .strict();
 export const PrintNotAllowedError = refusal('print_not_allowed');
-export const RecountReasonRequiredError = refusal('recount_reason_required');
-export const CountFutureDateError = refusal('count_future_date');
+export const BillNotPresentedError = refusal('bill_not_presented');
+export const PresentationStaleError = refusal('presentation_stale');
+export const ChannelNotFoundError = refusal('channel_not_found');
+export const ChannelInactiveError = refusal('channel_inactive');
+export const ChannelNameTakenError = refusal('channel_name_taken');
+export const LastCashChannelError = refusal('last_active_channel');
 export const AppendOnlyError = refusal('record_append_only');
 export type AppendOnlyError = z.infer<typeof AppendOnlyError>;
 
@@ -574,7 +653,8 @@ export const BillingBody = z.union([
   DiscountRequiresManagerError, DiscountReasonRequiredError, NothingToBillError, PaymentShortError,
   PaymentOverNoncashError, PaymentCashUnneededError, AlreadyBilledError, DepositHeldError,
   ReceiptRequiredError, ReceiptIssuedError, PrintContentChangedError, PrintNotAllowedError,
-  RecountReasonRequiredError, CountFutureDateError, AppendOnlyError,
+  BillNotPresentedError, PresentationStaleError, ChannelNotFoundError, ChannelInactiveError,
+  ChannelNameTakenError, LastCashChannelError, AppendOnlyError,
   z.object({ error: z.literal('job_not_found'), message: z.string() }).strict(),
   z.object({ error: z.literal('invalid_request'), message: z.string(), fields: z.record(z.array(z.string())) }).strict(),
   z.object({ error: z.literal('document_series_missing'), message: z.string() }).strict(),

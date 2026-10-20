@@ -23,6 +23,7 @@ export * from './rules/lineSummary.js';
 export * from './rules/money.js';
 export * from './rules/quote.js';
 export * from './rules/receipt.js';
+export * from './rules/receiptBill.js';
 export * from './rules/catalogItems.js';
 export * from './rules/priceKeyFixtures.js';
 

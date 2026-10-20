@@ -171,9 +171,6 @@ export interface Customers {
 
 export interface DailyClosings {
   business_date: Timestamp;
-  recount_reason: string | null;
-  revision: Generated<number>;
-  supersedes_closing_id: string | null;
   closed_at: Generated<Timestamp>;
   closed_by: string | null;
   counted_cash: Numeric;
@@ -222,6 +219,8 @@ export interface Deposits {
 }
 
 export interface DocumentLines {
+  line_discount: Generated<Numeric>;
+  line_discount_reason: string | null;
   approval_status: Generated<string>;
   approved_amount: Numeric | null;
   brand_snapshot: string | null;
@@ -263,6 +262,10 @@ export interface Documents {
   discount_entered_at: Timestamp | null;
   discount_reason: string | null;
   receipt_snapshot: Json | null;
+  presented_at: Timestamp | null;
+  presented_by: string | null;
+  presented_hash: string | null;
+  presented_totals: Json | null;
   buyer_address: string | null;
   buyer_branch_code: string | null;
   buyer_legal_name: string | null;
@@ -446,9 +449,6 @@ export interface JobPhotos {
 }
 
 export interface Jobs {
-  tax_invoice_requested: Generated<boolean>;
-  tax_invoice_requested_at: Timestamp | null;
-  tax_invoice_requested_by: string | null;
   appointment_date: Timestamp | null;
   assigned_team_id: string | null;
   assigned_technician_id: string | null;
@@ -551,7 +551,20 @@ export interface OwnerGroups {
   updated_at: Generated<Timestamp>;
 }
 
+export interface PaymentChannels {
+  created_at: Generated<Timestamp>;
+  id: Generated<string>;
+  is_active: Generated<boolean>;
+  kind: string;
+  name: string;
+  shop_id: string;
+  sort_order: Generated<number>;
+  surcharge_percent: Generated<Numeric>;
+  updated_at: Generated<Timestamp>;
+}
+
 export interface PaymentReversals {
+  payment_channel_id: string | null;
   amount: Numeric;
   document_id: string;
   id: Generated<string>;
@@ -581,6 +594,8 @@ export interface DocumentPrints {
 }
 
 export interface Payments {
+  payment_channel_id: string | null;
+  surcharge_amount: Generated<Numeric>;
   amount: Numeric;
   change_given: Generated<Numeric>;
   deposit_id: string | null;
@@ -1090,6 +1105,7 @@ export interface DB {
   model_parts: ModelParts;
   owner_groups: OwnerGroups;
   payments: Payments;
+  payment_channels: PaymentChannels;
   payment_reversals: PaymentReversals;
   document_prints: DocumentPrints;
   promotion_items: PromotionItems;

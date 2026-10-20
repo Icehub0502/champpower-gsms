@@ -1,21 +1,21 @@
 -- =============================================================================
--- 0025_billing.sql — P3.2: receipts, taking money in, print history, daily count
+-- 0025_billing.sql — P3.2: receipts, taking money in, print history
 --
--- WHAT:     1. documents: five receipt columns (bill_subtotal, discount_reason,
---              discount_entered_at, discount_approved_by, receipt_snapshot), a partial unique index
---              (one LIVE receipt per job) and a CHECK that a receipt is never
---              'signed'.
---           2. jobs: tax_invoice_requested (+ _at, _by). DEFAULT pending Ice (P3.2 B8):
---              there is no tax-invoice UI yet, only a flag so requests made
---              between go-live and the VAT room can be collected later.
---           3. payments is made APPEND-ONLY by a trigger (it was only so by
---              convention), and gains CHECK ck_payment_change (change is cash
---              only and strictly less than what was handed over).
---           4. payment_reversals (new): the money-out side of a voided receipt.
---           5. daily_closings becomes a VERSIONED count: uq_closing_day (one row
---              per shop and day) is replaced by UNIQUE (shop_id, business_date,
---              revision); a recount is a NEW row with a reason, never an UPDATE.
---              Append-only trigger.
+-- WHAT:     1. documents: receipt columns (bill_subtotal, discount_reason,
+--              discount_entered_at, discount_approved_by, receipt_snapshot) and
+--              the "bill presented" columns (presented_at, presented_by,
+--              presented_hash, presented_totals); a partial unique index (one
+--              LIVE receipt per job); a CHECK that a receipt is never 'signed'.
+--           2. document_lines: line_discount + line_discount_reason (Ice 20 Oct,
+--              P3.2 B4: staff may discount single receipt lines, reason mandatory).
+--           3. payment_channels (new, per shop, Ice 20 Oct P3.2 B3): the shop's own
+--              list of ways to be paid - name, kind (cash | transfer | card), a
+--              surcharge percent, active flag, sort order. Never deleted.
+--              seed_payment_channels() gives a shop its one cash channel.
+--           4. payments: payment_channel_id and surcharge_amount; made APPEND-ONLY by
+--              a trigger (it was only so by convention); CHECK ck_payment_change
+--              (change is cash only and strictly less than what was handed over).
+--           5. payment_reversals (new): the money-out side of a voided receipt.
 --           6. document_prints (new): one row per print action, append-only
 --              (DECISION-2026-10-15 s2).
 --           7. The default REC pattern becomes the shop's real receipt format,
@@ -25,10 +25,14 @@
 --              understands {BE}, {MM}, {DD} and a daily reset, so NO engine
 --              change is needed.
 --
+--           NOT here, on purpose (Ice 20 Oct): no till / drawer count (B7 cut -
+--           daily_closings from 0005 is untouched) and no tax-invoice request flag
+--           (B8 cut).
+--
 -- WHY:      P3.2 (docs/WORK-ORDERS/P3.2-REQUIREMENTS-DRAFT.md). The ledger rules
 --           of CLAUDE.md s5.3 (money is append-only rows) and s5 (a numbered
---           document never changes) had no database enforcement for payments or
---           for the count; this adds it.
+--           document never changes) had no database enforcement for payments;
+--           this adds it.
 --
 --           DESIGN CHOICE — how a voided receipt's money is reversed.
 --           payments.amount has CHECK (amount > 0) and the table is append-only,
@@ -44,15 +48,23 @@
 --           the void day shows the refund as its own negative line. UNIQUE
 --           (payment_id) means a payment can be reversed once.
 --
+--           DESIGN CHOICE — what payments.amount holds with a surcharge.
+--           payments.amount = everything the customer handed over through that
+--           channel = (the part applied to the bill) + surcharge_amount.
+--           The surcharge is a fee on top of the bill, not a discount and not part
+--           of the 40% base. SUM(amount - change_given) = bill total + surcharges,
+--           and "money in" includes the surcharge. DEFAULT pending Ice (B3
+--           surcharge display).
+--
 --           DESIGN CHOICE — receipt columns on documents, not a side table.
 --           trg_documents_immutable (0022/0024) freezes every column that is not
 --           on a transition's allow-list by diffing the whole row as JSON, so
 --           columns added here are frozen on an issued receipt (and on a void
---           one) for free. A side table would need its own freeze trigger.
---           How a receipt maps onto the shared columns:
---             grand_total      = the BILL TOTAL (ยอดบิล) = bill_subtotal - discount
---             bill_subtotal    = sum of the charged lines before the discount
---             discount         = the receipt discount (final, what is printed)
+--           one) for free. How a receipt maps onto the shared columns:
+--             grand_total      = the BILL TOTAL (ยอดบิล) = bill_subtotal
+--                                - sum(line_discount) - discount
+--             bill_subtotal    = sum of the charged lines BEFORE any discount
+--             discount         = the document-level receipt discount
 --             offered_discount = the discount AGREED on the quotation at confirm
 --                                (reference only; the receipt discount may differ)
 --             approved_total   = the quotation's approved_total at snapshot
@@ -67,41 +79,39 @@
 --
 --             DROP TRIGGER trg_document_prints_append_only ON document_prints;
 --             DROP TABLE document_prints;
---             DROP TRIGGER trg_daily_closings_append_only ON daily_closings;
---             -- only if no daily_closings row has revision > 1:
---             ALTER TABLE daily_closings DROP CONSTRAINT uq_closing_day_rev;
---             ALTER TABLE daily_closings DROP CONSTRAINT ck_closing_recount_reason;
---             ALTER TABLE daily_closings DROP COLUMN supersedes_closing_id,
---               DROP COLUMN recount_reason, DROP COLUMN revision;
---             ALTER TABLE daily_closings
---               ADD CONSTRAINT uq_closing_day UNIQUE (shop_id, business_date);
 --             DROP TRIGGER trg_payment_reversals_append_only ON payment_reversals;
 --             DROP TABLE payment_reversals;   -- LOSES the record of refunds
 --             DROP TRIGGER trg_payments_append_only ON payments;
---             ALTER TABLE payments DROP CONSTRAINT ck_payment_change;
+--             ALTER TABLE payments DROP CONSTRAINT ck_payment_change,
+--               DROP CONSTRAINT ck_payment_surcharge,
+--               DROP COLUMN payment_channel_id, DROP COLUMN surcharge_amount;
 --             DROP FUNCTION billing_append_only();
---             ALTER TABLE jobs DROP COLUMN tax_invoice_requested,
---               DROP COLUMN tax_invoice_requested_at, DROP COLUMN tax_invoice_requested_by;
+--             DROP FUNCTION seed_payment_channels(uuid);
+--             DROP TABLE payment_channels;
+--             ALTER TABLE document_lines DROP CONSTRAINT ck_line_discount,
+--               DROP COLUMN line_discount, DROP COLUMN line_discount_reason;
 --             ALTER TABLE documents DROP CONSTRAINT ck_receipt_never_signed;
 --             DROP INDEX uq_live_receipt_per_job;
 --             ALTER TABLE documents DROP COLUMN bill_subtotal,
 --               DROP COLUMN discount_reason, DROP COLUMN discount_entered_at,
---               DROP COLUMN discount_approved_by, DROP COLUMN receipt_snapshot;
+--               DROP COLUMN discount_approved_by, DROP COLUMN receipt_snapshot,
+--               DROP COLUMN presented_at, DROP COLUMN presented_by,
+--               DROP COLUMN presented_hash, DROP COLUMN presented_totals;
 --             -- seed_document_series(): restore 0003's body (REC pattern
 --             -- 'RC-{YY}{MM}-{SEQ:4}', monthly). Existing REC rows keep the new
 --             -- pattern; set them back by hand if wanted.
 --             DELETE FROM schema_migrations WHERE filename = '0025_billing.sql';
 --
---           Rolling back after receipts exist DELETES their reversal history and
---           the print history. Do not, once the shop is live: void and re-issue
---           instead.
+--           Rolling back after receipts exist DELETES their reversal history,
+--           channels and print history. Do not, once the shop is live: void and
+--           re-issue instead.
 -- LOCKS:    ADD COLUMN (nullable / constant default) is catalog-only on PG 16.
 --           CREATE UNIQUE INDEX and ADD CONSTRAINT take SHARE / ACCESS EXCLUSIVE
 --           locks for the time it takes to scan documents / payments (small).
 --           Run outside shop hours.
 -- ROWS:     The REC UPDATE touches document_series rows where REC has never
---           numbered a document (0 for a shop with no receipts). Nothing else is
---           backfilled.
+--           numbered a document. The channel seed inserts one cash channel per
+--           existing shop. Nothing else is backfilled.
 -- RUN AS:   a superuser (the runner). The REC UPDATE reads documents of every
 --           shop, which RLS would hide from gsms_app.
 -- SQLSTATE: reuses GS002 (CLAUDE.md s9.1) with TABLE = the table name and
@@ -123,25 +133,34 @@ $guard$;
 SET LOCAL lock_timeout = '5s';
 
 -- -----------------------------------------------------------------------------
--- 1. documents — receipt columns, one live receipt per job
+-- 1. documents — receipt columns, bill presentation, one live receipt per job
 -- -----------------------------------------------------------------------------
 ALTER TABLE documents
   ADD COLUMN bill_subtotal        numeric(12,2),
-  -- Why the receipt discount differs from the agreed one, or why it exceeds the
-  -- 40% ceiling. Free text typed by staff.
+  -- Why the receipt discount differs from the agreed one, or why the total
+  -- discount exceeds the 40% ceiling. Free text typed by staff.
   ADD COLUMN discount_reason      text,
   -- NULL = staff never typed a discount on this draft; the carried (agreed)
-  -- discount is in force iff every line was done in full (domain: receiptDiscountState).
+  -- discount is in force iff every line was done in full (domain: receiptDiscount).
   ADD COLUMN discount_entered_at  timestamptz,
-  -- The manager / assistant manager / owner who closed a bill whose discount is
-  -- above the ceiling. NULL when the ceiling was not exceeded.
+  -- The manager / assistant manager / owner who closed a bill whose total
+  -- discount is above the ceiling. NULL when the ceiling was not exceeded.
   ADD COLUMN discount_approved_by uuid REFERENCES users(id) ON DELETE SET NULL,
   -- Who and what the receipt was for on the day it was issued: customer name and
   -- phone, plate / brand / model / mileage, job number, the closer's name.
   -- Written once at issue (frozen with the row); the print reads this, never a
   -- live join (CLAUDE.md s5 rule 1, AC-E7). Contains personal data by design -
   -- it is the printed receipt - and is never logged.
-  ADD COLUMN receipt_snapshot     jsonb;
+  ADD COLUMN receipt_snapshot     jsonb,
+  -- Ice 20 Oct (P3.2 B1): the customer sees the bill BEFORE money is taken.
+  -- "Present bill" stores the figures shown and a hash of everything they depend
+  -- on (ticks, line discounts, the document discount). Closing needs a
+  -- presentation whose hash still equals the current one; any change after
+  -- presenting makes it stale and the bill must be presented again.
+  ADD COLUMN presented_at         timestamptz,
+  ADD COLUMN presented_by         uuid REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN presented_hash       text,
+  ADD COLUMN presented_totals     jsonb;
 
 -- One receipt in flight or standing per job. A voided receipt leaves the slot
 -- free (A-1: void, then issue a new one; the old number stays in the sequence).
@@ -155,15 +174,60 @@ ALTER TABLE documents ADD CONSTRAINT ck_receipt_never_signed
 ALTER TABLE documents VALIDATE CONSTRAINT ck_receipt_never_signed;
 
 -- -----------------------------------------------------------------------------
--- 2. jobs — "the customer asked for a tax invoice" (DEFAULT pending Ice, P3.2 B8)
+-- 2. document_lines — a discount on one receipt line (Ice 20 Oct, P3.2 B4)
 -- -----------------------------------------------------------------------------
-ALTER TABLE jobs
-  ADD COLUMN tax_invoice_requested    boolean NOT NULL DEFAULT false,
-  ADD COLUMN tax_invoice_requested_at timestamptz,
-  ADD COLUMN tax_invoice_requested_by uuid REFERENCES users(id) ON DELETE SET NULL;
+-- Frozen with the line when the receipt is issued (document_lines_are_immutable).
+-- The domain (receiptLineDiscountIssue) refuses a discount above the line's
+-- charge and a missing reason with a field error first.
+ALTER TABLE document_lines
+  ADD COLUMN line_discount        numeric(12,2) NOT NULL DEFAULT 0,
+  ADD COLUMN line_discount_reason text;
+ALTER TABLE document_lines ADD CONSTRAINT ck_line_discount
+  CHECK (line_discount >= 0
+         AND (line_discount = 0 OR (line_discount_reason IS NOT NULL AND length(btrim(line_discount_reason)) > 0))) NOT VALID;
+ALTER TABLE document_lines VALIDATE CONSTRAINT ck_line_discount;
 
 -- -----------------------------------------------------------------------------
--- 3. Append-only guard (shared)
+-- 3. payment_channels (Ice 20 Oct, P3.2 B3)
+-- -----------------------------------------------------------------------------
+-- The shop's own list: "ออมสิน", "กสิกร", "รูดบัตร"... `kind` is the reporting
+-- category (transfer and QR are the same kind). surcharge_percent is what a
+-- channel adds on top of the amount paid through it (e.g. 3.00 for a card).
+-- Never deleted - payments reference it - only deactivated.
+CREATE TABLE payment_channels (
+  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id           uuid NOT NULL REFERENCES shops(id) ON DELETE RESTRICT,
+  name              text NOT NULL CHECK (length(btrim(name)) > 0),
+  kind              text NOT NULL CHECK (kind IN ('cash', 'transfer', 'card')),
+  surcharge_percent numeric(5,2) NOT NULL DEFAULT 0
+                    CHECK (surcharge_percent >= 0 AND surcharge_percent <= 100),
+  is_active         boolean NOT NULL DEFAULT true,
+  sort_order        integer NOT NULL DEFAULT 0,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now()
+);
+-- Two live channels with one name would be indistinguishable on the screen.
+CREATE UNIQUE INDEX uq_payment_channels_name ON payment_channels (shop_id, lower(btrim(name))) WHERE is_active;
+CREATE INDEX idx_payment_channels_shop ON payment_channels (shop_id, sort_order, name);
+CALL apply_tenant_rls('payment_channels');
+CREATE TRIGGER trg_payment_channels_updated BEFORE UPDATE ON payment_channels
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- A shop's starting point: one cash channel. Called by the seed and by shop
+-- creation (like seed_document_series), and by the API on first use.
+CREATE OR REPLACE FUNCTION seed_payment_channels(p_shop_id uuid) RETURNS void AS $$
+BEGIN
+  INSERT INTO payment_channels (shop_id, name, kind, sort_order)
+  SELECT p_shop_id, 'เงินสด', 'cash', 0
+   WHERE NOT EXISTS (SELECT 1 FROM payment_channels WHERE shop_id = p_shop_id);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Existing shops get their cash channel now (superuser: RLS does not narrow this).
+SELECT seed_payment_channels(id) FROM shops;
+
+-- -----------------------------------------------------------------------------
+-- 4. Append-only guard (shared) and the payment columns
 -- -----------------------------------------------------------------------------
 -- Allowed: nothing, except the FK action ON DELETE SET NULL on the actor columns
 -- (a user row is never deleted in practice; if one is, NULLing the actor must not
@@ -187,6 +251,16 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+ALTER TABLE payments
+  ADD COLUMN payment_channel_id uuid REFERENCES payment_channels(id) ON DELETE RESTRICT,
+  -- Part of `amount`: the fee the channel added on top of the bill (never negative).
+  ADD COLUMN surcharge_amount   numeric(12,2) NOT NULL DEFAULT 0;
+ALTER TABLE payments ADD CONSTRAINT ck_payment_surcharge
+  CHECK (surcharge_amount >= 0 AND surcharge_amount < amount) NOT VALID;
+ALTER TABLE payments VALIDATE CONSTRAINT ck_payment_surcharge;
+CREATE INDEX idx_payments_channel ON payments (shop_id, payment_channel_id, received_at DESC)
+  WHERE payment_channel_id IS NOT NULL;
+
 -- Change given is cash only and strictly less than what was handed over; the
 -- domain (settlePayments) refuses first.
 ALTER TABLE payments ADD CONSTRAINT ck_payment_change
@@ -198,15 +272,16 @@ CREATE TRIGGER trg_payments_append_only BEFORE UPDATE OR DELETE ON payments
   FOR EACH ROW EXECUTE FUNCTION billing_append_only();
 
 -- -----------------------------------------------------------------------------
--- 4. payment_reversals
+-- 5. payment_reversals
 -- -----------------------------------------------------------------------------
 CREATE TABLE payment_reversals (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   shop_id     uuid NOT NULL REFERENCES shops(id) ON DELETE RESTRICT,
   payment_id  uuid NOT NULL REFERENCES payments(id) ON DELETE RESTRICT,
   document_id uuid NOT NULL REFERENCES documents(id) ON DELETE RESTRICT,
-  -- Copied from the payment so a report by method needs no join.
+  -- Copied from the payment so a report by kind needs no join.
   method      text NOT NULL CHECK (method IN ('cash', 'transfer', 'card', 'deposit_offset')),
+  payment_channel_id uuid REFERENCES payment_channels(id) ON DELETE RESTRICT,
   -- What actually went back to the customer: payments.amount - change_given.
   amount      numeric(12,2) NOT NULL CHECK (amount > 0),
   reason      text NOT NULL CHECK (length(btrim(reason)) > 0),
@@ -218,21 +293,6 @@ CREATE INDEX idx_payment_reversals_day ON payment_reversals (shop_id, reversed_a
 CREATE INDEX idx_payment_reversals_document ON payment_reversals (shop_id, document_id);
 CALL apply_tenant_rls('payment_reversals');
 CREATE TRIGGER trg_payment_reversals_append_only BEFORE UPDATE OR DELETE ON payment_reversals
-  FOR EACH ROW EXECUTE FUNCTION billing_append_only();
-
--- -----------------------------------------------------------------------------
--- 5. daily_closings — a versioned, append-only count
--- -----------------------------------------------------------------------------
-ALTER TABLE daily_closings DROP CONSTRAINT uq_closing_day;
-ALTER TABLE daily_closings
-  ADD COLUMN revision              integer NOT NULL DEFAULT 1 CHECK (revision >= 1),
-  ADD COLUMN recount_reason        text,
-  ADD COLUMN supersedes_closing_id uuid REFERENCES daily_closings(id) ON DELETE RESTRICT;
-ALTER TABLE daily_closings ADD CONSTRAINT uq_closing_day_rev UNIQUE (shop_id, business_date, revision);
--- A recount must say why; the domain/service answers 400 first.
-ALTER TABLE daily_closings ADD CONSTRAINT ck_closing_recount_reason
-  CHECK (revision = 1 OR (recount_reason IS NOT NULL AND length(btrim(recount_reason)) > 0));
-CREATE TRIGGER trg_daily_closings_append_only BEFORE UPDATE OR DELETE ON daily_closings
   FOR EACH ROW EXECUTE FUNCTION billing_append_only();
 
 -- -----------------------------------------------------------------------------
@@ -274,8 +334,8 @@ CREATE TRIGGER trg_document_prints_append_only BEFORE UPDATE OR DELETE ON docume
 -- -----------------------------------------------------------------------------
 -- 7. REC numbering — the shop's real format
 -- -----------------------------------------------------------------------------
--- RC{BE}{MM}{DD}{SEQ:3} -> RC690916002 on 16 Sep 2569, third... second receipt
--- of the day. Daily reset so the pattern's {DD} cannot repeat a number.
+-- RC{BE}{MM}{DD}{SEQ:3} -> RC690916002 on 16 Sep 2569, second receipt of the day.
+-- Daily reset so the pattern's {DD} cannot repeat a number.
 -- (WO-005 s2; 0003 had seeded 'RC-{YY}{MM}-{SEQ:4}' monthly.)
 CREATE OR REPLACE FUNCTION seed_document_series(p_shop_id uuid) RETURNS void AS $$
 BEGIN
