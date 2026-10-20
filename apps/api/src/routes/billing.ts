@@ -9,11 +9,15 @@
  *   PATCH /api/jobs/:jobId/receipt                 the discount
  *   POST  /api/jobs/:jobId/receipt/close           payments + number + freeze, one transaction
  *   POST  /api/jobs/:jobId/receipt/void            owner only
- *   PUT   /api/jobs/:jobId/tax-invoice-request
+ *   PUT   /api/jobs/:jobId/receipt/lines/:lineId/discount   a discount on one line (Ice 20 Oct B4)
+ *   POST  /api/jobs/:jobId/receipt/present     show the customer the bill BEFORE money (Ice 20 Oct B1)
  *   POST  /api/jobs/:jobId/prints                  record a print BEFORE window.print()
  *   GET   /api/jobs/:jobId/prints
  *   GET   /api/daily-summary
- *   POST  /api/daily-closings                      manager and up
+ *   GET   /api/payment-channels                    the shop's own channels (Ice 20 Oct B3)
+ *   POST  /api/payment-channels                    owner, manager
+ *   PATCH /api/payment-channels/:id                owner, manager (rename / surcharge / deactivate)
+ *   PUT   /api/payment-channels-order              owner, manager
  *
  * The shop and the role come from the JWT only. Routes validate, authorize, call a
  * service inside withShop and shape the answer; there is no SQL here. There is no
@@ -23,12 +27,13 @@ import type { Response } from 'express'
 import { z } from 'zod'
 import { withShop } from '@gsms/db/client.js'
 import {
-  CashCountInput, CloseReceiptInput, CreatePrintInput, CreateReceiptInput, DailySummary, DailySummaryQuery,
+  CloseReceiptInput, CreatePrintInput, CreateReceiptInput, DailySummary, DailySummaryQuery,
   FulfillmentInput, PatchReceiptInput, PrintHistory, PrintHistoryQuery, PrintResult, Receipt,
-  RebuildReceiptInput, TaxInvoiceRequest, TaxInvoiceRequestInput, VoidReceiptInput, CloseReceiptResult, CashClosing,
+  RebuildReceiptInput, VoidReceiptInput, CloseReceiptResult, LineDiscountInput, PresentBillInput,
+  CreatePaymentChannelInput, PatchPaymentChannelInput, ReorderPaymentChannelsInput, PaymentChannelQuery,
+  PaymentChannel, PaymentChannelList,
   type BillingBody, type InvalidRequestError,
 } from '@gsms/contracts/index.js'
-import { CASH_COUNT_ROLES, formatSatang, toSatang } from '@champpower/domain'
 import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
 import { asyncRouter } from '../middleware/asyncHandler.js'
@@ -38,6 +43,7 @@ import { BOARD_READ_ROLES } from './queue.js'
 import * as svc from '../services/receipt.js'
 import * as printSvc from '../services/prints.js'
 import * as dailySvc from '../services/daily.js'
+import * as channelSvc from '../services/channels.js'
 
 export const billingRouter = asyncRouter()
 
@@ -47,6 +53,9 @@ const OWNER_ONLY = ['owner'] as const
 const MONEY_READ = BOARD_READ_ROLES.filter((r) => r !== 'technician')
 const HISTORY_READ = ['owner', 'manager', 'assistant_manager', 'advisor', 'technician'] as const
 const SUMMARY_READ = ['owner', 'manager', 'assistant_manager', 'advisor', 'accountant', 'viewer'] as const
+// Ice 20 Oct (P3.2 B3): the channel list is read by whoever takes money; settings are the owner's and the manager's.
+const CHANNEL_READ = ['owner', 'manager', 'assistant_manager', 'advisor', 'accountant'] as const
+const CHANNEL_WRITE = ['owner', 'manager'] as const
 
 const jobParam = z.object({ jobId: z.string().uuid() })
 
@@ -89,6 +98,10 @@ function sendError(res: Response, e: svc.ReceiptError): void {
     case 'payment_cash_unneeded': return refuse(res, 422, { error: 'payment_cash_unneeded', message: 'ยอดโอน/บัตรครบแล้ว ไม่ต้องรับเงินสดเพิ่ม' })
     case 'already_billed': return refuse(res, 409, { error: 'already_billed', message: `งานนี้ออกใบเสร็จแล้ว เลขที่ ${e.number}`, receiptId: e.receiptId, number: e.number })
     case 'deposit_held': return refuse(res, 409, { error: 'deposit_held', message: 'งานนี้มีเงินมัดจำที่ยังถืออยู่ ระบบยังหักมัดจำไม่ได้ ให้ปิดบิลนอกระบบไปก่อน' })
+    case 'bill_not_presented': return refuse(res, 409, { error: 'bill_not_presented', message: 'ต้องแสดงยอดบิลให้ลูกค้าดูก่อนรับเงิน' })
+    case 'presentation_stale': return refuse(res, 409, { error: 'presentation_stale', message: 'ยอดบิลเปลี่ยนไปหลังแสดงให้ลูกค้าดู กรุณาแสดงยอดบิลใหม่ก่อนรับเงิน' })
+    case 'channel_not_found': return refuse(res, 404, { error: 'channel_not_found', message: 'ไม่พบช่องทางชำระนี้' })
+    case 'channel_inactive': return refuse(res, 409, { error: 'channel_inactive', message: 'ช่องทางชำระนี้ปิดใช้งานแล้ว' })
   }
 }
 
@@ -204,12 +217,12 @@ billingRouter.post('/jobs/:jobId/receipt/close', requireAuth, requireRole(...WRI
   try {
     const r = await withShop(db, auth.shop, (trx) =>
       svc.closeBill(trx, auth.shop, params.data.jobId, { id: auth.sub, role: auth.role },
-        { payments: body.data.payments, discountReason: body.data.discountReason }))
+        { payments: body.data.payments.map((p) => ({ channelId: p.channelId, amount: p.amount })), discountReason: body.data.discountReason }))
     if (!r.ok) { sendError(res, r.error); return }
     const v = await view(params.data.jobId, auth)
     if (!v.ok) { sendError(res, v.error); return }
     res.status(r.value.replayed ? 200 : 201).json(CloseReceiptResult.parse({
-      receipt: v.value, change: r.value.change, unreservedLines: r.value.unreservedLines, replayed: r.value.replayed,
+      receipt: v.value, change: r.value.change, surchargeTotal: r.value.surchargeTotal, unreservedLines: r.value.unreservedLines, replayed: r.value.replayed,
     }))
   } catch (err) {
     if (seriesMissing(err, res)) return
@@ -239,21 +252,100 @@ billingRouter.post('/jobs/:jobId/receipt/void', requireAuth, requireRole(...OWNE
 })
 
 // ---------------------------------------------------------------------------
-// PUT /api/jobs/:jobId/tax-invoice-request  (a flag only; DEFAULT pending Ice, P3.2 B8)
+// PUT /api/jobs/:jobId/receipt/lines/:lineId/discount  (Ice 20 Oct, P3.2 B4)
 // ---------------------------------------------------------------------------
-billingRouter.put('/jobs/:jobId/tax-invoice-request', requireAuth, requireRole(...WRITE), async (req: AuthedRequest, res) => {
+billingRouter.put('/jobs/:jobId/receipt/lines/:lineId/discount', requireAuth, requireRole(...WRITE), async (req: AuthedRequest, res) => {
+  const params = z.object({ jobId: z.string().uuid(), lineId: z.string().uuid() }).safeParse(req.params)
+  const body = LineDiscountInput.safeParse(req.body)
+  if (!params.success) { refuse(res, 404, { error: 'receipt_line_not_found', message: 'ไม่พบบรรทัดนี้' }); return }
+  if (!body.success) { badRequest(res, body.error, 'ส่วนลดรายบรรทัดไม่ถูกต้อง'); return }
+  const auth = req.auth!
+  try {
+    const r = await withShop(db, auth.shop, (trx) =>
+      svc.setLineDiscount(trx, auth.shop, params.data.jobId, { id: auth.sub, role: auth.role }, params.data.lineId, body.data.discount, body.data.reason))
+    if (!r.ok) { sendError(res, r.error); return }
+    await sendView(res, 200, params.data.jobId, auth)
+  } catch (err) { sendPgError(res, err) }
+})
+
+// ---------------------------------------------------------------------------
+// POST /api/jobs/:jobId/receipt/present  (Ice 20 Oct, P3.2 B1)
+// ---------------------------------------------------------------------------
+billingRouter.post('/jobs/:jobId/receipt/present', requireAuth, requireRole(...WRITE), async (req: AuthedRequest, res) => {
   const params = jobParam.safeParse(req.params)
-  const body = TaxInvoiceRequestInput.safeParse(req.body)
+  const body = PresentBillInput.safeParse(req.body ?? {})
   if (!params.success) { refuse(res, 404, { error: 'job_not_found', message: 'ไม่พบงานนี้' }); return }
   if (!body.success) { badRequest(res, body.error, 'ข้อมูลไม่ถูกต้อง'); return }
   const auth = req.auth!
-  const r = await withShop(db, auth.shop, (trx) =>
-    svc.setTaxInvoiceRequest(trx, auth.shop, params.data.jobId, { id: auth.sub, role: auth.role }, body.data.requested))
-  if (!r.ok) { sendError(res, r.error); return }
-  res.json(TaxInvoiceRequest.parse({
-    jobId: params.data.jobId, requested: r.value.requested,
-    requestedAt: r.value.at ? r.value.at.toISOString() : null, requestedByName: r.value.byName,
-  }))
+  try {
+    const r = await withShop(db, auth.shop, (trx) => svc.presentBill(trx, auth.shop, params.data.jobId, { id: auth.sub, role: auth.role }))
+    if (!r.ok) { sendError(res, r.error); return }
+    await sendView(res, 200, params.data.jobId, auth)
+  } catch (err) { sendPgError(res, err) }
+})
+
+// ---------------------------------------------------------------------------
+// Payment channels (Ice 20 Oct, P3.2 B3)
+// ---------------------------------------------------------------------------
+function sendChannelError(res: Response, e: channelSvc.ChannelError): void {
+  switch (e.code) {
+    case 'channel_not_found': return refuse(res, 404, { error: 'channel_not_found', message: 'ไม่พบช่องทางชำระนี้' })
+    case 'channel_name_taken': return refuse(res, 409, { error: 'channel_name_taken', message: 'มีช่องทางชำระชื่อนี้อยู่แล้ว' })
+    case 'last_active_channel': return refuse(res, 409, { error: 'last_active_channel', message: 'ต้องมีช่องทางชำระที่ใช้งานอย่างน้อย 1 ช่องทาง' })
+  }
+}
+
+const isNameClash = (err: unknown) => (err as { code?: string; constraint?: string }).constraint === 'uq_payment_channels_name'
+
+billingRouter.get('/payment-channels', requireAuth, requireRole(...CHANNEL_READ), async (req: AuthedRequest, res) => {
+  const q = PaymentChannelQuery.safeParse(req.query)
+  if (!q.success) { badRequest(res, q.error, 'ข้อมูลไม่ถูกต้อง'); return }
+  const auth = req.auth!
+  // Deactivated channels are for the settings screen; the till never offers them.
+  const includeInactive = q.data.includeInactive === 'true' && (CHANNEL_WRITE as readonly string[]).includes(auth.role)
+  const items = await withShop(db, auth.shop, (trx) => channelSvc.list(trx, auth.shop, includeInactive))
+  res.json(PaymentChannelList.parse({ items }))
+})
+
+billingRouter.post('/payment-channels', requireAuth, requireRole(...CHANNEL_WRITE), async (req: AuthedRequest, res) => {
+  const body = CreatePaymentChannelInput.safeParse(req.body)
+  if (!body.success) { badRequest(res, body.error, 'ข้อมูลช่องทางชำระไม่ถูกต้อง'); return }
+  const auth = req.auth!
+  try {
+    const r = await withShop(db, auth.shop, (trx) => channelSvc.create(trx, auth.shop, auth.sub,
+      { name: body.data.name, kind: body.data.kind, surchargePercent: body.data.surchargePercent }))
+    if (!r.ok) { sendChannelError(res, r.error); return }
+    res.status(201).json(PaymentChannel.parse(r.value))
+  } catch (err) {
+    if (isNameClash(err)) { sendChannelError(res, { code: 'channel_name_taken' }); return }
+    sendPgError(res, err)
+  }
+})
+
+billingRouter.patch('/payment-channels/:id', requireAuth, requireRole(...CHANNEL_WRITE), async (req: AuthedRequest, res) => {
+  const params = z.object({ id: z.string().uuid() }).safeParse(req.params)
+  const body = PatchPaymentChannelInput.safeParse(req.body)
+  if (!params.success) { sendChannelError(res, { code: 'channel_not_found' }); return }
+  if (!body.success) { badRequest(res, body.error, 'ข้อมูลช่องทางชำระไม่ถูกต้อง'); return }
+  const auth = req.auth!
+  try {
+    const r = await withShop(db, auth.shop, (trx) => channelSvc.patch(trx, auth.shop, auth.sub, params.data.id,
+      { name: body.data.name, surchargePercent: body.data.surchargePercent, isActive: body.data.isActive }))
+    if (!r.ok) { sendChannelError(res, r.error); return }
+    res.json(PaymentChannel.parse(r.value))
+  } catch (err) {
+    if (isNameClash(err)) { sendChannelError(res, { code: 'channel_name_taken' }); return }
+    sendPgError(res, err)
+  }
+})
+
+billingRouter.put('/payment-channels-order', requireAuth, requireRole(...CHANNEL_WRITE), async (req: AuthedRequest, res) => {
+  const body = ReorderPaymentChannelsInput.safeParse(req.body)
+  if (!body.success) { badRequest(res, body.error, 'ข้อมูลไม่ถูกต้อง'); return }
+  const auth = req.auth!
+  const r = await withShop(db, auth.shop, (trx) => channelSvc.reorder(trx, auth.shop, auth.sub, body.data.ids))
+  if (!r.ok) { sendChannelError(res, r.error); return }
+  res.json(PaymentChannelList.parse({ items: r.value }))
 })
 
 // ---------------------------------------------------------------------------
@@ -315,7 +407,7 @@ billingRouter.get('/daily-summary', requireAuth, requireRole(...SUMMARY_READ), a
   const auth = req.auth!
   let out: DailySummary
   try {
-    out = await withShop(db, auth.shop, (trx) => dailySvc.dailySummary(trx, q.data.date, auth.role))
+    out = await withShop(db, auth.shop, (trx) => dailySvc.dailySummary(trx, q.data.date))
   } catch (err) {
     // 2026-02-31 passes the date regex and fails to parse as a day.
     if (err instanceof Error && /not a date/.test(err.message)) {
@@ -324,30 +416,4 @@ billingRouter.get('/daily-summary', requireAuth, requireRole(...SUMMARY_READ), a
     throw err
   }
   res.json(DailySummary.parse(out))
-})
-
-billingRouter.post('/daily-closings', requireAuth, requireRole(...CASH_COUNT_ROLES), async (req: AuthedRequest, res) => {
-  const body = CashCountInput.safeParse(req.body)
-  if (!body.success) { badRequest(res, body.error, 'ข้อมูลการนับเงินไม่ถูกต้อง'); return }
-  const auth = req.auth!
-  try {
-    const r = await withShop(db, auth.shop, (trx) => dailySvc.recordCount(trx, auth.shop, { id: auth.sub, role: auth.role }, {
-      date: body.data.date, countedCash: formatSatang(toSatang(body.data.countedCash)),
-      note: body.data.note, recountReason: body.data.recountReason,
-    }))
-    if (!r.ok) {
-      switch (r.error.code) {
-        case 'count_future_date': refuse(res, 400, { error: 'count_future_date', message: 'นับเงินล่วงหน้าไม่ได้' }); return
-        case 'recount_reason_required': refuse(res, 409, { error: 'recount_reason_required', message: 'วันนี้นับเงินไปแล้ว การนับใหม่ต้องระบุเหตุผล' }); return
-        case 'invalid_request': refuse(res, 400, { error: 'invalid_request', message: 'ข้อมูลไม่ถูกต้อง', fields: r.error.fields }); return
-      }
-    }
-    res.status(201).json(CashClosing.parse(r.value))
-  } catch (err) {
-    // Two counts of one day at once: the advisory lock queues them; the unique index is the backstop.
-    if ((err as { constraint?: string }).constraint === 'uq_closing_day_rev') {
-      refuse(res, 409, { error: 'recount_reason_required', message: 'มีคนนับเงินวันนี้ไปพร้อมกัน กรุณาโหลดใหม่แล้วนับซ้ำพร้อมเหตุผล' }); return
-    }
-    sendPgError(res, err)
-  }
 })

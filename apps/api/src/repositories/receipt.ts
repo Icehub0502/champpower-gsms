@@ -38,12 +38,17 @@ export interface ReceiptDocRow {
   voided_at: Date | null
   voided_by: string | null
   void_reason: string | null
+  presented_at: Date | null
+  presented_by: string | null
+  presented_hash: string | null
+  presented_totals: unknown
 }
 
 const DOC_COLUMNS = [
   'id', 'job_id', 'customer_id', 'status', 'number', 'source_document_id', 'bill_subtotal', 'discount',
   'offered_discount', 'approved_total', 'grand_total', 'discount_reason', 'discount_entered_at',
   'discount_approved_by', 'receipt_snapshot', 'issued_at', 'issued_by', 'voided_at', 'voided_by', 'void_reason',
+  'presented_at', 'presented_by', 'presented_hash', 'presented_totals',
 ] as const
 
 /** The job's standing receipt (draft or issued), else its most recently voided one. */
@@ -173,6 +178,8 @@ export interface ReceiptLineRow {
   unit_price: string
   approved_amount: string | null
   line_total: string
+  line_discount: string
+  line_discount_reason: string | null
   sku_id: string | null
   warranty_term_id: string | null
   warranty_name: string | null
@@ -186,7 +193,7 @@ export interface ReceiptLineRow {
 
 const LINE_COLUMNS = [
   'dl.id', 'dl.source_line_id', 'dl.parent_line_id', 'dl.sort_order', 'dl.line_type', 'dl.name_snapshot',
-  'dl.brand_snapshot', 'dl.qty', 'dl.unit', 'dl.unit_price', 'dl.approved_amount', 'dl.line_total', 'dl.sku_id',
+  'dl.brand_snapshot', 'dl.qty', 'dl.unit', 'dl.unit_price', 'dl.approved_amount', 'dl.line_total', 'dl.line_discount', 'dl.line_discount_reason', 'dl.sku_id',
   'dl.warranty_term_id', 'dl.warranty_name', 'dl.warranty_days', 'dl.warranty_max_km',
   'dl.fulfilled_qty', 'dl.fulfilled_at', 'dl.fulfilled_by', 'u.name as fulfilled_by_name',
 ] as const
@@ -280,11 +287,33 @@ export async function insertReceiptLine(trx: ScopedTx, l: NewReceiptLine): Promi
 export async function writeTick(
   trx: ScopedTx,
   lineId: string,
-  w: { fulfilledQty: string; lineTotal: string; by: string },
+  w: { fulfilledQty: string; lineTotal: string; by: string; clearDiscount?: boolean },
 ): Promise<void> {
   await trx.updateTable('document_lines')
-    .set({ fulfilled_qty: w.fulfilledQty, line_total: w.lineTotal, fulfilled_at: new Date(), fulfilled_by: w.by })
+    .set({
+      fulfilled_qty: w.fulfilledQty, line_total: w.lineTotal, fulfilled_at: new Date(), fulfilled_by: w.by,
+      // A line re-ticked below its discount loses the discount (the amount no longer fits the charge).
+      ...(w.clearDiscount ? { line_discount: '0', line_discount_reason: null } : {}),
+    })
     .where('id', '=', lineId).execute()
+}
+
+/** Ice 20 Oct (P3.2 B4). discount '0' clears it (and its reason). */
+export async function writeLineDiscount(trx: ScopedTx, lineId: string, discount: string, reason: string | null): Promise<void> {
+  await trx.updateTable('document_lines')
+    .set({ line_discount: discount, line_discount_reason: toSatangZero(discount) ? null : reason })
+    .where('id', '=', lineId).execute()
+}
+
+function toSatangZero(d: string): boolean {
+  return Number(d) === 0
+}
+
+/** Ice 20 Oct (P3.2 B1): remember what the customer was shown. */
+export async function writePresentation(trx: ScopedTx, id: string, w: { by: string; hash: string; totals: unknown }): Promise<void> {
+  await trx.updateTable('documents')
+    .set({ presented_at: new Date(), presented_by: w.by, presented_hash: w.hash, presented_totals: JSON.stringify(w.totals) })
+    .where('id', '=', id).execute()
 }
 
 export async function writeLineTotal(trx: ScopedTx, lineId: string, lineTotal: string): Promise<void> {
@@ -303,28 +332,35 @@ export interface PaymentRow {
   received_at: Date
   received_by_name: string | null
   reversed: boolean
+  channel_id: string | null
+  channel_name: string | null
+  surcharge_amount: string
 }
 
 export async function getPayments(trx: ScopedTx, receiptId: string): Promise<PaymentRow[]> {
   const rows = await trx.selectFrom('payments as p')
     .leftJoin('users as u', 'u.id', 'p.received_by')
     .leftJoin('payment_reversals as r', 'r.payment_id', 'p.id')
-    .select(['p.id', 'p.method', 'p.amount', 'p.change_given', 'p.received_at', 'u.name as received_by_name', 'r.id as reversal_id'])
+    .leftJoin('payment_channels as pc', 'pc.id', 'p.payment_channel_id')
+    .select(['p.id', 'p.method', 'p.amount', 'p.change_given', 'p.received_at', 'u.name as received_by_name', 'r.id as reversal_id',
+      'p.payment_channel_id', 'pc.name as channel_name', 'p.surcharge_amount'])
     .where('p.document_id', '=', receiptId)
     .orderBy('p.received_at', 'asc').orderBy('p.id', 'asc')
     .execute()
   return rows.map((r) => ({
     id: r.id, method: r.method, amount: r.amount, change_given: r.change_given,
     received_at: r.received_at, received_by_name: r.received_by_name, reversed: r.reversal_id !== null,
+    channel_id: r.payment_channel_id, channel_name: r.channel_name, surcharge_amount: r.surcharge_amount,
   }))
 }
 
 export async function insertPayment(
   trx: ScopedTx,
-  p: { shopId: string; documentId: string; method: string; amount: string; changeGiven: string; receivedBy: string; receivedAt: Date },
+  p: { shopId: string; documentId: string; channelId: string; method: string; amount: string; surchargeAmount: string; changeGiven: string; receivedBy: string; receivedAt: Date },
 ): Promise<string> {
   const row = await trx.insertInto('payments').values({
     shop_id: p.shopId, document_id: p.documentId, method: p.method, amount: p.amount,
+    payment_channel_id: p.channelId, surcharge_amount: p.surchargeAmount,
     change_given: p.changeGiven, received_by: p.receivedBy, received_at: p.receivedAt,
   }).returning(['id']).executeTakeFirstOrThrow()
   return row.id
@@ -332,11 +368,11 @@ export async function insertPayment(
 
 export async function insertReversal(
   trx: ScopedTx,
-  r: { shopId: string; paymentId: string; documentId: string; method: string; amount: string; reason: string; by: string },
+  r: { shopId: string; paymentId: string; documentId: string; method: string; channelId: string | null; amount: string; reason: string; by: string },
 ): Promise<void> {
   await trx.insertInto('payment_reversals').values({
     shop_id: r.shopId, payment_id: r.paymentId, document_id: r.documentId, method: r.method,
-    amount: r.amount, reason: r.reason, reversed_by: r.by,
+    payment_channel_id: r.channelId, amount: r.amount, reason: r.reason, reversed_by: r.by,
   }).execute()
 }
 
@@ -352,7 +388,6 @@ export interface JobBillingFacts {
   job_type: string
   customer_id: string
   mileage_in_km: number | null
-  tax_invoice_requested: boolean
   customer_name: string | null
   customer_phone: string | null
   plate: string | null
@@ -367,7 +402,7 @@ export async function jobBillingFacts(trx: ScopedTx, jobId: string, opts: { lock
     .innerJoin('vehicles as v', 'v.id', 'j.vehicle_id')
     .select([
       'j.id', 'j.job_number', 'j.status', 'j.sub_state', 'j.job_type', 'j.customer_id', 'j.mileage_in_km',
-      'j.tax_invoice_requested', 'c.name as customer_name', 'c.phone as customer_phone',
+      'c.name as customer_name', 'c.phone as customer_phone',
       'v.plate', 'v.province', 'v.brand', 'v.model',
     ])
     .where('j.id', '=', jobId).where('j.deleted_at', 'is', null)
@@ -381,19 +416,6 @@ export async function userNames(trx: ScopedTx, ids: ReadonlyArray<string | null>
   if (want.length === 0) return new Map()
   const rows = await trx.selectFrom('users').select(['id', 'name']).where('id', 'in', want).execute()
   return new Map(rows.map((r) => [r.id, r.name]))
-}
-
-export async function setTaxInvoiceRequested(
-  trx: ScopedTx,
-  jobId: string,
-  w: { requested: boolean; by: string },
-): Promise<void> {
-  // Named columns only: never booking_id (trg_jobs_booking_immutable, see repositories/jobs.ts).
-  await trx.updateTable('jobs').set({
-    tax_invoice_requested: w.requested,
-    tax_invoice_requested_at: w.requested ? new Date() : null,
-    tax_invoice_requested_by: w.requested ? w.by : null,
-  }).where('id', '=', jobId).execute()
 }
 
 /** A deposit still held against this job. P3.2 cannot offset it (B2). */

@@ -1,10 +1,10 @@
 /**
  * The receipt (P3.2): build a draft from the confirmed quotation, tick what was
- * done, set the discount, take the money and close the bill in ONE transaction,
- * void it (owner), and gate "ส่งแล้ว" on it.
+ * done, discount lines and the bill, SHOW THE BILL TO THE CUSTOMER, take the money
+ * and close the bill in ONE transaction, void it (owner), and gate "ส่งแล้ว" on it.
  *
- * Money and rules come from packages/domain (rules/receipt.ts). This file reads
- * rows, calls the domain, and writes. It never adds a baht itself.
+ * Money and rules come from packages/domain (rules/receipt.ts, receiptBill.ts).
+ * This file reads rows, calls the domain, and writes. It never adds a baht itself.
  *
  * LOCK ORDER (CLAUDE.md s4.x): jobs -> documents (quotation, then receipt) ->
  * document_lines -> stock. Every entry point takes the JOB row first. Anything
@@ -14,29 +14,30 @@
  * Reminder (as in services/quotation.ts): a returned error is not a throw, so the
  * request still COMMITS. Every function validates first and writes after.
  */
+import { createHash } from 'node:crypto'
 import {
-  MoneyError, bangkokDayKey, DISCOUNT_CEILING_PERCENT, discountCeilingRefusal,
-  discountExceedsCeiling, discountExceedsSubtotal, discountPercentText, formatSatang, fulfilledQtyIssue,
-  isValidSubState, quoteTotals, receiptDiscount, receiptDiscountReasonRequired, receiptLineCharge,
-  receiptSubtotal, receiptTotals, roleMayExceedDiscountCeiling, settlePayments, toQtyCenti, toSatang,
-  workOrderLineIds, type ReceiptLineMoney,
+  MoneyError, bangkokDayKey, DISCOUNT_CEILING_PERCENT, discountCeilingRefusal, discountExceedsCeiling,
+  discountExceedsSubtotal, discountPercentText, formatSatang, fulfilledQtyIssue, isValidSubState,
+  quoteTotals, receiptDiscount, receiptDiscountReasonRequired, receiptLineCharge, receiptLineDiscountIssue,
+  receiptLineNet, receiptSubtotal, receiptTotals, roleMayExceedDiscountCeiling, settlePayments,
+  toQtyCenti, toSatang, workOrderLineIds, type ReceiptLineMoney,
 } from '@champpower/domain'
 import type { Receipt, PaymentMethod } from '@gsms/contracts/index.js'
 import type { ScopedTx } from '@gsms/db/client.js'
 import * as quotationRepo from '../repositories/quotation.js'
 import * as jobsRepo from '../repositories/jobs.js'
 import * as repo from '../repositories/receipt.js'
+import * as channelsRepo from '../repositories/channels.js'
 import { writeAudit } from './audit.js'
 import { releaseUnusedReservations } from './stockHooks.js'
 
-
-/** Roles that may build, tick, discount and close a receipt (CLAUDE.md s12.1 "รับเงินลูกค้า / ปิดบิล"). */
+/** Roles that may build, tick, discount, present and close a receipt (CLAUDE.md s12.1 "รับเงินลูกค้า / ปิดบิล"). */
 export const RECEIPT_WRITE_ROLES = ['owner', 'manager', 'assistant_manager', 'advisor'] as const
 const mayWrite = (role: string) => (RECEIPT_WRITE_ROLES as readonly string[]).includes(role)
 
 /** The job statuses a receipt can be drafted in (after the customer said yes). */
 const DRAFTABLE = ['approved', 'repairing', 'aligning', 'ready', 'delivered']
-/** The bill closes when the car is ready to hand over (B1: money before the keys). 'delivered' covers a delivery that predates P3.2. */
+/** The bill closes when the car is ready to hand over (Ice 20 Oct B1: money before the keys). 'delivered' covers a delivery that predates P3.2. */
 const CLOSABLE = ['ready', 'delivered']
 
 export interface Actor { id: string; role: string }
@@ -62,6 +63,10 @@ export type ReceiptError =
   | { code: 'discount_exceeds_subtotal'; max: string }
   | { code: 'discount_requires_manager'; percent: string }
   | { code: 'discount_reason_required' }
+  | { code: 'bill_not_presented' }
+  | { code: 'presentation_stale' }
+  | { code: 'channel_not_found' }
+  | { code: 'channel_inactive' }
   | { code: 'payment_short'; short: string; due: string }
   | { code: 'payment_over_noncash'; over: string }
   | { code: 'payment_cash_unneeded' }
@@ -82,18 +87,24 @@ function moneyLines(rows: repo.ReceiptLineRow[]): ReceiptLineMoney[] {
     .filter((r) => r.parent_line_id === null)
     .map((r) => ({
       id: r.id, qty: r.qty, unitPrice: r.unit_price, approvedAmount: r.approved_amount,
-      isSet: parents.has(r.id), fulfilledQty: r.fulfilled_qty,
+      isSet: parents.has(r.id), fulfilledQty: r.fulfilled_qty, lineDiscount: r.line_discount,
     }))
 }
 
 interface Computed {
   lines: ReceiptLineMoney[]
   subtotalSatang: number
+  lineDiscountSatang: number
   undecided: string[]
   discountState: ReturnType<typeof receiptDiscount>
+  /** The document-level discount applied. */
   discountSatang: number
+  /** Line discounts + document discount: what the 40% ceiling is measured on. */
+  totalDiscountSatang: number
   billTotalSatang: number
   agreedSatang: number
+  /** Typed document discount larger than what is left after the line discounts. */
+  discountTooBig: boolean
 }
 
 function compute(doc: repo.ReceiptDocRow, rows: repo.ReceiptLineRow[]): Computed {
@@ -103,20 +114,34 @@ function compute(doc: repo.ReceiptDocRow, rows: repo.ReceiptLineRow[]): Computed
     lines, agreedDiscount: doc.offered_discount,
     entered: doc.discount_entered_at ? doc.discount : null,
   })
-  const t = receiptTotals(sub.subtotal, state.discount)
+  const t = receiptTotals(sub.subtotal, sub.lineDiscountTotal, state.discount)
   return {
-    lines, subtotalSatang: sub.subtotal, undecided: sub.undecidedLineIds, discountState: state,
-    discountSatang: state.discount, billTotalSatang: t.billTotal, agreedSatang: toSatang(doc.offered_discount),
+    lines, subtotalSatang: sub.subtotal, lineDiscountSatang: sub.lineDiscountTotal, undecided: sub.undecidedLineIds,
+    discountState: state, discountSatang: t.discount, totalDiscountSatang: t.totalDiscount,
+    billTotalSatang: t.billTotal, agreedSatang: toSatang(doc.offered_discount),
+    discountTooBig: discountExceedsSubtotal(sub.subtotal - sub.lineDiscountTotal, state.discount),
   }
 }
 
-/** Keep the draft's stored figures equal to what compute() says (they feed the daily summary of an issued one). */
+/** Keep the draft's stored figures equal to what compute() says (they feed the daily summary once issued). */
 async function syncDraftTotals(trx: ScopedTx, doc: repo.ReceiptDocRow, rows: repo.ReceiptLineRow[]): Promise<void> {
   const c = compute(doc, rows)
-  const t = receiptTotals(c.subtotalSatang, c.discountSatang)
   await repo.writeDraftTotals(trx, doc.id, {
-    subtotal: formatSatang(t.subtotal), discount: formatSatang(t.discount), billTotal: formatSatang(t.billTotal),
+    subtotal: formatSatang(c.subtotalSatang), discount: formatSatang(c.discountSatang), billTotal: formatSatang(c.billTotalSatang),
   })
+}
+
+/**
+ * What the customer was shown depends on exactly this: every tick, every line
+ * discount, the document discount and the resulting totals. Any change makes the
+ * stored hash differ, so the presentation goes stale by itself (Ice 20 Oct, B1).
+ */
+function presentationHash(c: Computed, rows: repo.ReceiptLineRow[]): string {
+  const tops = rows.filter((r) => r.parent_line_id === null)
+    .map((r) => [r.id, r.fulfilled_qty, formatSatang(toSatang(r.line_discount))])
+  return createHash('sha256').update(JSON.stringify({
+    l: tops, d: c.discountSatang, s: c.subtotalSatang, ld: c.lineDiscountSatang, t: c.billTotalSatang,
+  })).digest('hex')
 }
 
 // -----------------------------------------------------------------------------
@@ -148,7 +173,7 @@ const iso = (d: Date | null): string | null => (d ? d.toISOString() : null)
 export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: repo.JobBillingFacts, role: string): Promise<Receipt> {
   const rows = await repo.getReceiptLines(trx, doc.id)
   const payments = await repo.getPayments(trx, doc.id)
-  const names = await repo.userNames(trx, [doc.issued_by, doc.voided_by, doc.discount_approved_by])
+  const names = await repo.userNames(trx, [doc.issued_by, doc.voided_by, doc.discount_approved_by, doc.presented_by])
   const draft = doc.status === 'draft'
 
   // Is the quotation this draft was built from still the live, confirmed one?
@@ -165,35 +190,44 @@ export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: r
 
   const c = compute(doc, rows)
   let subtotal: string, discountAmt: string, billTotal: string
-  let baseSatang: number, discountSatang: number
+  let baseSatang: number, discountSatang: number, lineDiscountSatang: number
   if (draft) {
-    const t = receiptTotals(c.subtotalSatang, c.discountSatang)
-    subtotal = formatSatang(t.subtotal); discountAmt = formatSatang(t.discount); billTotal = formatSatang(t.billTotal)
-    baseSatang = t.subtotal; discountSatang = c.discountSatang
+    subtotal = formatSatang(c.subtotalSatang); discountAmt = formatSatang(c.discountSatang); billTotal = formatSatang(c.billTotalSatang)
+    baseSatang = c.subtotalSatang; discountSatang = c.discountSatang; lineDiscountSatang = c.lineDiscountSatang
   } else {
     subtotal = doc.bill_subtotal ?? '0.00'; discountAmt = doc.discount; billTotal = doc.grand_total
     baseSatang = toSatang(subtotal); discountSatang = toSatang(discountAmt)
+    lineDiscountSatang = rows.filter((r) => r.parent_line_id === null).reduce((a, r) => a + toSatang(r.line_discount), 0)
   }
-  const exceeds = discountExceedsCeiling(baseSatang, discountSatang)
+  const totalDiscountSatang = discountSatang + lineDiscountSatang
+  const exceeds = discountExceedsCeiling(baseSatang, totalDiscountSatang)
   const agreedSatang = toSatang(doc.offered_discount)
   const state = draft
     ? c.discountState.state
     : (doc.discount_entered_at ? 'entered' : (discountSatang > 0 ? 'carried' : 'none')) as 'entered' | 'carried' | 'none'
   const reasonRequired = state !== 'needs_entry'
-    && receiptDiscountReasonRequired({ discountSatang, agreedDiscountSatang: agreedSatang, baseSatang })
+    && receiptDiscountReasonRequired({ discountSatang, agreedDiscountSatang: agreedSatang, baseSatang, totalDiscountSatang })
+
+  // Presentation (Ice 20 Oct, B1).
+  const currentHash = draft ? presentationHash(c, rows) : doc.presented_hash
+  const presentationValid = !!doc.presented_at && doc.presented_hash === currentHash
 
   // Blockers - what stops "close" for THIS caller right now (the money itself is checked at close).
   const blockers: Receipt['next']['blockers'] = []
+  let presentable = true
   if (draft) {
+    const hard = (b: Receipt['next']['blockers'][number]) => { blockers.push(b); presentable = false }
     if (!CLOSABLE.includes(facts.status)) blockers.push('job_not_ready')
-    if (quotationChanged) blockers.push('quotation_changed')
+    if (quotationChanged) hard('quotation_changed')
     if (await repo.heldDepositOfJob(trx, doc.job_id!)) blockers.push('deposit_held')
-    if (c.undecided.length > 0) blockers.push('lines_unanswered')
-    if (state === 'needs_entry') blockers.push('discount_entry_required')
-    if (discountExceedsSubtotal(baseSatang, discountSatang)) blockers.push('discount_exceeds_subtotal')
-    if (c.undecided.length === 0 && baseSatang - Math.min(discountSatang, baseSatang) <= 0) blockers.push('nothing_to_bill')
+    if (c.undecided.length > 0) hard('lines_unanswered')
+    if (state === 'needs_entry') hard('discount_entry_required')
+    if (c.discountTooBig) hard('discount_exceeds_subtotal')
+    if (c.undecided.length === 0 && c.billTotalSatang <= 0) hard('nothing_to_bill')
     if (exceeds && !roleMayExceedDiscountCeiling(role)) blockers.push('discount_requires_manager')
     if (reasonRequired && !(doc.discount_reason && doc.discount_reason.trim())) blockers.push('discount_reason_required')
+    if (!doc.presented_at) blockers.push('bill_not_presented')
+    else if (!presentationValid) blockers.push('presentation_stale')
   }
 
   const lines = rows.map((r): Receipt['lines'][number] => {
@@ -207,12 +241,18 @@ export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: r
       st = f === 0 ? 'not_done' : f === toQtyCenti(isChild ? (parent?.qty ?? r.qty) : r.qty) ? 'done' : 'partial'
     }
     let charged: string | null = null
+    let net: string | null = null
     if (!isChild) {
       if (draft) {
         const m = c.lines.find((l) => l.id === r.id)!
-        const v = receiptLineCharge(m)
-        charged = v === null ? null : formatSatang(v)
-      } else charged = r.line_total
+        const g = receiptLineCharge(m)
+        const n = receiptLineNet(m)
+        charged = g === null ? null : formatSatang(g)
+        net = n === null ? null : formatSatang(n)
+      } else {
+        charged = r.line_total
+        net = formatSatang(toSatang(r.line_total) - toSatang(r.line_discount))
+      }
     }
     return {
       id: r.id, sourceLineId: r.source_line_id, parentLineId: r.parent_line_id, isSet, sortOrder: r.sort_order,
@@ -220,30 +260,38 @@ export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: r
       qty: r.qty, unit: r.unit, unitPrice: r.unit_price, approvedAmount: r.approved_amount,
       warranty: r.warranty_name ? { termId: r.warranty_term_id, name: r.warranty_name, days: r.warranty_days, maxKm: r.warranty_max_km } : null,
       fulfilledQty: isChild ? null : r.fulfilled_qty, state: st, charged,
+      lineDiscount: isChild ? '0.00' : r.line_discount, lineDiscountReason: isChild ? null : r.line_discount_reason, net,
       fulfilledAt: iso(r.fulfilled_at), fulfilledByName: r.fulfilled_by_name,
     }
   })
 
   const paidNet = formatSatang(payments.reduce((a, p) => a + toSatang(p.amount) - toSatang(p.change_given), 0))
   const changeTotal = formatSatang(payments.reduce((a, p) => a + toSatang(p.change_given), 0))
+  const surchargeTotal = formatSatang(payments.reduce((a, p) => a + toSatang(p.surcharge_amount), 0))
   const snap = (doc.receipt_snapshot as Snapshot | null) ?? null
   // The snapshot also carries closedByName for the print footer; the view's party is the strict subset.
   const party = !draft && snap ? pickParty(snap) : partyOf(facts)
   const write = mayWrite(role)
+  const presentedTotals = (doc.presented_totals as { subtotal: string; totalDiscount: string; billTotal: string } | null) ?? null
 
   return {
     id: doc.id, jobId: doc.job_id!, status: doc.status as Receipt['status'], number: doc.number,
     quotationId: doc.source_document_id!, quotationNumber, quotationChanged,
     party, lines,
-    totals: { subtotal, discount: discountAmt, billTotal, agreedTotal: doc.approved_total },
+    totals: {
+      subtotal, lineDiscountTotal: formatSatang(lineDiscountSatang), discount: discountAmt,
+      totalDiscount: formatSatang(totalDiscountSatang), billTotal, agreedTotal: doc.approved_total,
+      surchargeTotal, totalPaid: formatSatang(toSatang(billTotal) + toSatang(surchargeTotal)),
+    },
     discount: {
-      state, amount: discountAmt, agreed: doc.offered_discount, base: subtotal,
-      percent: discountPercentText(baseSatang, discountSatang), exceedsCeiling: exceeds,
+      state, amount: discountAmt, total: formatSatang(totalDiscountSatang), agreed: doc.offered_discount, base: subtotal,
+      percent: discountPercentText(baseSatang, totalDiscountSatang), exceedsCeiling: exceeds,
       ceilingPercent: DISCOUNT_CEILING_PERCENT, reason: doc.discount_reason, reasonRequired,
       approvedByName: doc.discount_approved_by ? (names.get(doc.discount_approved_by) ?? null) : null,
     },
     payments: payments.map((p) => ({
-      id: p.id, method: p.method as PaymentMethod, amount: p.amount, changeGiven: p.change_given,
+      id: p.id, method: p.method as PaymentMethod, channelId: p.channel_id, channelName: p.channel_name,
+      amount: p.amount, surchargeAmount: p.surcharge_amount, changeGiven: p.change_given,
       net: formatSatang(toSatang(p.amount) - toSatang(p.change_given)), receivedAt: p.received_at.toISOString(),
       receivedByName: p.received_by_name, reversed: p.reversed,
     })),
@@ -251,10 +299,18 @@ export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: r
     issuedAt: iso(doc.issued_at), issuedByName: doc.issued_by ? (names.get(doc.issued_by) ?? null) : null,
     voidedAt: iso(doc.voided_at), voidReason: doc.void_reason,
     voidedByName: doc.voided_by ? (names.get(doc.voided_by) ?? null) : null,
-    taxInvoiceRequested: facts.tax_invoice_requested,
+    presentation: doc.presented_at && presentedTotals
+      ? {
+          presentedAt: doc.presented_at.toISOString(), presentedByName: doc.presented_by ? (names.get(doc.presented_by) ?? null) : null,
+          subtotal: presentedTotals.subtotal, totalDiscount: presentedTotals.totalDiscount, billTotal: presentedTotals.billTotal,
+          valid: draft ? presentationValid : true,
+        }
+      : null,
     next: {
       canTick: draft && write && !quotationChanged,
       canEditDiscount: draft && write && !quotationChanged,
+      canEditLineDiscount: draft && write && !quotationChanged,
+      canPresent: draft && write && presentable,
       canClose: draft && write && blockers.length === 0,
       blockers,
       unansweredLineIds: draft ? c.undecided : [],
@@ -380,7 +436,11 @@ export async function createDraft(
   return ok({ receiptId: made.value, created: true })
 }
 
-/** Throw away the draft and rebuild it from the (new) confirmed quotation, keeping ticks on lines that did not change. */
+/**
+ * Throw away the draft and rebuild it from the (new) confirmed quotation, keeping
+ * ticks on lines that did not change. A typed discount, line discounts and the
+ * presentation are dropped: the figures they were about are gone.
+ */
 export async function rebuildDraft(trx: ScopedTx, shopId: string, jobId: string, actor: Actor): Promise<Result<string>> {
   const facts = await repo.jobBillingFacts(trx, jobId, { lock: true })
   if (!facts) return err({ code: 'job_not_found' })
@@ -413,7 +473,7 @@ export async function rebuildDraft(trx: ScopedTx, shopId: string, jobId: string,
 }
 
 // -----------------------------------------------------------------------------
-// Draft edits: ticks and the discount
+// Draft edits: ticks, line discounts, the document discount, presenting the bill
 // -----------------------------------------------------------------------------
 
 /** Job -> quotation(confirmed, unchanged) -> receipt(draft) -> lines, all locked, for a draft edit. */
@@ -462,7 +522,9 @@ export async function setFulfillment(
     const m = money.find((x) => x.id === e.lineId)!
     const qty = formatSatang(toQtyCenti(e.fulfilledQty)) // canonical "n.nn"
     const charge = receiptLineCharge({ ...m, fulfilledQty: qty })!
-    await repo.writeTick(trx, e.lineId, { fulfilledQty: qty, lineTotal: formatSatang(charge), by: actor.id })
+    // A discount that no longer fits the (smaller) charge is cleared, never silently shrunk.
+    const clearDiscount = toSatang(m.lineDiscount) > charge
+    await repo.writeTick(trx, e.lineId, { fulfilledQty: qty, lineTotal: formatSatang(charge), by: actor.id, clearDiscount })
     before.push({ lineId: e.lineId, fulfilledQty: m.fulfilledQty })
     after.push({ lineId: e.lineId, fulfilledQty: qty })
   }
@@ -470,6 +532,35 @@ export async function setFulfillment(
   await writeAudit(trx, {
     shopId, actorId: actor.id, action: 'receipt_lines_ticked', entityType: 'documents', entityId: doc.id,
     before: { lines: before }, after: { lines: after },
+  })
+  return ok(undefined)
+}
+
+/**
+ * Ice 20 Oct (P3.2 B4): a discount on one receipt line, with a mandatory reason.
+ * Rounded per line (each line's discount is its own satang figure), then summed.
+ */
+export async function setLineDiscount(
+  trx: ScopedTx, shopId: string, jobId: string, actor: Actor,
+  lineId: string, discount: string, reason: string | undefined,
+): Promise<Result<void>> {
+  const l = await lockDraftForEdit(trx, jobId)
+  if (!l.ok) return l
+  const { doc, rows } = l.value
+  const money = moneyLines(rows).find((m) => m.id === lineId)
+  if (!money) return err({ code: 'receipt_line_not_found' })
+  const issue = receiptLineDiscountIssue(money, discount, reason)
+  if (issue === 'reason_required') return err({ code: 'invalid_request', fields: { reason: ['required'] } })
+  if (issue) return err({ code: 'invalid_request', fields: { discount: [issue] } })
+
+  const canonical = formatSatang(toSatang(discount))
+  const prior = rows.find((r) => r.id === lineId)!
+  await repo.writeLineDiscount(trx, lineId, canonical, reason?.trim() ?? null)
+  await syncDraftTotals(trx, doc, await repo.getReceiptLines(trx, doc.id))
+  await writeAudit(trx, {
+    shopId, actorId: actor.id, action: 'receipt_line_discount_set', entityType: 'documents', entityId: doc.id,
+    before: { lineId, lineDiscount: prior.line_discount },
+    after: { lineId, lineDiscount: canonical, reason: reason?.trim() ?? null },
   })
   return ok(undefined)
 }
@@ -489,7 +580,8 @@ export async function patchDraft(
       if (e instanceof MoneyError) return err({ code: 'invalid_request', fields: { discount: ['invalid_money'] } })
       throw e
     }
-    if (discountExceedsSubtotal(c.subtotalSatang, d)) return err({ code: 'discount_exceeds_subtotal', max: formatSatang(c.subtotalSatang) })
+    const left = c.subtotalSatang - c.lineDiscountSatang
+    if (discountExceedsSubtotal(left, d)) return err({ code: 'discount_exceeds_subtotal', max: formatSatang(left) })
     discountText = formatSatang(d)
   }
   await repo.writeDraftDiscount(trx, doc.id, { discount: discountText, reason: p.discountReason })
@@ -504,15 +596,43 @@ export async function patchDraft(
   return ok(undefined)
 }
 
+/**
+ * Ice 20 Oct (P3.2 B1): "present the bill". Everything is answered and priced; the
+ * customer is shown the amount BEFORE any money is taken. Stores who and when plus
+ * the totals shown, and a hash of everything they depend on. Presenting again
+ * replaces the earlier presentation.
+ */
+export async function presentBill(trx: ScopedTx, shopId: string, jobId: string, actor: Actor): Promise<Result<void>> {
+  const l = await lockDraftForEdit(trx, jobId)
+  if (!l.ok) return l
+  const { doc, rows } = l.value
+  const c = compute(doc, rows)
+  if (c.undecided.length > 0) return err({ code: 'fulfillment_incomplete', lineIds: c.undecided })
+  if (c.discountState.state === 'needs_entry') return err({ code: 'discount_entry_required' })
+  if (c.discountTooBig) return err({ code: 'discount_exceeds_subtotal', max: formatSatang(c.subtotalSatang - c.lineDiscountSatang) })
+  if (c.billTotalSatang <= 0) return err({ code: 'nothing_to_bill' })
+
+  const totals = {
+    subtotal: formatSatang(c.subtotalSatang), totalDiscount: formatSatang(c.totalDiscountSatang),
+    billTotal: formatSatang(c.billTotalSatang),
+  }
+  await repo.writePresentation(trx, doc.id, { by: actor.id, hash: presentationHash(c, rows), totals })
+  await writeAudit(trx, {
+    shopId, actorId: actor.id, action: 'receipt_bill_presented', entityType: 'documents', entityId: doc.id,
+    before: { previouslyPresentedAt: doc.presented_at ? doc.presented_at.toISOString() : null }, after: totals,
+  })
+  return ok(undefined)
+}
+
 // -----------------------------------------------------------------------------
 // Close the bill and issue the receipt - ONE transaction
 // -----------------------------------------------------------------------------
 
-export interface CloseOutcome { receiptId: string; change: string; unreservedLines: number; replayed: boolean }
+export interface CloseOutcome { receiptId: string; change: string; surchargeTotal: string; unreservedLines: number; replayed: boolean }
 
 export async function closeBill(
   trx: ScopedTx, shopId: string, jobId: string, actor: Actor,
-  input: { payments: ReadonlyArray<{ method: PaymentMethod; amount: string }>; discountReason?: string },
+  input: { payments: ReadonlyArray<{ channelId: string; amount: string }>; discountReason?: string },
 ): Promise<Result<CloseOutcome>> {
   // 1. JOB.
   const facts = await repo.jobBillingFacts(trx, jobId, { lock: true })
@@ -522,15 +642,16 @@ export async function closeBill(
   const found = await repo.findReceiptOfJob(trx, jobId)
   if (!found) return err({ code: 'receipt_not_found' })
 
-  // Retry of a close that already went through (AC-E3): same payments -> the same answer.
+  // Retry of a close that already went through (AC-E3): same channels and amounts -> the same answer.
   if (found.status === 'issued') {
     const paid = await repo.getPayments(trx, found.id)
-    const norm = (xs: ReadonlyArray<{ method: string; amount: string }>) =>
-      xs.map((x) => `${x.method}:${formatSatang(toSatang(x.amount))}`).sort().join('|')
-    if (norm(paid) === norm(input.payments)) {
+    const stored = paid.map((p) => `${p.channel_id}:${formatSatang(toSatang(p.amount) - toSatang(p.surcharge_amount))}`).sort().join('|')
+    const asked = input.payments.map((p) => `${p.channelId}:${formatSatang(toSatang(p.amount))}`).sort().join('|')
+    if (stored === asked) {
       return ok({
         receiptId: found.id, replayed: true, unreservedLines: 0,
         change: formatSatang(paid.reduce((a, p) => a + toSatang(p.change_given), 0)),
+        surchargeTotal: formatSatang(paid.reduce((a, p) => a + toSatang(p.surcharge_amount), 0)),
       })
     }
     return err({ code: 'already_billed', receiptId: found.id, number: found.number! })
@@ -557,30 +678,49 @@ export async function closeBill(
   const c = compute(doc, rows)
   if (c.undecided.length > 0) return err({ code: 'fulfillment_incomplete', lineIds: c.undecided })
   if (c.discountState.state === 'needs_entry') return err({ code: 'discount_entry_required' })
-  if (discountExceedsSubtotal(c.subtotalSatang, c.discountSatang)) {
-    return err({ code: 'discount_exceeds_subtotal', max: formatSatang(c.subtotalSatang) })
+  if (c.discountTooBig) {
+    return err({ code: 'discount_exceeds_subtotal', max: formatSatang(c.subtotalSatang - c.lineDiscountSatang) })
   }
-  const totals = receiptTotals(c.subtotalSatang, c.discountSatang)
-  if (totals.billTotal <= 0) return err({ code: 'nothing_to_bill' })
+  if (c.billTotalSatang <= 0) return err({ code: 'nothing_to_bill' })
 
-  // B2 (DEFAULT pending Ice, P3.2 B2): no deposit offset in P3.2.
+  // Ice 20 Oct (P3.2 B2): deposits are agreed outside the system; a held one is closed outside too.
   if (await repo.heldDepositOfJob(trx, jobId)) return err({ code: 'deposit_held' })
 
+  // Ice 20 Oct (P3.2 B4): the ceiling is judged on the FINAL receipt (line discounts + document
+  // discount over the pre-discount total of the done lines), by the closer.
   const reason = (input.discountReason ?? doc.discount_reason ?? '').trim() || null
-  // B4 (DEFAULT pending Ice, P3.2 B4): the ceiling is judged on the final discount, by the closer.
-  const refusal = discountCeilingRefusal({ baseSatang: totals.subtotal, discountSatang: totals.discount, role: actor.role, reason })
-  if (refusal === 'discount_requires_manager') return err({ code: 'discount_requires_manager', percent: discountPercentText(totals.subtotal, totals.discount) })
+  const refusal = discountCeilingRefusal({ baseSatang: c.subtotalSatang, discountSatang: c.totalDiscountSatang, role: actor.role, reason })
+  if (refusal === 'discount_requires_manager') return err({ code: 'discount_requires_manager', percent: discountPercentText(c.subtotalSatang, c.totalDiscountSatang) })
   if (refusal === 'discount_reason_required') return err({ code: 'discount_reason_required' })
-  // A-10: any departure from the agreed discount is explained.
-  if (!reason && receiptDiscountReasonRequired({ discountSatang: totals.discount, agreedDiscountSatang: c.agreedSatang, baseSatang: totals.subtotal })) {
+  // A-10: any departure from the agreed document discount is explained.
+  if (!reason && receiptDiscountReasonRequired({
+    discountSatang: c.discountSatang, agreedDiscountSatang: c.agreedSatang, baseSatang: c.subtotalSatang,
+    totalDiscountSatang: c.totalDiscountSatang,
+  })) {
     return err({ code: 'discount_reason_required' })
   }
-  const exceeds = discountExceedsCeiling(totals.subtotal, totals.discount)
+  const exceeds = discountExceedsCeiling(c.subtotalSatang, c.totalDiscountSatang)
 
-  const settled = settlePayments(totals.billTotal, input.payments)
+  // Ice 20 Oct (P3.2 B1): the customer was shown THIS bill before money is taken. Anything that
+  // changed since (a tick, a line discount, the discount) makes the presentation stale.
+  if (!doc.presented_at) return err({ code: 'bill_not_presented' })
+  if (doc.presented_hash !== presentationHash(c, rows)) return err({ code: 'presentation_stale' })
+
+  // Channels of THIS shop (RLS hides any other), active, each used once.
+  const channels = await channelsRepo.getMany(trx, input.payments.map((p) => p.channelId))
+  const byId = new Map(channels.map((ch) => [ch.id, ch]))
+  for (const p of input.payments) {
+    const ch = byId.get(p.channelId)
+    if (!ch) return err({ code: 'channel_not_found' })
+    if (!ch.is_active) return err({ code: 'channel_inactive' })
+  }
+  const settled = settlePayments(c.billTotalSatang, input.payments.map((p) => {
+    const ch = byId.get(p.channelId)!
+    return { key: ch.id, method: ch.kind as PaymentMethod, surchargePercent: ch.surcharge_percent, amount: p.amount }
+  }))
   if (!settled.ok) {
     switch (settled.code) {
-      case 'payment_short': return err({ code: 'payment_short', short: settled.short, due: formatSatang(totals.billTotal) })
+      case 'payment_short': return err({ code: 'payment_short', short: settled.short, due: formatSatang(c.billTotalSatang) })
       case 'payment_over_noncash': return err({ code: 'payment_over_noncash', over: settled.over })
       case 'payment_cash_unneeded': return err({ code: 'payment_cash_unneeded' })
       case 'payment_invalid': return err({ code: 'invalid_request', fields: { [`payments.${settled.field}`]: ['invalid'] } })
@@ -600,15 +740,15 @@ export async function closeBill(
   const names = await repo.userNames(trx, [actor.id])
   await repo.markReceiptIssued(trx, doc.id, {
     number, numberedOn: bangkokDayKey(now), issuedBy: actor.id, issuedAt: now,
-    subtotal: formatSatang(totals.subtotal), discount: formatSatang(totals.discount),
-    billTotal: formatSatang(totals.billTotal), discountReason: reason,
+    subtotal: formatSatang(c.subtotalSatang), discount: formatSatang(c.discountSatang),
+    billTotal: formatSatang(c.billTotalSatang), discountReason: reason,
     discountApprovedBy: exceeds ? actor.id : null,
     snapshot: { ...partyOf(facts), closedByName: names.get(actor.id) ?? null },
   })
   for (const p of settled.rows) {
     await repo.insertPayment(trx, {
-      shopId, documentId: doc.id, method: p.method, amount: p.amount, changeGiven: p.changeGiven,
-      receivedBy: actor.id, receivedAt: now,
+      shopId, documentId: doc.id, channelId: p.key, method: p.method, amount: p.amount, surchargeAmount: p.surcharge,
+      changeGiven: p.changeGiven, receivedBy: actor.id, receivedAt: now,
     })
   }
   // 4. STOCK (last in the lock order). Lines approved but not done go back to available.
@@ -625,20 +765,22 @@ export async function closeBill(
     shopId, actorId: actor.id, action: 'receipt_issued', entityType: 'documents', entityId: doc.id,
     before: { status: 'draft' },
     after: {
-      number, jobId, subtotal: formatSatang(totals.subtotal), discount: formatSatang(totals.discount),
-      percent: discountPercentText(totals.subtotal, totals.discount), billTotal: formatSatang(totals.billTotal),
-      agreedDiscount: doc.offered_discount, agreedTotal: doc.approved_total,
+      number, jobId, subtotal: formatSatang(c.subtotalSatang), lineDiscountTotal: formatSatang(c.lineDiscountSatang),
+      discount: formatSatang(c.discountSatang), percent: discountPercentText(c.subtotalSatang, c.totalDiscountSatang),
+      billTotal: formatSatang(c.billTotalSatang), agreedDiscount: doc.offered_discount, agreedTotal: doc.approved_total,
       discountReason: reason, overCeiling: exceeds,
-      payments: settled.rows.map((p) => ({ method: p.method, amount: p.amount, change: p.changeGiven })),
+      presentedAt: doc.presented_at.toISOString(),
+      surchargeTotal: settled.surchargeTotal,
+      payments: settled.rows.map((p) => ({ channelId: p.key, method: p.method, applied: p.applied, surcharge: p.surcharge, amount: p.amount, change: p.changeGiven })),
       notDoneLineIds: notDone.map((r) => r.id), unreservedLines: unreserved,
     },
   })
-  return ok({ receiptId: doc.id, change: settled.change, unreservedLines: unreserved, replayed: false })
+  return ok({ receiptId: doc.id, change: settled.change, surchargeTotal: settled.surchargeTotal, unreservedLines: unreserved, replayed: false })
 }
 
 // -----------------------------------------------------------------------------
 // Void (owner only - checked at the route and again here)
-// DEFAULT pending Ice (P3.2 B6): owner only, per CLAUDE.md s12.1; no same-day manager exception.
+// Ice 20 Oct (P3.2 B6): owner only, per CLAUDE.md s12.1; no same-day manager exception.
 // -----------------------------------------------------------------------------
 
 export async function voidReceipt(
@@ -656,8 +798,9 @@ export async function voidReceipt(
   const reversals: Array<{ paymentId: string; method: string; amount: string }> = []
   for (const p of payments) {
     if (p.reversed) continue
+    // What actually went back: everything handed over (surcharge included) minus the change.
     const net = formatSatang(toSatang(p.amount) - toSatang(p.change_given))
-    await repo.insertReversal(trx, { shopId, paymentId: p.id, documentId: doc.id, method: p.method, amount: net, reason, by: actor.id })
+    await repo.insertReversal(trx, { shopId, paymentId: p.id, documentId: doc.id, method: p.method, channelId: p.channel_id, amount: net, reason, by: actor.id })
     reversals.push({ paymentId: p.id, method: p.method, amount: net })
   }
   await repo.markReceiptVoid(trx, doc.id, { reason, voidedBy: actor.id })
@@ -671,27 +814,7 @@ export async function voidReceipt(
 }
 
 // -----------------------------------------------------------------------------
-// Tax-invoice request flag (DEFAULT pending Ice, P3.2 B8) - a flag, no tax invoice
-// -----------------------------------------------------------------------------
-
-export async function setTaxInvoiceRequest(
-  trx: ScopedTx, shopId: string, jobId: string, actor: Actor, requested: boolean,
-): Promise<Result<{ requested: boolean; at: Date | null; byName: string | null }>> {
-  const facts = await repo.jobBillingFacts(trx, jobId, { lock: true })
-  if (!facts) return err({ code: 'job_not_found' })
-  if (facts.tax_invoice_requested !== requested) {
-    await repo.setTaxInvoiceRequested(trx, jobId, { requested, by: actor.id })
-    await writeAudit(trx, {
-      shopId, actorId: actor.id, action: 'tax_invoice_request_set', entityType: 'jobs', entityId: jobId,
-      before: { requested: facts.tax_invoice_requested }, after: { requested },
-    })
-  }
-  const names = await repo.userNames(trx, [actor.id])
-  return ok({ requested, at: requested ? new Date() : null, byName: requested ? (names.get(actor.id) ?? null) : null })
-}
-
-// -----------------------------------------------------------------------------
-// Gates used by the job status route (B1)
+// Gates used by the job status route (Ice 20 Oct, P3.2 B1)
 // -----------------------------------------------------------------------------
 
 export type DeliveryGate =
@@ -699,7 +822,7 @@ export type DeliveryGate =
   | { ok: false; code: 'receipt_required'; nothingToBill: boolean }
 
 /**
- * May this job move to 'delivered'? (DEFAULT pending Ice, P3.2 B1.) The caller holds the job lock.
+ * May this job move to 'delivered'? (Ice 20 Oct, P3.2 B1.) The caller holds the job lock.
  * A normal job needs an ISSUED receipt. Exempt: warranty claims. Escape hatch: a job with
  * nothing to bill (confirmed quotation approves 0, or the draft bills 0, or there is no
  * quotation at all) may be delivered with a written reason.
