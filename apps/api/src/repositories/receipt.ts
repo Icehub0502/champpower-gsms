@@ -6,7 +6,7 @@
  * Writes follow migrations 0022/0024/0025: a DRAFT receipt and its lines may
  * change freely; once `issued` the row and its lines are frozen (GS002), and the
  * only exit is -> void (status, void_reason, voided_at, voided_by). payments,
- * payment_reversals and daily_closings are append-only (0025 trigger).
+ * payments, payment_reversals and document_prints are append-only (0025 trigger).
  */
 import { sql } from 'kysely'
 import type { ScopedTx } from '@gsms/db/client.js'

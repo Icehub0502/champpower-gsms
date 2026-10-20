@@ -235,7 +235,7 @@ billingRouter.post('/jobs/:jobId/receipt/close', requireAuth, requireRole(...WRI
 })
 
 // ---------------------------------------------------------------------------
-// POST /api/jobs/:jobId/receipt/void  (owner only; DEFAULT pending Ice, P3.2 B6)
+// POST /api/jobs/:jobId/receipt/void  (owner only; Ice 20 Oct, P3.2 B6)
 // ---------------------------------------------------------------------------
 billingRouter.post('/jobs/:jobId/receipt/void', requireAuth, requireRole(...OWNER_ONLY), async (req: AuthedRequest, res) => {
   const params = jobParam.safeParse(req.params)

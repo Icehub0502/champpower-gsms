@@ -678,7 +678,7 @@ export async function confirm(
     return err({ code: 'discount_exceeds_approved', max: formatSatang(quoteTotals(linesAtConfirm, 0).approvedSubtotal) })
   }
 
-  // DEFAULT pending Ice (P3.2 B4): the same 40% ceiling as at the till, on the discount that will be STORED, judged
+  // Ice 20 Oct (P3.2 B4): the same 40% ceiling as at the till, on the discount that will be STORED, judged
   // on the approved subtotal. Above it takes manager / assistant manager / owner AND a reason. Before any write.
   {
     const entered = adjustments?.discount?.amount ?? doc.discount

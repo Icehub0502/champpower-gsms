@@ -318,7 +318,7 @@ kanbanRouter.patch(
         return { kind: 'quotation_confirmed' }
       }
 
-      // P3.2 B1 (DEFAULT pending Ice): money before the keys. A normal job reaches 'delivered' only with an
+      // P3.2 B1 (Ice 20 Oct): money before the keys. A normal job reaches 'delivered' only with an
       // ISSUED receipt (warranty claims are exempt); a job with nothing to bill may go with a written reason.
       // And a delivery cannot be undone while a receipt stands: void it first (CLAUDE.md s5 rule 5, AC-E8).
       // The job row is already locked, so no receipt can be issued or voided under this decision.

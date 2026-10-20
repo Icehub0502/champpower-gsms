@@ -157,7 +157,7 @@ export function mapPgError(err: unknown, ctx: PgErrorContext = {}): MappedError 
   // 409: the request conflicts with the document's state, and the way out is a
   // new revision or a void, not a retry.
   if (pg.code === 'GS002') {
-    // 0025: payments, payment_reversals, daily_closings and document_prints are append-only.
+    // 0025: payments, payment_reversals and document_prints are append-only.
     if (pg.hint === 'append_only') {
       const body: AppendOnlyError = { error: 'record_append_only', message: 'รายการนี้เป็นบันทึกถาวร แก้ไขหรือลบไม่ได้' }
       return { status: 409, body }
