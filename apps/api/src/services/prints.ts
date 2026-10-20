@@ -25,7 +25,9 @@ import * as receiptRepo from '../repositories/receipt.js'
 import * as printsRepo from '../repositories/prints.js'
 import { writeAudit } from './audit.js'
 
-type DocType = 'quotation' | 'work_order' | 'receipt'
+import { statementOf } from './receipt.js'
+
+type DocType = 'quotation' | 'work_order' | 'receipt' | 'bill_statement'
 
 export type PrintError =
   | { code: 'job_not_found' }
@@ -33,6 +35,9 @@ export type PrintError =
   | { code: 'quotation_not_confirmed' }
   | { code: 'receipt_not_found' }
   | { code: 'receipt_not_issued' }
+  | { code: 'receipt_not_draft' }
+  | { code: 'bill_not_presented' }
+  | { code: 'presentation_stale' }
   | { code: 'print_content_changed'; printCount: number; lastPrintedAt: string }
 
 type Result<T> = { ok: true; value: T } | { ok: false; error: PrintError }
@@ -46,13 +51,21 @@ interface Subject {
   status: string
   revision: number | null
   hash: string
-  mark: 'draft' | 'void' | null
+  mark: 'draft' | 'void' | 'statement' | null
 }
 
 const sha = (v: unknown): string => createHash('sha256').update(JSON.stringify(v)).digest('hex')
 
 /** Resolve what is being printed and fingerprint its printable content. `lock` takes the document row. */
 async function resolve(trx: ScopedTx, jobId: string, docType: DocType, lock: boolean): Promise<Result<Subject>> {
+  if (docType === 'bill_statement') {
+    const st = await statementOf(trx, jobId, { lock })
+    if (!st.ok) return err(st.error as PrintError)
+    return ok({
+      subjectId: st.value.doc.id, documentId: st.value.doc.id, number: null, status: 'draft', revision: null,
+      mark: 'statement', hash: sha({ statement: st.value.hash }),
+    })
+  }
   if (docType === 'receipt') {
     const found = await receiptRepo.findReceiptOfJob(trx, jobId)
     if (!found) return err({ code: 'receipt_not_found' })

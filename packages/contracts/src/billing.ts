@@ -8,12 +8,12 @@
 //   PATCH /api/jobs/:jobId/receipt                        PatchReceiptInput      -> Receipt (draft only; the discount)
 //   POST  /api/jobs/:jobId/receipt/close                  CloseReceiptInput      -> CloseReceiptResult (ONE transaction: payments + number + freeze)
 //   POST  /api/jobs/:jobId/receipt/void                   VoidReceiptInput       -> Receipt (owner only)
-//   PUT   /api/jobs/:jobId/receipt/lines/:lineId/discount LineDiscountInput      -> Receipt (draft only; Ice 20 Oct B4)
+//   PATCH /api/jobs/:jobId/receipt/lines/:lineId          LineDiscountInput      -> Receipt (draft only; Ice 20 Oct B4)
 //   POST  /api/jobs/:jobId/receipt/present                PresentBillInput       -> Receipt (draft only; Ice 20 Oct B1: show the bill BEFORE money)
 //   GET   /api/payment-channels                           PaymentChannelList     (?includeInactive=true for settings)
 //   POST  /api/payment-channels                           CreatePaymentChannelInput -> PaymentChannel (owner, manager)
 //   PATCH /api/payment-channels/:id                       PatchPaymentChannelInput  -> PaymentChannel (rename / surcharge / deactivate)
-//   PUT   /api/payment-channels-order                     ReorderPaymentChannelsInput -> PaymentChannelList
+//   PUT   /api/payment-channels/order                     ReorderPaymentChannelsInput -> PaymentChannelList
 //   POST  /api/jobs/:jobId/prints                         CreatePrintInput       -> PrintResult   (record BEFORE window.print())
 //   GET   /api/jobs/:jobId/prints                         PrintHistoryQuery      -> PrintHistory
 //   GET   /api/daily-summary                              DailySummaryQuery      -> DailySummary
@@ -81,8 +81,8 @@ export const ReceiptLine = z
     // "0.00" for a line approved but not done (shown, not charged - A-6).
     charged: MoneyString.nullable(),
     // Ice 20 Oct (P3.2 B4): a discount on this line ("0.00" when none), why, and the line after it.
-    lineDiscount: MoneyString,
-    lineDiscountReason: z.string().nullable(),
+    discount: MoneyString,
+    discountReason: z.string().nullable(),
     net: MoneyString.nullable(),
     fulfilledAt: isoDateTime.nullable(),
     fulfilledByName: z.string().nullable(),
@@ -148,10 +148,10 @@ export const ReceiptPayment = z
     method: PaymentMethod,
     channelId: uuid.nullable(),
     channelName: z.string().nullable(),
-    // Handed over by the customer through this channel = applied + surchargeAmount.
+    // Handed over by the customer through this channel = applied + surcharge.
     amount: MoneyString,
     // The channel's fee on top (B3).
-    surchargeAmount: MoneyString,
+    surcharge: MoneyString,
     // Given back (cash only).
     changeGiven: MoneyString,
     // amount - changeGiven: what stayed in the till or the account.
@@ -225,7 +225,7 @@ export const ReceiptPresentation = z
     billTotal: MoneyString,
     // false once ticks, line discounts or the document discount changed after presenting:
     // present again before taking payment.
-    valid: z.boolean(),
+    current: z.boolean(),
   })
   .strict();
 export type ReceiptPresentation = z.infer<typeof ReceiptPresentation>;
@@ -336,7 +336,7 @@ export type PresentBillInput = z.infer<typeof PresentBillInput>;
 
 // Ice 20 Oct (P3.2 B4). 0 clears the line's discount; a reason is mandatory otherwise.
 export const LineDiscountInput = z
-  .object({ discount: MoneyString, reason: Reason.optional() })
+  .object({ discount: MoneyString, discountReason: Reason.optional() })
   .strict();
 export type LineDiscountInput = z.infer<typeof LineDiscountInput>;
 
@@ -351,7 +351,7 @@ export const PaymentChannel = z
     kind: PaymentMethod,
     // numeric(5,2): "3.00" = 3% on top of the amount paid through the channel.
     surchargePercent: z.string().regex(/^\d{1,3}(\.\d{1,2})?$/),
-    isActive: z.boolean(),
+    active: z.boolean(),
     sortOrder: z.number().int(),
   })
   .strict();
@@ -379,7 +379,7 @@ export type CreatePaymentChannelInput = z.infer<typeof CreatePaymentChannelInput
 
 // There is no delete: payments reference the channel. Deactivate instead.
 export const PatchPaymentChannelInput = z
-  .object({ name: ChannelName.optional(), surchargePercent: SurchargePercent.optional(), isActive: z.boolean().optional() })
+  .object({ name: ChannelName.optional(), surchargePercent: SurchargePercent.optional(), active: z.boolean().optional() })
   .strict()
   .refine((v) => Object.values(v).some((x) => x !== undefined), { message: 'empty_patch' });
 export type PatchPaymentChannelInput = z.infer<typeof PatchPaymentChannelInput>;
@@ -394,7 +394,8 @@ export type ReorderPaymentChannelsInput = z.infer<typeof ReorderPaymentChannelsI
 // Print history (DECISION-2026-10-15 s2)
 // -----------------------------------------------------------------------------
 
-export const PrintDocType = z.enum(['quotation', 'work_order', 'receipt']);
+// bill_statement = ใบแจ้งยอด: the presented bill printed from the DRAFT receipt. NOT a receipt (no number).
+export const PrintDocType = z.enum(['quotation', 'work_order', 'receipt', 'bill_statement']);
 export type PrintDocType = z.infer<typeof PrintDocType>;
 
 export const PrintCopySet = z.enum(['customer_shop', 'customer_only', 'shop_only']);
@@ -440,7 +441,7 @@ export const PrintResult = z
     statusAtPrint: z.string(),
     copySet: PrintCopySet,
     // A quotation draft prints with a "ฉบับร่าง" mark; a void receipt with "ยกเลิก".
-    mark: z.enum(['draft', 'void']).nullable(),
+    mark: z.enum(['draft', 'void', 'statement']).nullable(),
     // The previous print of this subject, if any.
     previous: z.object({ seq: z.number().int(), printedAt: isoDateTime, printedByName: z.string().nullable() }).strict().nullable(),
     // The content differs from what the previous print showed. Only ever true on a

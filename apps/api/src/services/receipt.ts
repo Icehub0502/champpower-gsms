@@ -260,7 +260,7 @@ export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: r
       qty: r.qty, unit: r.unit, unitPrice: r.unit_price, approvedAmount: r.approved_amount,
       warranty: r.warranty_name ? { termId: r.warranty_term_id, name: r.warranty_name, days: r.warranty_days, maxKm: r.warranty_max_km } : null,
       fulfilledQty: isChild ? null : r.fulfilled_qty, state: st, charged,
-      lineDiscount: isChild ? '0.00' : r.line_discount, lineDiscountReason: isChild ? null : r.line_discount_reason, net,
+      discount: isChild ? '0.00' : r.line_discount, discountReason: isChild ? null : r.line_discount_reason, net,
       fulfilledAt: iso(r.fulfilled_at), fulfilledByName: r.fulfilled_by_name,
     }
   })
@@ -291,7 +291,7 @@ export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: r
     },
     payments: payments.map((p) => ({
       id: p.id, method: p.method as PaymentMethod, channelId: p.channel_id, channelName: p.channel_name,
-      amount: p.amount, surchargeAmount: p.surcharge_amount, changeGiven: p.change_given,
+      amount: p.amount, surcharge: p.surcharge_amount, changeGiven: p.change_given,
       net: formatSatang(toSatang(p.amount) - toSatang(p.change_given)), receivedAt: p.received_at.toISOString(),
       receivedByName: p.received_by_name, reversed: p.reversed,
     })),
@@ -303,7 +303,7 @@ export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: r
       ? {
           presentedAt: doc.presented_at.toISOString(), presentedByName: doc.presented_by ? (names.get(doc.presented_by) ?? null) : null,
           subtotal: presentedTotals.subtotal, totalDiscount: presentedTotals.totalDiscount, billTotal: presentedTotals.billTotal,
-          valid: draft ? presentationValid : true,
+          current: draft ? presentationValid : true,
         }
       : null,
     next: {
@@ -849,4 +849,28 @@ export async function deliveryGate(trx: ScopedTx, jobId: string, noReceiptReason
 export async function issuedReceiptOfJob(trx: ScopedTx, jobId: string): Promise<boolean> {
   const r = await repo.findReceiptOfJob(trx, jobId)
   return r?.status === 'issued'
+}
+
+// -----------------------------------------------------------------------------
+// The bill statement (ใบแจ้งยอด) - the presented bill, printed from the DRAFT
+// receipt. NOT a receipt: no number, no tax meaning (Ice 20 Oct, P3.2 B1).
+// -----------------------------------------------------------------------------
+
+/**
+ * The draft receipt a statement can be printed from, and a fingerprint of what it
+ * shows. Requires a valid presentation: a statement that does not match the
+ * current figures must not be handed to the customer. The caller holds the job lock.
+ */
+export async function statementOf(
+  trx: ScopedTx, jobId: string, opts: { lock?: boolean } = {},
+): Promise<Result<{ doc: repo.ReceiptDocRow; hash: string }>> {
+  const found = await repo.findReceiptOfJob(trx, jobId)
+  if (!found) return err({ code: 'receipt_not_found' })
+  const doc = opts.lock ? await repo.lockReceipt(trx, found.id) : found
+  if (!doc) return err({ code: 'receipt_not_found' })
+  if (doc.status !== 'draft') return err({ code: 'receipt_not_draft' })
+  if (!doc.presented_at || !doc.presented_hash) return err({ code: 'bill_not_presented' })
+  const rows = await repo.getReceiptLines(trx, doc.id)
+  if (presentationHash(compute(doc, rows), rows) !== doc.presented_hash) return err({ code: 'presentation_stale' })
+  return ok({ doc, hash: doc.presented_hash })
 }

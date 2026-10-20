@@ -131,7 +131,7 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(tier2('P3.2 billing API (need
     expect(notShown.body.error).toBe('bill_not_presented')
     const pres = await present(jobId)
     expect(pres.status, JSON.stringify(pres.body)).toBe(200)
-    expect(pres.body.presentation).toMatchObject({ billTotal: '4500.00', valid: true })
+    expect(pres.body.presentation).toMatchObject({ billTotal: '4500.00', current: true })
 
     const short = await POST(`/api/jobs/${jobId}/receipt/close`, { payments: [{ channelId: ch.cash, amount: '4000' }] })
     expect(short.status).toBe(409)
@@ -163,9 +163,9 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(tier2('P3.2 billing API (need
     await PUT(`/api/jobs/${jobId}/receipt/fulfillment`, allDone(d.body))
     expect((await present(jobId)).status).toBe(200)
     const line = d.body.lines[0]
-    const disc = await PUT(`/api/jobs/${jobId}/receipt/lines/${line.id}/discount`, { discount: '100', reason: 'ลูกค้าประจำ' })
+    const disc = await PATCH(`/api/jobs/${jobId}/receipt/lines/${line.id}`, { discount: '100', discountReason: 'ลูกค้าประจำ' })
     expect(disc.status, JSON.stringify(disc.body)).toBe(200)
-    expect(disc.body.presentation.valid).toBe(false)
+    expect(disc.body.presentation.current).toBe(false)
     expect(disc.body.next.blockers).toContain('presentation_stale')
     const stale = await POST(`/api/jobs/${jobId}/receipt/close`, { payments: [{ channelId: ch.cash, amount: '4900' }] })
     expect(stale.status).toBe(409)
@@ -186,7 +186,7 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(tier2('P3.2 billing API (need
     expect(r.status, JSON.stringify(r.body)).toBe(201)
     expect(r.body.surchargeTotal).toBe('150.00')
     expect(r.body.receipt.totals).toMatchObject({ billTotal: '5000.00', surchargeTotal: '150.00', totalPaid: '5150.00', totalDiscount: '0.00' })
-    expect(r.body.receipt.payments[0]).toMatchObject({ amount: '5150.00', surchargeAmount: '150.00' })
+    expect(r.body.receipt.payments[0]).toMatchObject({ amount: '5150.00', surcharge: '150.00' })
   })
 
   it('the 40% ceiling counts line discounts + document discount, judged by the closer', async () => {
@@ -246,9 +246,9 @@ describe.skipIf(!hasDatabase || !adminDatabaseUrl)(tier2('P3.2 billing API (need
     expect((await POST('/api/payment-channels', { name: 'x', kind: 'cash' }, 'advisor')).status).toBe(403)
     const renamed = await PATCH(`/api/payment-channels/${ch.bank}`, { name: 'กสิกร' }, 'manager')
     expect(renamed.status, JSON.stringify(renamed.body)).toBe(200)
-    expect((await PATCH(`/api/payment-channels/${ch.bank}`, { isActive: false }, 'manager')).body.isActive).toBe(false)
+    expect((await PATCH(`/api/payment-channels/${ch.bank}`, { active: false }, 'manager')).body.active).toBe(false)
     const list = await GET('/api/payment-channels?includeInactive=true')
-    expect(list.body.items.some((c: any) => c.id === ch.bank && !c.isActive)).toBe(true)
+    expect(list.body.items.some((c: any) => c.id === ch.bank && !c.active)).toBe(true)
     // Shop B cannot touch shop A's channel.
     expect((await PATCH(`/api/payment-channels/${ch.cash}`, { name: 'hack' }, 'owner', fx.shopB)).status).toBe(404)
   })

@@ -18,7 +18,7 @@ type Result<T> = { ok: true; value: T } | { ok: false; error: ChannelError }
 
 export const channelOut = (r: repo.ChannelRow): PaymentChannel => ({
   id: r.id, name: r.name, kind: r.kind as PaymentChannel['kind'],
-  surchargePercent: r.surcharge_percent, isActive: r.is_active, sortOrder: r.sort_order,
+  surchargePercent: r.surcharge_percent, active: r.is_active, sortOrder: r.sort_order,
 })
 
 /** "3" -> "3.00": the canonical numeric(5,2) text. */

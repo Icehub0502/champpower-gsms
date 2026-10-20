@@ -9,7 +9,7 @@
  *   PATCH /api/jobs/:jobId/receipt                 the discount
  *   POST  /api/jobs/:jobId/receipt/close           payments + number + freeze, one transaction
  *   POST  /api/jobs/:jobId/receipt/void            owner only
- *   PUT   /api/jobs/:jobId/receipt/lines/:lineId/discount   a discount on one line (Ice 20 Oct B4)
+ *   PATCH /api/jobs/:jobId/receipt/lines/:lineId            a discount on one line (Ice 20 Oct B4)
  *   POST  /api/jobs/:jobId/receipt/present     show the customer the bill BEFORE money (Ice 20 Oct B1)
  *   POST  /api/jobs/:jobId/prints                  record a print BEFORE window.print()
  *   GET   /api/jobs/:jobId/prints
@@ -17,7 +17,7 @@
  *   GET   /api/payment-channels                    the shop's own channels (Ice 20 Oct B3)
  *   POST  /api/payment-channels                    owner, manager
  *   PATCH /api/payment-channels/:id                owner, manager (rename / surcharge / deactivate)
- *   PUT   /api/payment-channels-order              owner, manager
+ *   PUT   /api/payment-channels/order              owner, manager
  *
  * The shop and the role come from the JWT only. Routes validate, authorize, call a
  * service inside withShop and shape the answer; there is no SQL here. There is no
@@ -252,9 +252,9 @@ billingRouter.post('/jobs/:jobId/receipt/void', requireAuth, requireRole(...OWNE
 })
 
 // ---------------------------------------------------------------------------
-// PUT /api/jobs/:jobId/receipt/lines/:lineId/discount  (Ice 20 Oct, P3.2 B4)
+// PATCH /api/jobs/:jobId/receipt/lines/:lineId  (Ice 20 Oct, P3.2 B4)
 // ---------------------------------------------------------------------------
-billingRouter.put('/jobs/:jobId/receipt/lines/:lineId/discount', requireAuth, requireRole(...WRITE), async (req: AuthedRequest, res) => {
+billingRouter.patch('/jobs/:jobId/receipt/lines/:lineId', requireAuth, requireRole(...WRITE), async (req: AuthedRequest, res) => {
   const params = z.object({ jobId: z.string().uuid(), lineId: z.string().uuid() }).safeParse(req.params)
   const body = LineDiscountInput.safeParse(req.body)
   if (!params.success) { refuse(res, 404, { error: 'receipt_line_not_found', message: 'ไม่พบบรรทัดนี้' }); return }
@@ -262,7 +262,7 @@ billingRouter.put('/jobs/:jobId/receipt/lines/:lineId/discount', requireAuth, re
   const auth = req.auth!
   try {
     const r = await withShop(db, auth.shop, (trx) =>
-      svc.setLineDiscount(trx, auth.shop, params.data.jobId, { id: auth.sub, role: auth.role }, params.data.lineId, body.data.discount, body.data.reason))
+      svc.setLineDiscount(trx, auth.shop, params.data.jobId, { id: auth.sub, role: auth.role }, params.data.lineId, body.data.discount, body.data.discountReason))
     if (!r.ok) { sendError(res, r.error); return }
     await sendView(res, 200, params.data.jobId, auth)
   } catch (err) { sendPgError(res, err) }
@@ -330,7 +330,7 @@ billingRouter.patch('/payment-channels/:id', requireAuth, requireRole(...CHANNEL
   const auth = req.auth!
   try {
     const r = await withShop(db, auth.shop, (trx) => channelSvc.patch(trx, auth.shop, auth.sub, params.data.id,
-      { name: body.data.name, surchargePercent: body.data.surchargePercent, isActive: body.data.isActive }))
+      { name: body.data.name, surchargePercent: body.data.surchargePercent, isActive: body.data.active }))
     if (!r.ok) { sendChannelError(res, r.error); return }
     res.json(PaymentChannel.parse(r.value))
   } catch (err) {
@@ -339,7 +339,7 @@ billingRouter.patch('/payment-channels/:id', requireAuth, requireRole(...CHANNEL
   }
 })
 
-billingRouter.put('/payment-channels-order', requireAuth, requireRole(...CHANNEL_WRITE), async (req: AuthedRequest, res) => {
+billingRouter.put('/payment-channels/order', requireAuth, requireRole(...CHANNEL_WRITE), async (req: AuthedRequest, res) => {
   const body = ReorderPaymentChannelsInput.safeParse(req.body)
   if (!body.success) { badRequest(res, body.error, 'ข้อมูลไม่ถูกต้อง'); return }
   const auth = req.auth!
@@ -358,6 +358,9 @@ function sendPrintError(res: Response, e: printSvc.PrintError): void {
     case 'quotation_not_confirmed': return refuse(res, 409, { error: 'quotation_not_confirmed', message: 'ใบเสนอราคายังไม่ได้ยืนยันผลลูกค้า' })
     case 'receipt_not_found': return refuse(res, 404, { error: 'receipt_not_found', message: 'งานนี้ยังไม่มีใบเสร็จ' })
     case 'receipt_not_issued': return refuse(res, 409, { error: 'receipt_not_issued', message: 'ใบเสร็จยังไม่ได้ออกเลข พิมพ์ไม่ได้' })
+    case 'receipt_not_draft': return refuse(res, 409, { error: 'receipt_not_draft', message: 'ใบเสร็จนี้ออกเลขแล้ว ใช้ใบแจ้งยอดไม่ได้' })
+    case 'bill_not_presented': return refuse(res, 409, { error: 'bill_not_presented', message: 'ต้องแสดงยอดบิลให้ลูกค้าก่อนพิมพ์ใบแจ้งยอด' })
+    case 'presentation_stale': return refuse(res, 409, { error: 'presentation_stale', message: 'ยอดบิลเปลี่ยนไปหลังแสดงให้ลูกค้าดู กรุณาแสดงยอดบิลใหม่' })
     case 'print_content_changed':
       return refuse(res, 409, {
         error: 'print_content_changed',

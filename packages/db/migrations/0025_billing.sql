@@ -303,14 +303,15 @@ CREATE TRIGGER trg_payment_reversals_append_only BEFORE UPDATE OR DELETE ON paym
 -- row that exists. It records "the system produced a print", not "paper came
 -- out": the browser cannot tell a print from a cancelled dialog.
 --
--- subject_id is the document id for a quotation or a receipt, and the JOB id for
+-- bill_statement = ใบแจ้งยอด, the presented bill printed from the DRAFT receipt (not a receipt).
+-- subject_id is the document id for a quotation, a receipt or a bill_statement, and the JOB id for
 -- a work order (which has no document of its own, A-4). N counts per subject.
 CREATE TABLE document_prints (
   id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   shop_id             uuid NOT NULL REFERENCES shops(id) ON DELETE RESTRICT,
   job_id              uuid NOT NULL REFERENCES jobs(id) ON DELETE RESTRICT,
   document_id         uuid REFERENCES documents(id) ON DELETE RESTRICT,
-  doc_type            text NOT NULL CHECK (doc_type IN ('quotation', 'work_order', 'receipt')),
+  doc_type            text NOT NULL CHECK (doc_type IN ('quotation', 'work_order', 'receipt', 'bill_statement')),
   subject_id          uuid NOT NULL,
   seq                 integer NOT NULL CHECK (seq >= 1),
   status_at_print     text NOT NULL,
