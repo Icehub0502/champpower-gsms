@@ -57,6 +57,8 @@
   --sidebar-active: #26292E;
   --radius-lg: 16px;
   --radius-btn: 12px;
+  /* Dialog card (components/ui/Modal) — its footer rounds the same corners. */
+  --radius-modal: 14px;
   /* Text inputs and small form boxes — the 8px every .field input already uses. */
   --radius-input: 8px;
 
@@ -113,6 +115,19 @@
 
   /* Minimum touch target. Applied under @media (pointer: coarse) only. */
   --touch-min: 44px;
+
+  /* Stacking order of the fixed/sticky layers, lowest first. Modals are
+     portalled to <body> (components/ui/Modal.tsx) so these compare directly:
+     a page's sticky summary < sticky top bar < phone dock < modal. */
+  --z-sticky: 10;
+  --z-topbar: 15;
+  --z-dock: 30;
+  --z-modal: 50;
+
+  /* Quotation screen's sticky totals bar: tall enough for TWO lines (six-figure
+     amounts wrap at 390px), so its height is fixed and the scroll-padding that
+     keeps focused controls clear of it can be computed from this one value. */
+  --qt-totals-bar-h: 72px;
 
   /* ---- Public /board scale. ONE unit, --board-u, and every size on the
      board is a multiple of it (calc(N * var(--board-u))), so the TV tier
@@ -1050,13 +1065,14 @@ button:focus-visible, a:focus-visible {
 
 /* ---- Modal (centered dialog, used by job-card pickers etc.) ---- */
 .modal-backdrop {
-  position: fixed; inset: 0; z-index: 50; background: rgba(34, 40, 49, .5);
+  position: fixed; inset: 0; z-index: var(--z-modal); background: rgba(34, 40, 49, .5);
   display: flex; align-items: center; justify-content: center; padding: 16px;
   animation: modal-fade .15s var(--ease);
 }
 .modal-card {
-  background: var(--card-bg); border-radius: 14px; width: 100%; max-width: 420px;
-  max-height: 82vh; display: flex; flex-direction: column; box-shadow: var(--shadow-lg);
+  background: var(--card-bg); border-radius: var(--radius-modal); width: 100%; max-width: 420px;
+  /* dvh after vh: on a phone, 82vh measures past the browser's own toolbar. */
+  max-height: 82vh; max-height: 82dvh; display: flex; flex-direction: column; box-shadow: var(--shadow-lg);
   animation: modal-in .18s var(--ease);
 }
 @keyframes modal-fade { from { opacity: 0; } to { opacity: 1; } }
@@ -1075,6 +1091,15 @@ button:focus-visible, a:focus-visible {
 .modal-body .chip { font-size: 14px; padding: 9px 15px; }
 .modal-body .edit-form { display: flex; flex-direction: column; width: 100%; }
 .modal-body .edit-form .field { margin-bottom: 12px; }
+/* Optional action row (Modal `footer`): outside the scrolling body, so it is
+   always on screen however long the body is. */
+.modal-foot {
+  flex-shrink: 0; padding: 12px 18px; border-top: 1px solid var(--border);
+  background: var(--card-bg); border-radius: 0 0 var(--radius-modal) var(--radius-modal);
+}
+/* Focus is put on the card itself when a dialog opens (Modal.tsx) — so the
+   screen reader starts at the title. That is not a control: no ring. */
+.modal-card:focus { outline: none; }
 
 /* ---- LINE group summary ---- */
 .line-summary-box {
@@ -1148,7 +1173,7 @@ button:focus-visible, a:focus-visible {
   display: flex; align-items: center; gap: 10px; padding: 10px var(--content-pad-x-phone);
   min-height: 60px;
   background: var(--card-bg); border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; z-index: 15; flex-wrap: wrap;
+  position: sticky; top: 0; z-index: var(--z-topbar); flex-wrap: wrap;
 }
 .topbar-brand { display: flex; align-items: center; color: var(--hazard); flex-shrink: 0; }
 .topbar-search { display: none; position: relative; flex: 1 1 180px; max-width: 250px; min-width: 0; }
@@ -1180,7 +1205,7 @@ button:focus-visible, a:focus-visible {
 
 /* Bottom command dock (Figma 80) — phone base. */
 .dock {
-  position: fixed; z-index: 30;
+  position: fixed; z-index: var(--z-dock);
   left: 50%; transform: translateX(-50%);
   bottom: calc(var(--dock-gap) + env(safe-area-inset-bottom, 0px));
   width: max-content; max-width: min(var(--dock-max-w), calc(100% - var(--dock-gap) * 2));
@@ -1824,12 +1849,17 @@ button:focus-visible, a:focus-visible {
 .qt-decline-form { flex: 1 1 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 10px; padding: 10px 12px; background: var(--paper); border-radius: var(--radius); }
 .qt-decline-form .field { margin-bottom: 8px; }
 
-.qt-totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+/* Two columns only where each has room for "รวมรายการ" beside a six-figure
+   amount (~170px); narrower (a 390 phone, the right column at 1024) they
+   stack instead of breaking the label as "รวม / รายการ" (ux P3.1 #9). */
+.qt-totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 10px; margin-top: 12px; }
+.qt-totals-card .qt-totals { margin-top: 0; }
 .qt-totals-col { background: var(--paper); border-radius: var(--radius); padding: 10px 12px; }
 .qt-totals-col.is-approved { border: 2px solid var(--success); }
 .qt-totals-col h4 { margin: 0 0 6px; font-size: 13px; color: var(--text-2); }
 .qt-totals-col dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 0; font-size: 12.5px; color: var(--text-2); }
-.qt-totals-col dd { margin: 0; text-align: right; }
+.qt-totals-col dt { white-space: nowrap; }
+.qt-totals-col dd { margin: 0; text-align: right; white-space: nowrap; }
 .qt-totals-sum { margin: 6px 0 0; text-align: right; font-size: 20px; font-weight: 800; color: var(--text-strong); }
 .qt-discount { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
 .qt-discount .field { flex: 1 1 160px; margin-bottom: 0; }
@@ -1844,6 +1874,27 @@ button:focus-visible, a:focus-visible {
 .qt-hint.tone-warning { color: var(--warning); }
 .qt-hint.tone-danger { color: var(--red); }
 .qt-confirm-total { font-size: 15px; }
+.qt-confirm-discard p { margin: 0 0 8px; font-size: 14px; }
+
+/* Both totals in one line, always in view (CLAUDE.md §5.1 #3): sticky to the
+   bottom of the viewport while the page scrolls, and in flow at the end of the
+   page. On phones it rides just above the fixed dock (--dock-clearance is the
+   dock's height plus its gaps), never under it. Hidden ≥1024 when the full
+   panel sits sticky in the right column (no .is-with-catalog). */
+.qt-totals-bar {
+  position: sticky; z-index: var(--z-sticky); bottom: var(--dock-clearance);
+  display: flex; flex-wrap: wrap; justify-content: center; align-content: center; align-items: baseline; gap: 2px 10px;
+  min-height: var(--qt-totals-bar-h); margin: 12px 0 0; padding: 10px 14px;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); font-size: 13.5px; color: var(--text-2);
+}
+.qt-totals-bar > span { white-space: nowrap; }
+.qt-totals-bar strong { font-size: 15px; color: var(--text-strong); }
+.qt-totals-bar .is-approved { border-bottom: 2px solid var(--success); }
+/* Keyboard focus and scrollIntoView stop short of the dock + the bar, so a
+   focused approve button or input is never hidden behind them. */
+html:has(.qt-totals-bar) { scroll-padding-bottom: calc(var(--dock-clearance) + var(--qt-totals-bar-h) + 8px); }
+@media print { .qt-totals-bar { display: none; } }
 
 .qt-catalog .qt-search { margin-bottom: 10px; }
 .qt-unlinked { display: flex; flex-direction: column; gap: 8px; }
@@ -1867,12 +1918,25 @@ button:focus-visible, a:focus-visible {
   .qt-decline-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .qt-decline-form .row-flex { grid-column: 1 / -1; }
   .qt-line-controls { flex: 0 1 auto; }
+  /* No dock from 768 up: the bar sits a gap off the bottom edge. */
+  .qt-totals-bar { bottom: var(--dock-gap); }
+  html:has(.qt-totals-bar) { scroll-padding-bottom: calc(var(--dock-gap) + var(--qt-totals-bar-h) + 8px); }
 }
 @media (min-width: 1024px) {
   .qt-layout { grid-template-columns: minmax(0, 1.55fr) minmax(320px, 1fr); }
-  .qt-side { position: sticky; top: 12px; }
+  /* Below the sticky top bar, not under it (it is --topbar-h tall from 768 up). */
+  /* Scrolls on its own when taller than the space left, so the bottom of a
+     long catalog list is reachable while the column stays stuck. */
+  .qt-side {
+    position: sticky; top: calc(var(--topbar-h) + 12px);
+    max-height: calc(100dvh - var(--topbar-h) - 24px); overflow-y: auto;
+  }
+  /* The full totals panel is sticky in the right column: the bar would repeat it. */
+  .qt-totals-bar:not(.is-with-catalog) { display: none; }
+  html:has(.qt-totals-bar:not(.is-with-catalog)) { scroll-padding-bottom: 0; }
 }
 @media (pointer: coarse) {
   .qt-line-controls .btn, .qt-hit, .qt-actions .btn, .qt-price input { min-height: var(--touch-min); }
+  .qt-confirm-discard .btn, .modal-foot .btn { min-height: var(--touch-min); }
 }
 .qt-reject { display: flex; justify-content: flex-end; margin-bottom: 12px; }

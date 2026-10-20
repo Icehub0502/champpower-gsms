@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useEffectEvent, useId, useRef, useState, type ReactNode } from 'react';
 import type { AddLineInput, CatalogHit, Quotation, SearchSection } from '@gsms/contracts/index.js';
 import { Icon } from '../../components/ui/Icon';
 import { api } from '../../lib/api/client';
@@ -24,6 +24,10 @@ interface CatalogPanelProps {
   vehicleModelLinked: boolean;
   /** "เลือกรุ่นรถ" / "เพิ่มรุ่นใหม่", shown under the notice when the car is not matched. */
   modelPicker: ReactNode;
+  /** Put the cursor in the search box on mount — right after "สร้างใบเสนอราคา" only. */
+  autoFocusSearch?: boolean;
+  /** Called once the search box took that focus, so the page can drop the request. */
+  onAutoFocused?: () => void;
 }
 
 /** What to send for a hit: a set is expanded by the server, an offered item re-added by its own id. */
@@ -40,7 +44,7 @@ function addBody(hit: CatalogHit, unitPrice: string | undefined): AddLineInput |
  * line by hand (v2 §7). The order and the price for this car are the
  * server's; this panel never prices anything.
  */
-export function CatalogPanel({ jobId, busyKey, run, guard, vehicleModelLinked, modelPicker }: CatalogPanelProps) {
+export function CatalogPanel({ jobId, busyKey, run, guard, vehicleModelLinked, modelPicker, autoFocusSearch = false, onAutoFocused }: CatalogPanelProps) {
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const [needPrice, setNeedPrice] = useState<(CatalogHit & { itemId: string }) | null>(null);
@@ -52,6 +56,16 @@ export function CatalogPanel({ jobId, busyKey, run, guard, vehicleModelLinked, m
   const search = useCatalogSearch(jobId, query);
   const hits = search.result?.items ?? [];
   const busy = busyKey !== null;
+
+  // Mount-time only: a later flip of the prop must not pull the cursor out of a box staff are in.
+  const [focusOnMount] = useState(autoFocusSearch);
+  // The latest callback, read inside the mount effect without making it a dependency.
+  const onAutoFocusedEvent = useEffectEvent(() => onAutoFocused?.());
+  useEffect(() => {
+    if (!focusOnMount) return;
+    inputRef.current?.focus();
+    onAutoFocusedEvent();
+  }, [focusOnMount]);
 
   async function add(hit: CatalogHit, unitPrice: string | undefined, doneNotice: string | null): Promise<boolean> {
     const body = addBody(hit, unitPrice);
