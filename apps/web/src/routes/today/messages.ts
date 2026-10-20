@@ -18,6 +18,9 @@ export function moveErrorText(err: unknown, from: string, to: string): string {
       return 'มีคนเปลี่ยนสถานะงานนี้ไปแล้ว — โหลดกระดานใหม่ให้แล้ว กรุณาตรวจสอบอีกครั้ง';
     case 'illegal_status_move':
       return `ย้ายงานจาก "${statusOf(from).label}" ไป "${statusOf(to).label}" ไม่ได้`;
+    // P3.2 B1: a normal job leaves only with a closed bill.
+    case 'receipt_required':
+      return 'งานนี้ยังไม่ได้ปิดบิล — ต้องเก็บเงินและออกใบเสร็จก่อน จึงกด “ส่งแล้ว” ได้';
     case 'forbidden':
       return 'การรับหรือยกเลิกการตัดสินใจของลูกค้าต้องทำโดยหน้าร้าน';
     default:
@@ -38,6 +41,8 @@ export function undoErrorText(err: unknown): string {
       return 'มีคนเปลี่ยนสถานะงานนี้ไปแล้ว — โหลดข้อมูลใหม่ให้แล้ว กรุณาตรวจสอบอีกครั้ง';
     case 'illegal_status_move':
       return 'ย้อนกลับงานนี้ไม่ได้ — งานไม่ได้อยู่ในสถานะ “ส่งแล้ว” หรือถูกดำเนินการต่อไปแล้ว';
+    case 'receipt_issued':
+      return 'งานนี้ออกใบเสร็จแล้ว ย้อนกลับเป็น “พร้อมส่ง” ไม่ได้ — ต้องให้เจ้าของยกเลิกใบเสร็จก่อน';
     case 'forbidden':
       return 'คุณไม่มีสิทธิ์ย้อนกลับรายการนี้';
     default:
@@ -79,6 +84,11 @@ function commonErrorText(err: unknown): string {
     if (err.status === 429) return 'ทำรายการถี่เกินไป กรุณารอสักครู่แล้วลองใหม่';
   }
   return 'บันทึกไม่สำเร็จ กรุณาลองใหม่';
+}
+
+/** The delivery gate (P3.2 B1): ส่งแล้ว refused because the job has no closed receipt. */
+export function isReceiptRequired(err: unknown): boolean {
+  return err instanceof ApiError && err.message === 'receipt_required';
 }
 
 /** Did the server refuse because the board the user was looking at is stale? */

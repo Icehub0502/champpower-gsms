@@ -5,6 +5,8 @@ import type { AuthUser, Role } from '../hooks/useAuth';
 import { BoltIcon } from './ui/BoltIcon';
 import { Icon } from './ui/Icon';
 import { Modal } from './ui/Modal';
+import { canManageChannels, showsDailyInMenu } from '../routes/bill/billLabels';
+
 
 interface AppShellProps {
   user: AuthUser;
@@ -21,9 +23,12 @@ interface AppShellProps {
 // link that always says "not available" is worse than no link, so none of
 // them are listed here. /jobs keeps its route (job detail and check-in land
 // on /jobs/:id) but is no longer a nav entry.
-const NAV_ITEMS: { to: string; label: string; icon: Parameters<typeof Icon>[0]['name'] }[] = [
+const NAV_ITEMS: { to: string; label: string; icon: Parameters<typeof Icon>[0]['name']; show?: (role: Role | null) => boolean }[] = [
   { to: '/today', label: 'งานวันนี้', icon: 'list' },
   { to: '/checkin', label: 'รับรถ', icon: 'plus' },
+  // P3.2: manager and up only in the menu (the API decides what each role may read or change).
+  { to: '/daily', label: 'สรุปรายวัน', icon: 'money', show: showsDailyInMenu },
+  { to: '/settings/payment-channels', label: 'ช่องทางชำระ', icon: 'settings', show: canManageChannels },
 ];
 
 const ROLE_LABEL_TH: Record<Role, string> = {
@@ -94,7 +99,7 @@ export function AppShell({ user, role, online, onLogout, children }: AppShellPro
           <div className="sidebar-brand-sub">Service OS</div>
         </div>
         <nav className="sidebar-nav" aria-label="เมนูหลัก">
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.filter((item) => !item.show || item.show(role)).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -161,7 +166,7 @@ export function AppShell({ user, role, online, onLogout, children }: AppShellPro
           first; it is position:fixed, so source order does not move it. */}
       <nav className="dock" aria-label="เมนูลัด">
         <span className="dock-badge" aria-hidden="true">⌘</span>
-        {NAV_ITEMS.map((item) => (
+        {NAV_ITEMS.filter((item) => !item.show || item.show(role)).map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
