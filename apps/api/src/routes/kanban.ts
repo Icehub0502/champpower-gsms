@@ -48,6 +48,7 @@ import { writeAudit } from '../services/audit.js'
 import { fieldErrorsOf } from '../lib/fieldErrors.js'
 import { roleMayMove, STATUS_WRITE_ROLES } from '../lib/statusAuthz.js'
 import { BOARD_READ_ROLES } from './queue.js'
+import { deliveryGate, issuedReceiptOfJob } from '../services/receipt.js'
 import { auditClosedByJob, closeQuotationForJobEnd, jobBackToQuotedBlocked, type CloseCheck } from '../services/quotation.js'
 
 export const kanbanRouter = asyncRouter()
@@ -279,6 +280,8 @@ kanbanRouter.patch(
       | { kind: 'status_changed'; current: string }
       | { kind: 'illegal'; from: string }
       | { kind: 'quotation_confirmed' }
+      | { kind: 'receipt_required'; nothingToBill: boolean }
+      | { kind: 'receipt_issued' }
       | { kind: 'decline_reason_required' }
       | { kind: 'decline_note_required' }
       | { kind: 'decline_reason_not_allowed' }
@@ -313,6 +316,20 @@ kanbanRouter.patch(
       // layered onto the existing job-status transition table.
       if (fromStatus === 'approved' && to === 'quoted' && await jobBackToQuotedBlocked(trx, jobId)) {
         return { kind: 'quotation_confirmed' }
+      }
+
+      // P3.2 B1 (DEFAULT pending Ice): money before the keys. A normal job reaches 'delivered' only with an
+      // ISSUED receipt (warranty claims are exempt); a job with nothing to bill may go with a written reason.
+      // And a delivery cannot be undone while a receipt stands: void it first (CLAUDE.md s5 rule 5, AC-E8).
+      // The job row is already locked, so no receipt can be issued or voided under this decision.
+      let deliveredWithoutReceiptReason: string | null = null
+      if (to === 'delivered') {
+        const gate = await deliveryGate(trx, jobId, parsed.data.noReceiptReason)
+        if (!gate.ok) return { kind: 'receipt_required', nothingToBill: gate.nothingToBill }
+        if (gate.waivedBy === 'no_bill_reason') deliveredWithoutReceiptReason = parsed.data.noReceiptReason!.trim()
+      }
+      if (job.status === 'delivered' && to === 'ready' && await issuedReceiptOfJob(trx, jobId)) {
+        return { kind: 'receipt_issued' }
       }
 
       // P3.1 Q1: a job ending without a repair closes its own live quotation,
@@ -359,6 +376,13 @@ kanbanRouter.patch(
           sub_state: subState,
         },
       })
+
+      if (deliveredWithoutReceiptReason) {
+        await writeAudit(trx, {
+          shopId: auth.shop, actorId: auth.sub, action: 'job_delivered_without_receipt', entityType: 'jobs', entityId: jobId,
+          after: { reason: deliveredWithoutReceiptReason, status_history_id: historyRow.id },
+        })
+      }
 
       // Undoing a delivery gets its own audit action so the owner can list
       // every undo without reading every status change. It records WHICH
@@ -414,6 +438,17 @@ kanbanRouter.patch(
           error: 'quotation_confirmed',
           message: 'ใบเสนอราคายืนยันผลแล้ว ถอยกลับ "เสนอราคา" ไม่ได้ ต้องถอยการยืนยันหรือออกใบฉบับใหม่',
         })
+        return
+      case 'receipt_required':
+        res.status(409).json({
+          error: 'receipt_required',
+          message: outcome.nothingToBill
+            ? 'งานนี้ไม่มียอดต้องเก็บเงิน ใส่เหตุผลแล้วส่งรถได้ (noReceiptReason)'
+            : 'ต้องปิดบิลและออกใบเสร็จก่อนส่งรถ',
+        })
+        return
+      case 'receipt_issued':
+        res.status(409).json({ error: 'receipt_issued', message: 'งานนี้ออกใบเสร็จแล้ว ถอยสถานะไม่ได้ ต้องให้เจ้าของยกเลิกใบเสร็จก่อน' })
         return
       case 'decline_reason_required':
         res.status(400).json({

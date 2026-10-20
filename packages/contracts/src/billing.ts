@@ -36,6 +36,8 @@ export const FulfilledQtyString = z
   .string()
   .trim()
   .regex(/^\d{1,10}(\.\d{1,2})?$/, 'invalid_qty');
+// Signed: a drawer can be short. Used only where a negative is meaningful (cash variance).
+export const SignedMoneyString = z.string().trim().regex(/^-?[0-9]{1,10}([.][0-9]{1,2})?$/, 'invalid_money');
 const Reason = z.string().trim().min(1).max(500);
 
 export const PaymentMethod = z.enum(['cash', 'transfer', 'card']);
@@ -150,6 +152,8 @@ export const ReceiptBlocker = z.enum([
   'discount_reason_required',
   'discount_requires_manager',
   'nothing_to_bill',
+  // DEFAULT pending Ice (P3.2 B2): a deposit is held against this job and P3.2 cannot offset it.
+  'deposit_held',
 ]);
 export type ReceiptBlocker = z.infer<typeof ReceiptBlocker>;
 
@@ -396,7 +400,7 @@ export const CashClosing = z
     revision: z.number().int().min(1),
     expectedCash: MoneyString,
     countedCash: MoneyString,
-    variance: MoneyString,
+    variance: SignedMoneyString,
     note: z.string().nullable(),
     recountReason: z.string().nullable(),
     closedByName: z.string().nullable(),
@@ -467,7 +471,7 @@ export const DailySummary = z
     cash: z
       .object({
         // Cash net of change and refunds for the day: what the drawer should hold.
-        // No opening float (the schema has none; owner B7).
+        // No opening float (the schema has none; DEFAULT pending Ice, P3.2 B7).
         expected: MoneyString,
         // Latest count for the day, if any; history = every revision, oldest first.
         closing: CashClosing.nullable(),
@@ -560,6 +564,7 @@ export const PrintNotAllowedError = refusal('print_not_allowed');
 export const RecountReasonRequiredError = refusal('recount_reason_required');
 export const CountFutureDateError = refusal('count_future_date');
 export const AppendOnlyError = refusal('record_append_only');
+export type AppendOnlyError = z.infer<typeof AppendOnlyError>;
 
 export const BillingBody = z.union([
   ReceiptNotFoundError, ReceiptExistsError, ReceiptNotDraftError, ReceiptNotIssuedError, ClaimNoReceiptError,

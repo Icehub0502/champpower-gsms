@@ -602,15 +602,19 @@ export interface JobWithVehicleRow {
   province: string | null
   brand: string | null
   model: string | null
+  color: string | null
+  customer_name: string | null
+  mileage_in_km: number | null
 }
 
 export async function jobWithVehicle(trx: ScopedTx, jobId: string): Promise<JobWithVehicleRow | undefined> {
   return trx
     .selectFrom('jobs as j')
     .innerJoin('vehicles as v', 'v.id', 'j.vehicle_id')
+    .innerJoin('customers as c', 'c.id', 'j.customer_id')
     .select([
       'j.id', 'j.job_number', 'j.status', 'j.customer_id', 'j.vehicle_id', 'v.vehicle_model_id',
-      'v.plate', 'v.province', 'v.brand', 'v.model',
+      'v.plate', 'v.province', 'v.brand', 'v.model', 'v.color', 'c.name as customer_name', 'j.mileage_in_km',
     ])
     .where('j.id', '=', jobId)
     .where('j.deleted_at', 'is', null)

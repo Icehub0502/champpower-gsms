@@ -12,7 +12,7 @@ import {
 import { approvedLineSatang } from './quote.js';
 
 // -----------------------------------------------------------------------------
-// Payment methods (owner B3): cash, transfer, card. Transfer and QR are one
+// Payment methods (DEFAULT pending Ice, P3.2 B3): cash, transfer, card. Transfer and QR are one
 // method. `credit` is gone (no customer owes this shop), `deposit_offset`
 // belongs to P3.3 and is not accepted from a client.
 // -----------------------------------------------------------------------------
@@ -26,7 +26,7 @@ export const PAYMENT_METHOD_LABEL: Record<PaymentMethod, string> = {
 };
 
 // -----------------------------------------------------------------------------
-// The discount ceiling (DECISION-2026-10-07 s2.2; owner B4)
+// The discount ceiling (DECISION-2026-10-07 s2.2; DEFAULT pending Ice, P3.2 B4)
 //
 // DEFAULT pending Ice (P3.2 B4): measured on the FINAL receipt discount divided by
 // the pre-discount total of the lines that were done, wherever the discount came
@@ -317,7 +317,7 @@ export function settlePayments(dueSatang: number, entries: readonly PaymentEntry
 }
 
 // -----------------------------------------------------------------------------
-// Daily cash count (owner B7)
+// Daily cash count (DEFAULT pending Ice, P3.2 B7)
 // -----------------------------------------------------------------------------
 
 /** counted - expected, satang. Negative = the drawer is short. */

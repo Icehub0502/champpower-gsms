@@ -5,7 +5,7 @@
 --              discount_entered_at, discount_approved_by, receipt_snapshot), a partial unique index
 --              (one LIVE receipt per job) and a CHECK that a receipt is never
 --              'signed'.
---           2. jobs: tax_invoice_requested (+ _at, _by). The owner's B8 answer:
+--           2. jobs: tax_invoice_requested (+ _at, _by). DEFAULT pending Ice (P3.2 B8):
 --              there is no tax-invoice UI yet, only a flag so requests made
 --              between go-live and the VAT room can be collected later.
 --           3. payments is made APPEND-ONLY by a trigger (it was only so by
@@ -155,7 +155,7 @@ ALTER TABLE documents ADD CONSTRAINT ck_receipt_never_signed
 ALTER TABLE documents VALIDATE CONSTRAINT ck_receipt_never_signed;
 
 -- -----------------------------------------------------------------------------
--- 2. jobs — "the customer asked for a tax invoice" (owner B8)
+-- 2. jobs — "the customer asked for a tax invoice" (DEFAULT pending Ice, P3.2 B8)
 -- -----------------------------------------------------------------------------
 ALTER TABLE jobs
   ADD COLUMN tax_invoice_requested    boolean NOT NULL DEFAULT false,

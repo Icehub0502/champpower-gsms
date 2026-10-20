@@ -93,6 +93,8 @@ function sendServiceError(res: Response, error: quotationSvc.QuotationError): vo
     case 'set_amount_required': return refuse(res, 409, { error: 'set_amount_required', message: 'ชุดที่ตัดบางรายการออกต้องกรอกยอดใหม่ก่อนยืนยัน', lineIds: error.lineIds })
     case 'discount_required': return refuse(res, 400, { error: 'discount_required', message: 'ลูกค้าอนุมัติน้อยกว่าที่เสนอ กรุณาใส่ส่วนลดใหม่ก่อนยืนยัน', fields: { 'adjustments.discount.amount': ['required'] } })
     case 'discount_exceeds_approved': return refuse(res, 400, { error: 'discount_exceeds_approved', message: 'ส่วนลดมากกว่ายอดที่ลูกค้าอนุมัติ', fields: { 'adjustments.discount.amount': ['exceeds_approved'] }, max: error.max })
+    case 'discount_requires_manager': res.status(403).json({ error: 'discount_requires_manager', message: 'ส่วนลดเกิน 40% ต้องให้ผู้จัดการหรือรองผู้จัดการเป็นคนยืนยัน', percent: error.percent, ceilingPercent: 40 }); return
+    case 'discount_reason_required': res.status(400).json({ error: 'discount_reason_required', message: 'ส่วนลดเกิน 40% ต้องระบุเหตุผล', fields: { 'adjustments.discount.reason': ['required'] } }); return
     case 'approved_amount_not_allowed': return refuse(res, 400, { error: 'approved_amount_not_allowed', message: 'บรรทัดนี้ไม่ต้องกรอกยอดใหม่', lineId: error.lineId })
     case 'amount_over_2x': return refuse(res, 422, { error: 'amount_over_2x', message: 'ยอดนี้เกิน 2 เท่าของราคาที่เสนอ น่าจะพิมพ์ผิด ถ้าตั้งใจจริงให้ออกใบเสนอราคาฉบับใหม่', lineId: error.lineId, offered: error.offered, max: error.max })
     case 'amount_above_offer_free_set': return refuse(res, 422, { error: 'amount_above_offer_free_set', message: 'ชุดนี้เสนอไว้ที่ 0 บาท จะเพิ่มราคาต้องออกใบเสนอราคาฉบับใหม่', lineId: error.lineId })
@@ -358,7 +360,7 @@ quotationRouter.post(
     const result = await withShop(db, auth.shop, async (trx) => {
       const doc = await quotationRepo.findLiveQuotation(trx, params.data.jobId)
       if (!doc) return { ok: false as const, error: { code: 'quotation_not_found' as const } }
-      return quotationSvc.confirm(trx, auth.shop, doc.id, body.data.adjustments, auth.sub)
+      return quotationSvc.confirm(trx, auth.shop, doc.id, body.data.adjustments, auth.sub, auth.role)
     })
     if (!result.ok) { sendServiceError(res, result.error); return }
     const view = await loadView(params.data.jobId, auth)
@@ -474,7 +476,7 @@ quotationRouter.get(
     const auth = req.auth!
     const result = await withShop(db, auth.shop, (trx) => quotationSvc.workOrder(trx, params.data.jobId))
     if (!result.ok) { sendServiceError(res, result.error); return }
-    const { job, lines } = result.value
+    const { job, quotation, lines } = result.value
     res.json(WorkOrder.parse({
       jobId: job.id,
       jobNumber: job.job_number,
@@ -482,6 +484,11 @@ quotationRouter.get(
       province: job.province,
       brand: job.brand,
       model: job.model,
+      color: job.color,
+      customerName: job.customer_name,
+      mileageInKm: job.mileage_in_km,
+      quotationNumber: quotation.number,
+      quotationRevision: quotation.revision,
       lines: lines.map((l) => ({
         id: l.id, parentLineId: l.parent_line_id, sortOrder: l.sort_order, lineType: l.line_type,
         name: l.name_snapshot, brand: l.brand_snapshot, qty: l.qty, unit: l.unit, warrantyName: l.warranty_name,
