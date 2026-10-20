@@ -350,6 +350,13 @@ export const WorkOrder = z
     province: z.string().nullable(),
     brand: z.string().nullable(),
     model: z.string().nullable(),
+    // P3.2: the header the printed sheet needs. No phone, no money (CLAUDE.md s12.1).
+    color: z.string().nullable().default(null),
+    customerName: z.string().nullable().default(null),
+    mileageInKm: z.number().int().nullable().default(null),
+    // The confirmed quotation the lines come from. The sheet has no number of its own (A-4).
+    quotationNumber: z.string().nullable().default(null),
+    quotationRevision: z.number().int().nullable().default(null),
     // Empty until a quotation has been confirmed with at least one approved line.
     lines: z.array(WorkOrderLine),
   })

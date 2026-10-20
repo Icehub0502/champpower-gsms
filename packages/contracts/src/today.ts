@@ -180,6 +180,11 @@ export const UpdateJobStatusInput = z.object({
   // 'chose_alternative' is not accepted (it is not a refusal). Ignored otherwise.
   declineReason: z.enum(['too_expensive', 'next_time', 'going_elsewhere', 'not_needed_yet', 'other']).optional(),
   declineNote: z.string().trim().min(1).max(500).optional(),
+  // P3.2 B1: moving a normal job to 'delivered' needs an issued receipt. The one
+  // exception is a job with NOTHING to bill (the confirmed quotation approves
+  // 0 baht, or every approved line was ticked "not done" / the discount equals
+  // the base): staff gives a reason instead. Ignored otherwise.
+  noReceiptReason: z.string().trim().min(1).max(500).optional(),
 });
 export type UpdateJobStatusInput = z.infer<typeof UpdateJobStatusInput>;
 

@@ -171,6 +171,9 @@ export interface Customers {
 
 export interface DailyClosings {
   business_date: Timestamp;
+  recount_reason: string | null;
+  revision: Generated<number>;
+  supersedes_closing_id: string | null;
   closed_at: Generated<Timestamp>;
   closed_by: string | null;
   counted_cash: Numeric;
@@ -255,6 +258,11 @@ export interface DocumentLines {
 
 export interface Documents {
   approved_total: Generated<Numeric>;
+  bill_subtotal: Numeric | null;
+  discount_approved_by: string | null;
+  discount_entered_at: Timestamp | null;
+  discount_reason: string | null;
+  receipt_snapshot: Json | null;
   buyer_address: string | null;
   buyer_branch_code: string | null;
   buyer_legal_name: string | null;
@@ -438,6 +446,9 @@ export interface JobPhotos {
 }
 
 export interface Jobs {
+  tax_invoice_requested: Generated<boolean>;
+  tax_invoice_requested_at: Timestamp | null;
+  tax_invoice_requested_by: string | null;
   appointment_date: Timestamp | null;
   assigned_team_id: string | null;
   assigned_technician_id: string | null;
@@ -538,6 +549,35 @@ export interface OwnerGroups {
   name: string;
   slug: string;
   updated_at: Generated<Timestamp>;
+}
+
+export interface PaymentReversals {
+  amount: Numeric;
+  document_id: string;
+  id: Generated<string>;
+  method: string;
+  payment_id: string;
+  reason: string;
+  reversed_at: Generated<Timestamp>;
+  reversed_by: string | null;
+  shop_id: string;
+}
+
+export interface DocumentPrints {
+  acknowledged_change: Generated<boolean>;
+  content_hash: string;
+  copy_set: Generated<string>;
+  doc_type: string;
+  document_id: string | null;
+  id: Generated<string>;
+  job_id: string;
+  printed_at: Generated<Timestamp>;
+  printed_by: string | null;
+  revision: number | null;
+  seq: number;
+  shop_id: string;
+  status_at_print: string;
+  subject_id: string;
 }
 
 export interface Payments {
@@ -1050,6 +1090,8 @@ export interface DB {
   model_parts: ModelParts;
   owner_groups: OwnerGroups;
   payments: Payments;
+  payment_reversals: PaymentReversals;
+  document_prints: DocumentPrints;
   promotion_items: PromotionItems;
   promotions: Promotions;
   purchase_invoice_lines: PurchaseInvoiceLines;
