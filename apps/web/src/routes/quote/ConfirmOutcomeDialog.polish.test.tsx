@@ -97,6 +97,31 @@ describe('#6 closing with typed data asks first', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('"ยกเลิก" asks too when something was typed (same path as ×), and closes at once when not', () => {
+    const onClose = vi.fn();
+    m = mount(<ConfirmOutcomeDialog quotation={shrunk()} busy={false} onSubmit={vi.fn()} onClose={onClose} />);
+    type(field('ส่วนลด'), '50');
+    click(button('ยกเลิก'));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain('ทิ้งข้อมูลที่กรอก?');
+    m.unmount();
+
+    const onClose2 = vi.fn();
+    m = mount(<ConfirmOutcomeDialog quotation={shrunk()} busy={false} onSubmit={vi.fn()} onClose={onClose2} />);
+    click(button('ยกเลิก'));
+    expect(onClose2).toHaveBeenCalledTimes(1);
+  });
+
+  it('typing again while the question shows puts the action row back', () => {
+    m = mount(<ConfirmOutcomeDialog quotation={shrunk()} busy={false} onSubmit={vi.fn()} onClose={vi.fn()} />);
+    type(field('ส่วนลด'), '50');
+    pressEsc();
+    expect(document.body.textContent).toContain('ทิ้งข้อมูลที่กรอก?');
+    type(field('ส่วนลด'), '60');
+    expect(document.body.textContent).not.toContain('ทิ้งข้อมูลที่กรอก?');
+    expect(buttons('ยืนยันผลลูกค้า')).toHaveLength(1);
+  });
+
   it('the × button asks too when something was typed', () => {
     const onClose = vi.fn();
     const { q, head } = cutSetQuotation();

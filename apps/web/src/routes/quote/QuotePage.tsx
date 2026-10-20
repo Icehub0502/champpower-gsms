@@ -192,6 +192,8 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
                   run={run}
                   guard={guard}
                   autoFocusSearch={justCreated}
+                  // Spent once used: a later draft (after revise) must not pull focus again.
+                  onAutoFocused={() => setJustCreated(false)}
                   vehicleModelLinked={quotation.vehicleModelLinked}
                   modelPicker={quotation.vehicleId && !quotation.vehicleModelLinked ? (
                     <VehicleModelPicker vehicleId={quotation.vehicleId} busyKey={busy} guard={guard} onAssigned={() => void reload()} />

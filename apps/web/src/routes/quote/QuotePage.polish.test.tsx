@@ -36,7 +36,7 @@ vi.mock('../../lib/api/socket', () => ({ getSocket: () => ({ on: vi.fn(), off: v
 
 import { ApiError } from '../../lib/api/client';
 import { QuoteRoute } from './QuotePage';
-import { JOB_ID, line, next, quotation, totals } from './quoteFixtures';
+import { JOB_ID, cutSetQuotation, line, next, quotation, totals } from './quoteFixtures';
 import { button, click, field, flush, mount, type, type Mounted } from './quoteTestDom';
 
 const JOB: JobDetail = {
@@ -140,6 +140,27 @@ describe('#2 the draft discount box does not hold "0.00" as a value', () => {
     expect(apiPatch).toHaveBeenCalledWith(`/api/jobs/${JOB_ID}/quotation`, { discount: '200' });
   });
 
+  it('clearing a discount of 150 and saving sends "0"', async () => {
+    current = draft({ totals: totals({ offeredSubtotal: '1000.00', discount: '150.00', offeredDiscount: '150.00', offeredTotal: '850.00' }) });
+    await render();
+    type(field('ส่วนลดท้ายบิล'), '');
+    expect(button('บันทึกส่วนลด').disabled).toBe(false);
+    apiPatch.mockResolvedValueOnce(draft());
+    click(button('บันทึกส่วนลด'));
+    await flush();
+    expect(apiPatch).toHaveBeenCalledWith(`/api/jobs/${JOB_ID}/quotation`, { discount: '0' });
+  });
+
+  it('a typed amount equal to the current discount leaves the save button disabled (nothing to save)', async () => {
+    current = draft();
+    await render();
+    type(field('ส่วนลดท้ายบิล'), '200');
+    type(field('ส่วนลดท้ายบิล'), ''); // emptied again: still no discount
+    expect(button('บันทึกส่วนลด').disabled).toBe(true);
+    type(field('ส่วนลดท้ายบิล'), '0.00');
+    expect(button('บันทึกส่วนลด').disabled).toBe(true);
+  });
+
   it('a non-zero discount is still shown as its value', async () => {
     current = draft({ totals: totals({ offeredSubtotal: '1000.00', discount: '150.00', offeredDiscount: '150.00', offeredTotal: '850.00' }) });
     await render();
@@ -159,11 +180,61 @@ describe('#7 after a draft is created the catalog search has focus', () => {
     expect(document.activeElement).toBe(search);
   });
 
+  it('only once: a later draft (issue, then revise) does not pull focus into the search again', async () => {
+    current = new ApiError(404, 'quotation_not_found', { error: 'quotation_not_found', message: 'x' });
+    await render();
+    const created = draft();
+    apiPost.mockResolvedValueOnce(created);
+    click(button('สร้างใบเสนอราคา'));
+    await flush();
+
+    apiPost.mockResolvedValueOnce(quotation({ lines: created.lines, next: next({ canDecide: true, canRevise: true }) }));
+    click(button('ออกใบเสนอราคา'));
+    await flush();
+    expect(document.querySelector('section.qt-catalog')).toBeNull();
+
+    apiPost.mockResolvedValueOnce(draft({ revision: 2 }));
+    click(button('ออกฉบับแก้ไข')); // opens the dialog
+    click(document.querySelector('.modal-card button[type="submit"]') as HTMLButtonElement); // the dialog's own "ออกฉบับแก้ไข"
+    await flush();
+    const search = document.querySelector('section.qt-catalog input[type="search"]');
+    expect(search).not.toBeNull();
+    expect(document.activeElement).not.toBe(search);
+  });
+
   it('opening an existing draft does NOT steal focus (only right after creating one)', async () => {
     current = draft();
     await render();
     const search = document.querySelector('section.qt-catalog input[type="search"]');
     expect(document.activeElement).not.toBe(search);
+  });
+});
+
+describe('#6 focus on the first error after a real busy cycle (page + dialog + server refusal)', () => {
+  it('the server refuses the set reason: once busy ends, the reason box (enabled again) has focus', async () => {
+    const { q, head } = cutSetQuotation();
+    current = q;
+    await render();
+    click(button('ยืนยันผลลูกค้า')); // opens the dialog
+    const set = () => document.querySelector(`[data-set-id="${head.id}"]`)!;
+    type(field('ยอดใหม่ของชุด', set()), '18000');
+    type(field('เหตุผล', set()), 'x');
+
+    let reject!: (e: unknown) => void;
+    apiPost.mockReturnValueOnce(new Promise((_r, j) => { reject = j; }));
+    click(document.querySelector('.modal-foot button[type="submit"]') as HTMLButtonElement);
+    await flush();
+    expect(document.querySelector('.modal-foot button[type="submit"]')!.textContent).toBe('กำลังยืนยัน...');
+    expect((field('เหตุผล', set()) as HTMLInputElement).disabled).toBe(true);
+
+    reject(new ApiError(400, 'invalid_request', {
+      error: 'invalid_request', message: 'x', fields: { [`adjustments.setLines.${head.id}.reason`]: ['required'] },
+    }));
+    await flush();
+    const reason = field('เหตุผล', set()) as HTMLInputElement;
+    expect(reason.disabled).toBe(false);
+    expect(reason.getAttribute('aria-invalid')).toBe('true');
+    expect(document.activeElement).toBe(reason);
   });
 });
 

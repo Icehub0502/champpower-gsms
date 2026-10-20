@@ -49,7 +49,10 @@ export function QuoteTotalsPanel({ totals, confirmed = false, discountEditable, 
   const shown = draft ?? (typedSatang(totals.discount) === 0 ? '' : totals.discount);
   // An emptied box means what the empty box shows: no discount.
   const typedAmount = draft === null ? null : draft.trim() === '' ? '0' : draft.trim();
-  const invalid = typedAmount !== null && typedSatang(typedAmount) === null;
+  const typedValue = typedAmount === null ? null : typedSatang(typedAmount);
+  const invalid = typedAmount !== null && typedValue === null;
+  // The same amount as now, in satang ("0", "" and "0.00" at no discount): nothing to save.
+  const unchanged = typedValue !== null && typedValue === typedSatang(totals.discount);
   // Compared in satang through the domain parser ("200" vs "200.00" is the same discount).
   // Only after confirm: before it the two can differ only by the offer's clamp, which is not an agreement.
   let agreedDiffers = false;
@@ -63,7 +66,7 @@ export function QuoteTotalsPanel({ totals, confirmed = false, discountEditable, 
   const error = invalid ? 'จำนวนเงินไม่ถูกต้อง — ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง' : discountError ?? null;
 
   function save() {
-    if (typedAmount === null || invalid) return;
+    if (typedAmount === null || invalid || unchanged) return;
     void onSaveDiscount?.(typedAmount).then((ok) => { if (ok) setDraft(null); });
   }
 
@@ -117,7 +120,7 @@ export function QuoteTotalsPanel({ totals, confirmed = false, discountEditable, 
             />
             {error && <span className="ci-field-error">{error}</span>}
           </label>
-          <button type="submit" className="btn secondary" disabled={busy || draft === null || invalid}>
+          <button type="submit" className="btn secondary" disabled={busy || draft === null || invalid || unchanged}>
             {saving ? 'กำลังบันทึก...' : 'บันทึกส่วนลด'}
           </button>
         </form>

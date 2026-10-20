@@ -229,7 +229,7 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
     || (discountEntered && discount !== quotation.totals.discount)
     || discountReason.trim() !== '';
 
-  /** Esc, backdrop and ×: close at once when nothing was typed, otherwise ask first. */
+  /** Every way out — Esc, backdrop, × and "ยกเลิก": close at once when nothing was typed, otherwise ask first. */
   function requestClose() {
     if (busy) return;
     if (dirty) setAskDiscard(true);
@@ -260,11 +260,16 @@ export function ConfirmOutcomeDialog({ quotation, busy, onSubmit, onClose }: Con
       ) : (
         <div className="row-flex">
           <button type="submit" form={formId} className="btn" disabled={busy}>{busy ? 'กำลังยืนยัน...' : 'ยืนยันผลลูกค้า'}</button>
-          <button type="button" className="btn secondary" disabled={busy} onClick={onClose}>ยกเลิก</button>
+          <button type="button" className="btn secondary" disabled={busy} onClick={requestClose}>ยกเลิก</button>
         </div>
       )}
     >
-      <form id={formId} ref={formRef} className="ci-dialog qt-confirm" onSubmit={(e) => { e.preventDefault(); void submit(); }} noValidate>
+      <form
+        id={formId} ref={formRef} className="ci-dialog qt-confirm" noValidate
+        onSubmit={(e) => { e.preventDefault(); void submit(); }}
+        // Typing again answers the discard question with "keep going": bring the action row back.
+        onChange={() => { if (askDiscard) setAskDiscard(false); }}
+      >
         <p>
           ลูกค้าอนุมัติ <strong>{approvedCount}</strong> รายการ · ไม่อนุมัติ <strong>{declinedCount}</strong> รายการ
           — ยืนยันแล้วใบนี้จะแก้ไม่ได้ (ถอยการยืนยันได้ภายในวันนี้เท่านั้น)
