@@ -1,10 +1,13 @@
 import type { TodayJob } from '@gsms/contracts/index.js';
+import { Link } from 'react-router-dom';
 import { Modal } from '../../components/ui/Modal';
 
 interface DeliverConfirmDialogProps {
   job: TodayJob;
   busy: boolean;
   errorText: string | null;
+  /** Set when the API refused because no receipt stands (receipt_required): a way to the bill screen. */
+  billHref?: string | null;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -15,7 +18,7 @@ interface DeliverConfirmDialogProps {
  * of getting here (the card's action sheet today; a drop target if one is ever
  * added) — TodayPage routes them all through it, so no path can skip the ask.
  */
-export function DeliverConfirmDialog({ job, busy, errorText, onConfirm, onCancel }: DeliverConfirmDialogProps) {
+export function DeliverConfirmDialog({ job, busy, errorText, billHref, onConfirm, onCancel }: DeliverConfirmDialogProps) {
   const title = [job.brand, job.model].filter(Boolean).join(' ') || 'ไม่ระบุรุ่น';
   const car = [title, job.plate].filter(Boolean).join(' · ');
   return (
@@ -26,6 +29,9 @@ export function DeliverConfirmDialog({ job, busy, errorText, onConfirm, onCancel
           <p className="kb-sheet-error" role="alert">
             {errorText}
           </p>
+        )}
+        {billHref && (
+          <Link className="btn hazard" to={billHref}>ไปหน้าเก็บเงิน / ใบเสร็จ</Link>
         )}
         <p>
           <strong>{car}</strong> ({job.jobNumber}) จะเปลี่ยนเป็น “ส่งแล้ว” และ<strong>หายจากกระดานทันที</strong>

@@ -1940,3 +1940,172 @@ html:has(.qt-totals-bar) { scroll-padding-bottom: calc(var(--dock-clearance) + v
   .qt-confirm-discard .btn, .modal-foot .btn { min-height: var(--touch-min); }
 }
 .qt-reject { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+
+/* =========================================================================
+   P3.2 — bill screen (bl-*), daily summary (dl-*), payment channels (pc-*)
+   One tree at every width; only these rules change between 390 / 820 / 1180 / 1440.
+   ========================================================================= */
+:root {
+  /* Print sheet (A4, black on white — §5.5b: no brand colours on paper). */
+  --print-ink: #000;
+  --print-rule: #000;
+  --print-rule-light: #777;
+  --print-off: #555;
+  /* B1 "ยอดที่ต้องชำระ" — the figure the customer reads across the counter. */
+  --present-total-size: 34px;
+}
+
+.qt-doc-row { margin: 0 0 12px; align-items: center; }
+.qt-doc-row .ci-form-error { flex-basis: 100%; }
+
+.bl-lines-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+.bl-lines-head h3 { flex: 1 1 auto; margin-bottom: 0; }
+.bl-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.bl-line { display: flex; flex-wrap: wrap; gap: 6px 12px; padding: 12px 2px; border-bottom: 1px solid var(--border); }
+.bl-line:last-child { border-bottom: none; }
+.bl-line.is-unanswered { border-left: 4px solid var(--warning); padding-left: 10px; }
+.bl-line.is-off .bl-line-name { text-decoration: line-through; color: var(--text-2); }
+.bl-line-main { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.bl-line-name { font-size: 15px; font-weight: 600; color: var(--text-strong); }
+.bl-line-money { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; text-align: right; }
+.bl-line-ticks { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.bl-children { list-style: none; margin: 2px 0 0; padding: 0 0 0 4px; font-size: 12.5px; color: var(--text-2); }
+.bl-partial { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; padding: 10px 12px; background: var(--paper); border-radius: var(--radius); }
+.bl-partial .field { flex: 1 1 180px; margin-bottom: 0; }
+.bl-partial .field.has-error input { border: 2px solid var(--red); }
+
+.bl-kv { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; margin: 0 0 8px; font-size: 14px; }
+.bl-kv dt { color: var(--text-2); }
+.bl-kv dd { margin: 0; text-align: right; }
+.bl-strong { font-weight: 800; }
+.bl-attn { border-left: 4px solid var(--warning); }
+.bl-banner { flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.bl-discount-form .field.has-error input, .bl-discount-form .field.has-error textarea { border: 2px solid var(--red); }
+
+.bl-present { border: 2px solid var(--border); }
+.bl-present.is-done { border-color: var(--success); }
+.bl-present-table { width: 100%; border-collapse: collapse; font-size: 15px; margin-bottom: 8px; }
+.bl-present-table td { padding: 6px 2px; border-bottom: 1px solid var(--paper-2); vertical-align: top; }
+.bl-present-table .num { text-align: right; white-space: nowrap; }
+.bl-present-total { margin: 8px 0 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; font-size: 16px; font-weight: 700; }
+.bl-present-total .mono { font-size: var(--present-total-size); font-weight: 800; color: var(--text-strong); }
+
+.bl-pay.is-locked .bl-methods, .bl-pay.is-locked .bl-amount { opacity: .55; }
+.bl-due { margin: 0 0 10px; display: flex; justify-content: space-between; font-size: 15px; }
+.bl-due strong { font-size: 20px; }
+.bl-methods { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.bl-method { min-height: var(--touch-min); padding-inline: 16px; font-size: 15px; }
+.bl-surcharge-tag { font-size: 12px; font-weight: 700; }
+.bl-amount { display: flex; align-items: flex-end; gap: 8px; }
+.bl-amount .field { flex: 1 1 auto; margin-bottom: 10px; }
+.bl-amount .btn { margin-bottom: 10px; }
+.bl-amount .field.has-error input { border: 2px solid var(--red); }
+.bl-change { margin: 4px 0 10px; padding: 10px 12px; background: var(--paper); border-radius: var(--radius); font-size: 15px; }
+.bl-change p { margin: 0; }
+.bl-change p + p { margin-top: 4px; }
+.bl-change strong { font-size: 20px; }
+.bl-blockers { margin: 0 0 10px; padding-left: 18px; color: var(--text-2); font-size: 13px; }
+.bl-confirm .field.has-error textarea { border: 2px solid var(--red); }
+.bl-closed { border: 2px solid var(--success); }
+.bl-closed-no { margin: 0 0 6px; font-size: 18px; font-weight: 800; }
+.bl-closed-change { margin: 0 0 10px; font-size: 16px; }
+.bl-closed-change strong { font-size: 24px; }
+.bl-side .card .btn + .btn { margin-top: 8px; }
+
+/* Daily summary: two cards side by side from 768, stacked on a phone. Never one total. */
+.dl-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 16px; }
+.dl-date { margin-bottom: 0; }
+.dl-date input { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-input); font: inherit; }
+.dl-basis { margin: 0 0 10px; font-size: 12.5px; color: var(--text-2); }
+.dl-sub { margin: 10px 0 4px; font-size: 13px; color: var(--text-2); }
+.dl-table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-bottom: 8px; }
+.dl-table th, .dl-table td { padding: 6px 4px; border-bottom: 1px solid var(--paper-2); text-align: left; }
+.dl-table th { color: var(--text-2); font-weight: 600; font-size: 12.5px; }
+.dl-table .num { text-align: right; white-space: nowrap; }
+.dl-total { margin: 6px 0; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 700; }
+.dl-total .mono { font-size: 22px; font-weight: 800; color: var(--text-strong); }
+.dl-in { border-top: 4px solid var(--info); overflow-x: auto; }
+.dl-sales { border-top: 4px solid var(--success); }
+.dl-flag { margin-top: 10px; padding: 10px 12px; background: var(--paper); border-radius: var(--radius); font-size: 13px; }
+.dl-flag h4 { margin: 0 0 6px; font-size: 13px; }
+.dl-flag ul { margin: 0; padding-left: 18px; }
+@media (min-width: 768px) {
+  .dl-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pc-fields { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.4fr) minmax(0, .8fr); }
+}
+
+/* Payment channels settings */
+.pc-list { list-style: none; margin: 0; padding: 0; }
+.pc-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 12px; padding: 10px 2px; border-bottom: 1px solid var(--border); }
+.pc-row:last-child { border-bottom: none; }
+.pc-row.is-off .pc-name { color: var(--text-2); text-decoration: line-through; }
+.pc-row-main { flex: 1 1 200px; display: flex; flex-direction: column; gap: 2px; }
+.pc-name { font-weight: 700; font-size: 15px; }
+.pc-row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.pc-edit { flex: 1 1 100%; }
+.pc-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 12px; }
+.pc-fields .field.has-error input { border: 2px solid var(--red); }
+@media (pointer: coarse) {
+  .bl-line-ticks .chip, .bl-amount .btn, .pc-row-actions .btn, .dl-date input { min-height: var(--touch-min); }
+}
+
+/* ---- A4 print sheets (components/print/*) ----
+   Hidden on screen; while printing, body.gsms-printing hides the whole app so
+   only the copies reach the paper. Black on white, Kanit, no brand colours. */
+.print-root { display: none; }
+@media print {
+  @page { size: A4; margin: 12mm 12mm 14mm; }
+  body.gsms-printing > *:not(.print-root) { display: none !important; }
+  body.gsms-printing { background: #fff; }
+  body.gsms-printing .print-root { display: block; color: var(--print-ink); font-size: 12.5pt; line-height: 1.45; }
+  .pr-copy { width: 100%; border-collapse: collapse; break-after: page; }
+  .pr-copy:last-child { break-after: auto; }
+  .pr-copy > thead { display: table-header-group; }
+  .pr-copy > tfoot { display: table-footer-group; }
+  .pr-copy > * > tr > td { padding: 0; vertical-align: top; }
+  .pr-head { display: grid; grid-template-columns: 1fr auto auto; align-items: start; gap: 8pt; padding-bottom: 6pt; border-bottom: 1.5pt solid var(--print-rule); margin-bottom: 8pt; }
+  .pr-shop { font-weight: 700; font-size: 13pt; }
+  .pr-title { text-align: right; }
+  .pr-title h1 { margin: 0; font-size: 18pt; font-weight: 800; }
+  .pr-docno { font-size: 11pt; }
+  .pr-copy-label { border: 1.5pt solid var(--print-rule); padding: 2pt 8pt; font-weight: 800; font-size: 11pt; white-space: nowrap; }
+  .pr-stamps { display: flex; flex-wrap: wrap; gap: 6pt; margin: -2pt 0 8pt; }
+  .pr-stamp { border: 2pt solid var(--print-rule); padding: 2pt 10pt; font-weight: 800; font-size: 13pt; letter-spacing: .5pt; }
+  .pr-watermark {
+    position: fixed; top: 42%; left: 0; right: 0; text-align: center; transform: rotate(-24deg);
+    font-size: 96pt; font-weight: 800; color: var(--print-ink); opacity: .08; pointer-events: none;
+  }
+  .pr-foot { margin-top: 8pt; padding-top: 4pt; border-top: .75pt solid var(--print-rule-light); font-size: 9.5pt; text-align: right; }
+  .pr-banner { margin: 0 0 8pt; padding: 4pt 8pt; border: 2pt solid var(--print-rule); text-align: center; font-weight: 800; font-size: 14pt; }
+  .pr-party { display: grid; grid-template-columns: 1fr 1fr; gap: 2pt 16pt; margin: 0 0 10pt; }
+  .pr-party-item { display: flex; gap: 6pt; }
+  .pr-party dt { min-width: 7em; color: var(--print-off); }
+  .pr-party dd { margin: 0; font-weight: 600; }
+  .pr-items { width: 100%; border-collapse: collapse; margin-bottom: 10pt; }
+  .pr-items thead { display: table-header-group; }
+  .pr-items th { border-top: 1pt solid var(--print-rule); border-bottom: 1pt solid var(--print-rule); padding: 3pt 4pt; text-align: left; font-size: 11pt; }
+  .pr-items td { border-bottom: .5pt solid var(--print-rule-light); padding: 3pt 4pt; vertical-align: top; }
+  .pr-items tr { break-inside: avoid; }
+  .pr-c-no { width: 2.2em; text-align: center; }
+  .pr-c-qty { width: 5.5em; text-align: center; white-space: nowrap; }
+  .pr-c-num { width: 7.5em; text-align: right; white-space: nowrap; }
+  .pr-c-state { width: 5.5em; text-align: center; }
+  .pr-c-tick { width: 3.5em; text-align: center; }
+  .pr-box { display: inline-block; width: 11pt; height: 11pt; border: 1pt solid var(--print-rule); }
+  .pr-name { font-weight: 600; }
+  .pr-sub { font-size: 10pt; color: var(--print-off); }
+  .pr-strong { font-weight: 700; color: var(--print-ink); }
+  .pr-row-off .pr-name { text-decoration: line-through; }
+  .pr-row-child td { font-size: 10.5pt; border-bottom-style: dotted; }
+  .pr-totals-wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 16pt; break-inside: avoid; margin-bottom: 10pt; }
+  .pr-pay { width: 100%; border-collapse: collapse; font-size: 11pt; align-self: start; }
+  .pr-pay th, .pr-pay td { border-bottom: .5pt solid var(--print-rule-light); padding: 2pt 4pt; text-align: left; }
+  .pr-pay .pr-c-num { width: auto; text-align: right; }
+  .pr-totals { display: grid; grid-template-columns: 1fr auto; gap: 2pt 10pt; margin: 0; }
+  .pr-totals dt { color: var(--print-off); }
+  .pr-totals dd { margin: 0; text-align: right; white-space: nowrap; }
+  .pr-totals .pr-grand { color: var(--print-ink); font-weight: 800; font-size: 14pt; border-top: 1pt solid var(--print-rule); padding-top: 2pt; }
+  .pr-note { font-size: 10.5pt; margin: 4pt 0 10pt; }
+  .pr-sigs { display: grid; grid-template-columns: 1fr 1fr; gap: 24pt; margin-top: 28pt; break-inside: avoid; text-align: center; font-size: 11pt; }
+  .pr-sig-line { display: block; border-bottom: .75pt solid var(--print-rule); height: 28pt; margin-bottom: 4pt; }
+}

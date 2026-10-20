@@ -1,5 +1,5 @@
 import { PAYMENT_METHOD_LABEL } from '@champpower/domain';
-import type { Receipt, ReceiptLine } from '@gsms/contracts/index.js';
+import type { PendingReceipt as Receipt, PendingReceiptLine as ReceiptLine } from '../../lib/pendingContracts';
 import { baht } from '../../lib/money';
 import { qtyText, thaiDate, thaiDateTime } from '../../lib/printFormat';
 import { PartyBlock, warrantyText } from './sheetParts';
@@ -56,7 +56,7 @@ export function ReceiptSheet({ receipt }: { receipt: Receipt }) {
           <tbody>
             {livePayments.map((pay) => (
               <tr key={pay.id}>
-                <td>{PAYMENT_METHOD_LABEL[pay.method]}{pay.reversed ? ' (คืนเงินแล้ว)' : ''}</td>
+                <td>{pay.channelName ?? PAYMENT_METHOD_LABEL[pay.method]}{pay.surcharge && pay.surcharge !== '0.00' ? ` (รวมค่าธรรมเนียม ${baht(pay.surcharge)})` : ''}{pay.reversed ? ' (คืนเงินแล้ว)' : ''}</td>
                 <td className="pr-c-num">{baht(pay.amount)}</td>
                 <td className="pr-c-num">{pay.method === 'cash' ? baht(pay.changeGiven) : '-'}</td>
               </tr>
@@ -67,8 +67,12 @@ export function ReceiptSheet({ receipt }: { receipt: Receipt }) {
 
         <dl className="pr-totals">
           <dt>รวมรายการที่ทำ</dt><dd>{baht(receipt.totals.subtotal)}</dd>
-          <dt>ส่วนลด</dt><dd>{baht(receipt.totals.discount)}</dd>
+          {receipt.totals.lineDiscountTotal !== undefined && (<><dt>ส่วนลดรายบรรทัด</dt><dd>{baht(receipt.totals.lineDiscountTotal)}</dd></>)}
+          <dt>ส่วนลด{receipt.totals.lineDiscountTotal !== undefined ? 'ท้ายบิล' : ''}</dt><dd>{baht(receipt.totals.discount)}</dd>
           <dt className="pr-grand">ยอดบิล</dt><dd className="pr-grand">{baht(receipt.totals.billTotal)}</dd>
+          {receipt.totals.surchargeTotal !== undefined && receipt.totals.surchargeTotal !== '0.00' && (
+            <><dt>ค่าธรรมเนียมช่องทางชำระ</dt><dd>{baht(receipt.totals.surchargeTotal)}</dd></>
+          )}
           <dt>เงินทอน</dt><dd>{baht(receipt.changeTotal)}</dd>
           <dt>ยอดสุทธิที่รับ</dt><dd>{baht(receipt.paidNet)}</dd>
         </dl>
@@ -100,6 +104,9 @@ function ReceiptRows({ no, line, kids }: { no: number; line: ReceiptLine; kids: 
           <div className="pr-name">{line.name}{line.brand ? ` (${line.brand})` : ''}</div>
           {w && <div className="pr-sub">ประกัน: {w}</div>}
           {notDone && <div className="pr-sub pr-strong">อนุมัติแต่ไม่ได้ทำ — ไม่คิดเงิน</div>}
+          {line.discount && line.discount !== '0.00' && (
+            <div className="pr-sub">ส่วนลดรายการ −{baht(line.discount)}{line.discountReason ? ` (${line.discountReason})` : ''}</div>
+          )}
           {partial && <div className="pr-sub">ทำจริง {qtyText(line.fulfilledQty)} จาก {qtyText(line.qty)} ที่อนุมัติ</div>}
         </td>
         <td className="pr-c-qty">{qtyText(partial || notDone ? line.fulfilledQty : line.qty)}{line.unit ? ` ${line.unit}` : ''}</td>

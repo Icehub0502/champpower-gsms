@@ -1,9 +1,10 @@
 import { useId, useState } from 'react';
 import {
   DISCOUNT_CEILING_PERCENT, discountExceedsCeiling, discountExceedsSubtotal, discountPercentText,
-  receiptDiscountReasonRequired, toSatang,
+  receiptDiscountReasonRequired, sumSatang, toSatang,
 } from '@champpower/domain';
-import type { PatchReceiptInput, Receipt } from '@gsms/contracts/index.js';
+import type { PatchReceiptInput } from '@gsms/contracts/index.js';
+import type { PendingReceipt as Receipt } from '../../lib/pendingContracts';
 import { api } from '../../lib/api/client';
 import { baht, typedSatang } from '../../lib/money';
 import type { BillFailure } from './billErrors';
@@ -48,8 +49,11 @@ export function DiscountPanel({ jobId, receipt, busy, run }: DiscountPanelProps)
   const agreedSatang = safeSatang(d.agreed);
   const typed = text.trim() === '' ? null : typedSatang(text.trim());
   const typedInvalid = text.trim() !== '' && typed === null;
-  const overBase = typed !== null && discountExceedsSubtotal(baseSatang, typed);
-  const overCeiling = typed !== null && discountExceedsCeiling(baseSatang, typed);
+  // B4: the ceiling is on the FINAL discount = line discounts + this bill discount, on the pre-discount base.
+  const lineDiscountSatang = safeSatang(receipt.totals.lineDiscountTotal ?? '0');
+  const totalTyped = typed === null ? null : sumSatang([lineDiscountSatang, typed]);
+  const overBase = totalTyped !== null && discountExceedsSubtotal(baseSatang, totalTyped);
+  const overCeiling = totalTyped !== null && discountExceedsCeiling(baseSatang, totalTyped);
   const needsReason = typed !== null && receiptDiscountReasonRequired({
     discountSatang: typed, agreedDiscountSatang: agreedSatang, baseSatang,
   });
@@ -83,11 +87,14 @@ export function DiscountPanel({ jobId, receipt, busy, run }: DiscountPanelProps)
 
   return (
     <section className="card bl-discount" aria-label="ส่วนลดใบเสร็จ">
-      <h3>ส่วนลด</h3>
+      <h3>ส่วนลดท้ายบิล</h3>
       <p className={d.state === 'needs_entry' ? 'ci-nomatch bl-attn' : 'qt-line-sub'}>{stateLine}</p>
       <dl className="bl-kv">
         <dt>ส่วนลดตอนนี้</dt>
         <dd className="mono">{d.state === 'needs_entry' ? 'ยังไม่ได้กรอก' : `${baht(d.amount)} (${d.percent}%)`}</dd>
+        {receipt.totals.lineDiscountTotal !== undefined && (
+          <><dt>ส่วนลดรายบรรทัดรวม</dt><dd className="mono">{baht(receipt.totals.lineDiscountTotal)}</dd></>
+        )}
         <dt>ยอดก่อนลด (ฐานของเพดาน)</dt>
         <dd className="mono">{baht(d.base)}</dd>
         {d.reason && (<><dt>เหตุผล</dt><dd>{d.reason}</dd></>)}
@@ -113,9 +120,9 @@ export function DiscountPanel({ jobId, receipt, busy, run }: DiscountPanelProps)
               disabled={anyBusy}
               onChange={(e) => setText(e.target.value)}
             />
-            {typed !== null && !overBase && (
+            {totalTyped !== null && !overBase && (
               <span className={overCeiling ? 'ci-field-error' : 'qt-line-sub'}>
-                = {discountPercentText(baseSatang, typed)}% ของยอดก่อนลด
+                ส่วนลดรวม{lineDiscountSatang > 0 ? ' (รวมส่วนลดรายบรรทัด)' : ''} = {discountPercentText(baseSatang, totalTyped)}% ของยอดก่อนลด
                 {overCeiling
                   ? ` · เกิน ${DISCOUNT_CEILING_PERCENT}% ต้องให้${CEILING_ROLES_TEXT}ปิดบิล`
                   : ` · ไม่เกิน ${DISCOUNT_CEILING_PERCENT}%`}

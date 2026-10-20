@@ -26,6 +26,12 @@ export function canReadDaily(role: Role | null): boolean {
   return role !== null && DAILY_READ_ROLES.includes(role);
 }
 
+/** Who may open ตั้งค่า › ช่องทางชำระ (Ice B3): owner, and manager if the API allows — the API decides saving. */
+const CHANNEL_ROLES: readonly Role[] = ['owner', 'manager'];
+export function canManageChannels(role: Role | null): boolean {
+  return role !== null && CHANNEL_ROLES.includes(role);
+}
+
 /** Job statuses where the bill screen is worth linking to (approved up to delivered). */
 const BILLABLE_STATUSES: readonly StatusKey[] = ['approved', 'repairing', 'aligning', 'ready', 'delivered'];
 export function billLinkFits(status: StatusKey, jobType: 'normal' | 'warranty_claim'): boolean {

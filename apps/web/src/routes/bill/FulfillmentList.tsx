@@ -1,8 +1,9 @@
 import { useId, useState } from 'react';
-import { fulfilledQtyIssue, type FulfilledQtyIssue } from '@champpower/domain';
-import { FulfilledQtyString, type FulfillmentInput, type Receipt, type ReceiptLine } from '@gsms/contracts/index.js';
+import { discountExceedsSubtotal, fulfilledQtyIssue, toSatang, type FulfilledQtyIssue } from '@champpower/domain';
+import { FulfilledQtyString, type FulfillmentInput } from '@gsms/contracts/index.js';
+import type { LineDiscountInput, PendingReceipt as Receipt, PendingReceiptLine as ReceiptLine } from '../../lib/pendingContracts';
 import { api } from '../../lib/api/client';
-import { baht } from '../../lib/money';
+import { baht, typedSatang } from '../../lib/money';
 import { qtyText } from '../../lib/printFormat';
 import { LINE_TYPE_LABEL } from '../quote/quoteLabels';
 import type { BillFailure } from './billErrors';
@@ -41,6 +42,7 @@ function pillClass(line: ReceiptLine): string {
 export function FulfillmentList({ jobId, receipt, busy, run }: FulfillmentListProps) {
   const [failure, setFailure] = useState<BillFailure | null>(null);
   const [partialFor, setPartialFor] = useState<string | null>(null);
+  const [discountFor, setDiscountFor] = useState<string | null>(null);
   const top = receipt.lines.filter((l) => l.parentLineId === null).sort((a, b) => a.sortOrder - b.sortOrder);
   const childrenOf = (id: string) => receipt.lines.filter((l) => l.parentLineId === id).sort((a, b) => a.sortOrder - b.sortOrder);
   const canTick = receipt.next.canTick;
@@ -104,6 +106,9 @@ export function FulfillmentList({ jobId, receipt, busy, run }: FulfillmentListPr
               </span>
               <strong className="mono">{line.charged !== null ? baht(line.charged) : '—'}</strong>
               {line.state === 'not_done' && <span className="qt-line-sub">ไม่คิดเงิน</span>}
+              {hasLineDiscount(line) && (
+                <span className="qt-line-sub">ลดรายการนี้ −{baht(line.discount!)}{line.discountReason ? ` (${line.discountReason})` : ''}</span>
+              )}
             </div>
             {canTick && (
               <div className="bl-line-ticks" role="group" aria-label={`ทำจริงไหม: ${line.name}`}>
@@ -137,8 +142,32 @@ export function FulfillmentList({ jobId, receipt, busy, run }: FulfillmentListPr
                 >
                   {line.state === 'not_done' && '✓ '}ไม่ได้ทำ
                 </button>
+                {(line.state === 'done' || line.state === 'partial') && (
+                  <button
+                    type="button"
+                    className={`chip${discountFor === line.id ? ' active' : ''}`}
+                    aria-expanded={discountFor === line.id}
+                    disabled={anyBusy}
+                    onClick={() => setDiscountFor(discountFor === line.id ? null : line.id)}
+                  >
+                    ส่วนลดรายการ
+                  </button>
+                )}
                 {busy === `tick:${line.id}` && <span className="qt-line-sub">กำลังบันทึก...</span>}
               </div>
+            )}
+            {canTick && discountFor === line.id && (
+              <LineDiscountForm
+                line={line}
+                busy={anyBusy}
+                saving={busy === `ldisc:${line.id}`}
+                onSave={async (input) => {
+                  setFailure(null);
+                  const result = await run(`ldisc:${line.id}`, () => api.patch<Receipt>(`${receiptPath(jobId)}/lines/${encodeURIComponent(line.id)}`, input));
+                  if (result.ok) setDiscountFor(null);
+                  else if (!result.failure.cancelled) setFailure(result.failure);
+                }}
+              />
             )}
             {canTick && partialFor === line.id && (
               <PartialQtyForm
@@ -154,6 +183,61 @@ export function FulfillmentList({ jobId, receipt, busy, run }: FulfillmentListPr
         ))}
       </ul>
     </section>
+  );
+}
+
+function hasLineDiscount(line: ReceiptLine): boolean {
+  return line.discount !== undefined && line.discount !== '0.00' && line.discount !== '0';
+}
+
+/**
+ * B4: a discount on one done line, with its reason. The amount is checked
+ * against the line's charge with the domain rule (refused, not clamped); the
+ * 40% ceiling is shown on the whole bill in the discount card.
+ */
+function LineDiscountForm({ line, busy, saving, onSave }: {
+  line: ReceiptLine; busy: boolean; saving: boolean; onSave: (input: LineDiscountInput) => Promise<void>;
+}) {
+  const amountId = useId();
+  const reasonId = useId();
+  const [text, setText] = useState(hasLineDiscount(line) ? line.discount! : '');
+  const [reason, setReason] = useState(line.discountReason ?? '');
+  const [touched, setTouched] = useState(false);
+  const typed = text.trim() === '' ? null : typedSatang(text.trim());
+  let chargedSatang = 0;
+  try {
+    chargedSatang = line.charged !== null ? toSatang(line.charged) : 0;
+  } catch {
+    chargedSatang = 0;
+  }
+  const over = typed !== null && discountExceedsSubtotal(chargedSatang, typed);
+  const reasonMissing = typed !== null && typed > 0 && reason.trim() === '';
+  const amountError = touched && typed === null ? 'ใส่ตัวเลข ทศนิยมไม่เกิน 2 ตำแหน่ง (ไม่ลด ใส่ 0)' : over ? `ลดเกินราคารายการนี้ (${baht(line.charged ?? '0')}) ไม่ได้` : null;
+
+  return (
+    <form
+      className="bl-partial"
+      onSubmit={(e) => {
+        e.preventDefault();
+        setTouched(true);
+        if (typed === null || over || reasonMissing) return;
+        const input: LineDiscountInput = { discount: text.trim() };
+        if (reason.trim() !== '') input.discountReason = reason.trim();
+        void onSave(input);
+      }}
+    >
+      <label className={`field${amountError ? ' has-error' : ''}`} htmlFor={amountId}>
+        <span>ส่วนลดรายการนี้ (บาท)</span>
+        <input id={amountId} inputMode="decimal" autoFocus value={text} disabled={busy} onChange={(e) => setText(e.target.value)} />
+        {amountError && <span className="ci-field-error">{amountError}</span>}
+      </label>
+      <label className={`field${touched && reasonMissing ? ' has-error' : ''}`} htmlFor={reasonId}>
+        <span>เหตุผล (บังคับเมื่อมีส่วนลด)</span>
+        <input id={reasonId} maxLength={500} value={reason} disabled={busy} onChange={(e) => setReason(e.target.value)} />
+        {touched && reasonMissing && <span className="ci-field-error">จำเป็นต้องกรอก</span>}
+      </label>
+      <button type="submit" className="btn small" disabled={busy}>{saving ? 'กำลังบันทึก...' : 'บันทึกส่วนลด'}</button>
+    </form>
   );
 }
 

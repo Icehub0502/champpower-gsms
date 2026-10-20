@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import type {
-  CloseReceiptResult, JobDetail, Receipt, Role, TaxInvoiceRequest, TaxInvoiceRequestInput, VoidReceiptInput,
+  CloseReceiptResult, JobDetail, Role, VoidReceiptInput,
 } from '@gsms/contracts/index.js';
 import { ReceiptPrintButton } from '../../components/print/DocPrintButtons';
 import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
@@ -12,7 +12,9 @@ import { useDocument } from '../../hooks/useDocument';
 import { api } from '../../lib/api/client';
 import { baht } from '../../lib/money';
 import { thaiDateTime } from '../../lib/printFormat';
+import type { PendingReceipt as Receipt } from '../../lib/pendingContracts';
 import type { BillFailure } from './billErrors';
+import { PresentStep } from './PresentStep';
 import { canReadBill, canWriteBill, PAYMENT_METHOD_LABEL, RECEIPT_STATUS_LABEL } from './billLabels';
 import { DiscountPanel } from './DiscountPanel';
 import { FulfillmentList } from './FulfillmentList';
@@ -40,9 +42,10 @@ export function BillRoute({ role }: { role: Role | null }) {
 }
 
 /**
- * เก็บเงิน / ใบเสร็จ of one job (P3.2): tick what was really done → discount →
- * take the money → ปิดบิล (one server transaction: payments + number +
- * freeze) → print two copies. Every total on this page is the server's; the
+ * เก็บเงิน / ใบเสร็จ of one job (P3.2, Ice B1): tick what was really done →
+ * line / bill discounts → show the customer "ยอดที่ต้องชำระ" (recorded) →
+ * take the money through the shop's channels → ปิดบิล (one server
+ * transaction: payments + number + freeze) → print two copies. Every total on this page is the server's; the
  * page only previews with the same domain functions the API uses.
  *
  * One tree at every width — only CSS moves the side column under the lines
@@ -112,7 +115,6 @@ export function BillPage({ jobId, canWrite }: { jobId: string; canWrite: boolean
           {closed && receipt.status === 'issued' && <ClosedBanner result={closed} jobId={jobId} />}
           {receipt.status === 'draft' && <DraftBody jobId={jobId} receipt={receipt} canWrite={canWrite} state={state} onClosed={setClosed} />}
           {receipt.status !== 'draft' && <IssuedBody jobId={jobId} receipt={receipt} state={state} canWrite={canWrite} />}
-          <TaxInvoiceFlag jobId={jobId} receipt={receipt} canWrite={canWrite} state={state} />
         </>
       )}
     </div>
@@ -147,6 +149,8 @@ function DraftBody({ jobId, receipt, canWrite, state, onClosed }: {
         {rebuildFailure && <p className="ci-form-error" role="alert">{rebuildFailure.text}</p>}
         <FulfillmentList jobId={jobId} receipt={receipt} busy={busy} run={run} />
         <DiscountPanel jobId={jobId} receipt={receipt} busy={busy} run={run} />
+        {/* B1: the customer sees the amount before any money is taken. */}
+        <PresentStep jobId={jobId} receipt={receipt} canWrite={canWrite} state={state} />
       </div>
       <aside className="qt-side bl-side">
         <TotalsCard receipt={receipt} />
@@ -213,7 +217,7 @@ function IssuedBody({ jobId, receipt, state, canWrite }: { jobId: string; receip
           <h3>รับเงิน</h3>
           <dl className="bl-kv">
             {receipt.payments.map((p) => (
-              <PaymentRow key={p.id} label={`${PAYMENT_METHOD_LABEL[p.method]}${p.reversed ? ' (คืนแล้ว)' : ''}`} amount={p.amount} change={p.method === 'cash' ? p.changeGiven : null} />
+              <PaymentRow key={p.id} label={`${p.channelName ?? PAYMENT_METHOD_LABEL[p.method]}${p.surcharge && p.surcharge !== '0.00' ? ` (ค่าธรรมเนียม ${baht(p.surcharge)})` : ''}${p.reversed ? ' (คืนแล้ว)' : ''}`} amount={p.amount} change={p.method === 'cash' ? p.changeGiven : null} />
             ))}
             <dt>รับสุทธิ</dt><dd className="mono">{baht(receipt.paidNet)}</dd>
           </dl>
@@ -298,33 +302,5 @@ function VoidReceiptAction({ jobId, state }: { jobId: string; state: ReceiptStat
         </ReasonDialog>
       )}
     </>
-  );
-}
-
-/**
- * B8: the customer asked for a tax invoice. A flag on the job only — this
- * system issues none yet (VAT room is a later release); the shop handles it
- * outside and the flag lets them find these jobs later.
- */
-function TaxInvoiceFlag({ jobId, receipt, canWrite, state }: { jobId: string; receipt: Receipt; canWrite: boolean; state: ReceiptState }) {
-  const [failure, setFailure] = useState<BillFailure | null>(null);
-  const checked = receipt.taxInvoiceRequested;
-  async function toggle() {
-    setFailure(null);
-    const body: TaxInvoiceRequestInput = { requested: !checked };
-    const result = await state.guard('tax', () => api.put<TaxInvoiceRequest>(`/api/jobs/${encodeURIComponent(jobId)}/tax-invoice-request`, body));
-    if (result.ok) void state.reload();
-    else if (!result.failure.cancelled) setFailure(result.failure);
-  }
-  return (
-    <section className="card bl-tax">
-      <label className="bl-check">
-        <input type="checkbox" checked={checked} disabled={!canWrite || state.busy !== null} onChange={() => void toggle()} />
-        <span>ลูกค้าขอใบกำกับภาษี</span>
-        {state.busy === 'tax' && <span className="qt-line-sub"> กำลังบันทึก...</span>}
-      </label>
-      <p className="qt-line-sub">ระบบนี้ยังไม่ออกใบกำกับภาษี — ติ๊กไว้เพื่อให้บัญชีตามออกให้ภายหลัง ใบเสร็จที่พิมพ์ไม่ใช่ใบกำกับภาษี</p>
-      {failure && <p className="ci-form-error" role="alert">{failure.text}</p>}
-    </section>
   );
 }

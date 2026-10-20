@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Receipt } from '@gsms/contracts/index.js';
+import type { PendingReceipt as Receipt } from '../../lib/pendingContracts';
 import { ApiError, api } from '../../lib/api/client';
 import { isSessionCancelled } from '../../lib/api/sessionCancelled';
 import { describeBillError, type BillFailure } from './billErrors';
