@@ -33,6 +33,7 @@ import {
   QtyString,
 } from './catalog.js';
 import { PageQuery, uuid } from './common.js';
+import { StockConfirmSummary } from './stock.js';
 
 const isoDateTime = z.string().datetime();
 
@@ -286,6 +287,8 @@ export type ConfirmInput = z.infer<typeof ConfirmInput>;
 // moved to approved. null otherwise (including when the job is already past quoted).
 export const ConfirmResult = Quotation.extend({
   jobStatusUnchanged: z.object({ currentStatus: z.string() }).strict().nullable(),
+  // WO-006: what the reservation did. Never blocks the confirm; shortfalls are news, not errors.
+  stock: StockConfirmSummary,
 }).strict();
 export type ConfirmResult = z.infer<typeof ConfirmResult>;
 
@@ -338,9 +341,12 @@ export const WorkOrderLine = z
     unit: z.string().nullable(),
     // Warranty wording so the technician knows what the part is sold with.
     warrantyName: z.string().nullable(),
+    // WO-006 / CLAUDE.md s6.6: this part is approved but the shelf could not cover it ("รออะไหล่"),
+    // so the technician is not sent to an empty shelf. false for labour and for parts with stock.
+    awaitingParts: z.boolean(),
   })
   .strict();
-export type WorkOrderLine = z.infer<typeof WorkOrderLine>;
+export type WorkOrderLine =z.infer<typeof WorkOrderLine>;
 
 export const WorkOrder = z
   .object({

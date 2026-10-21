@@ -26,6 +26,7 @@ export * from './rules/receipt.js';
 export * from './rules/receiptBill.js';
 export * from './rules/deposit.js';
 export * from './rules/catalogItems.js';
+export * from './rules/stock.js';
 export * from './rules/priceKeyFixtures.js';
 
 export * from './stats/finance.js';
