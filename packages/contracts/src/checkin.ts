@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { PLATE_AREAS } from '@champpower/domain';
 import { blankAsAbsent, plate as plateSchema, thaiPhone } from './common.js';
+import { DepositWarning } from './deposits.js';
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'invalid_date');
 
@@ -85,11 +86,8 @@ export const CheckInInput = z.object({
   vehicleId: z.string().uuid().optional(),
   confirmNewVehicle: z.boolean().optional(),
 
-  // W4: held-deposit lookup by phone. The counter must be warned here if
-  // customerPhone matches a deposit still `held`, per CLAUDE.md §5.4 item 3 —
-  // not implemented yet because the deposit module does not exist until W4.
-  // Left as a marker so this endpoint is not shipped believing the warning
-  // already happens.
+  // The held-deposit warning (CLAUDE.md §5.4 item 3, P3.3) is on the RESPONSE:
+  // CheckInResult.heldDeposits. It needs nothing from the request.
 });
 export type CheckInInput = z.infer<typeof CheckInInput>;
 
@@ -99,6 +97,9 @@ export const CheckInResult = z.object({
   jobDate: isoDate,
   customerId: z.string().uuid(),
   vehicleId: z.string().uuid(),
+  // P3.3: deposits this customer (or this phone) still has `held`. Empty when none. Show
+  // "ลูกค้ารายนี้มีมัดจำค้าง ฿X" with a button -> POST /api/deposits/:id/attach { jobId }.
+  heldDeposits: z.array(DepositWarning).default([]),
 });
 export type CheckInResult = z.infer<typeof CheckInResult>;
 
@@ -137,6 +138,8 @@ export const CustomerLookupResult = z.object({
   customerId: z.string().uuid(),
   name: z.string().nullable(),
   phone: z.string().nullable(),
+  // P3.3: the warning as soon as the phone is known, before the job is even opened.
+  heldDeposits: z.array(DepositWarning).default([]),
   vehicles: z.array(
     z.object({
       vehicleId: z.string().uuid(),

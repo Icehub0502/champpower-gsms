@@ -32,6 +32,10 @@ import { z } from 'zod';
 import { LineType, MoneyString, QtyString } from './catalog.js';
 import { PageQuery, uuid } from './common.js';
 import { LineWarranty } from './quotation.js';
+import {
+  DepositChannel, DepositCustomerMismatchError, DepositExceedsBillError, DepositNotAttachedError,
+  DepositNotFoundError, DepositNotHeldError, DepositWarning,
+} from './deposits.js';
 
 const isoDateTime = z.string().datetime();
 const dateKey = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'invalid_date');
@@ -129,8 +133,13 @@ export const ReceiptTotals = z
     discount: MoneyString,
     // lineDiscountTotal + discount.
     totalDiscount: MoneyString,
-    // ยอดบิล - the bill total, before any channel surcharge. There is no deposit in P3.2.
+    // ยอดบิล - the bill total, before any channel surcharge and before any deposit. Deposits never
+    // reduce it (P3.3, CLAUDE.md s5.4 item 6).
     billTotal: MoneyString,
+    // P3.3: deposits offset into this bill ("0.00" on a draft: the offsets are chosen at close).
+    depositOffsetTotal: MoneyString,
+    // billTotal - depositOffsetTotal: what the customer still owed beyond the deposits. No VAT on it.
+    balanceDue: MoneyString,
     // Channel surcharges (B3): their own line on the receipt, not a discount, not in the 40% base.
     // "0.00" until payment is taken (a draft cannot know the channel yet).
     surchargeTotal: MoneyString,
@@ -141,6 +150,39 @@ export const ReceiptTotals = z
   })
   .strict();
 export type ReceiptTotals = z.infer<typeof ReceiptTotals>;
+
+// P3.3: one deposit offset into this bill - a payments row with method deposit_offset. NOT money in on
+// the receipt's day (it was counted when the deposit was received); it only reduces what was still owed.
+export const ReceiptDepositOffset = z
+  .object({
+    paymentId: uuid,
+    depositId: uuid,
+    // DEP-2610-0001; null if the slip was never printed.
+    depositNumber: z.string().nullable(),
+    amount: MoneyString,
+    channel: DepositChannel,
+    paymentChannelName: z.string().nullable(),
+    receivedAt: isoDateTime,
+    // The receipt was voided and the deposit went back to held.
+    reversed: z.boolean(),
+  })
+  .strict();
+export type ReceiptDepositOffset = z.infer<typeof ReceiptDepositOffset>;
+
+export const ReceiptDeposits = z
+  .object({
+    // Offsets standing on this (issued) receipt.
+    applied: z.array(ReceiptDepositOffset),
+    appliedTotal: MoneyString,
+    // Draft only: held deposits already bound to this job - send their ids as depositIds at close.
+    available: z.array(DepositWarning),
+    availableTotal: MoneyString,
+    // Draft only: held deposits matched by customer / phone but not bound to the job yet (the warning;
+    // attach first, then they move to `available`).
+    unattached: z.array(DepositWarning),
+  })
+  .strict();
+export type ReceiptDeposits = z.infer<typeof ReceiptDeposits>;
 
 export const ReceiptPayment = z
   .object({
@@ -174,7 +216,8 @@ export const ReceiptBlocker = z.enum([
   'discount_reason_required',
   'discount_requires_manager',
   'nothing_to_bill',
-  // Ice 20 Oct (P3.2 B2): deposits are agreed outside the system; a held deposit blocks closing here.
+  // @deprecated P3.3: a held deposit no longer blocks closing (it is offset via depositIds at close).
+  // Never emitted any more; kept only so older screens still compile. Remove with the web label.
   'deposit_held',
   // Ice 20 Oct (P3.2 B1): the customer has not been shown this bill yet, or it changed since.
   'bill_not_presented',
@@ -248,8 +291,10 @@ export const Receipt = z
     lines: z.array(ReceiptLine),
     totals: ReceiptTotals,
     discount: ReceiptDiscount,
+    // Cash / transfer / card only. Deposit offsets are in `deposits.applied`.
     payments: z.array(ReceiptPayment),
-    // SUM(amount - change_given) over this receipt's payments.
+    deposits: ReceiptDeposits,
+    // SUM(amount - change_given) over this receipt's payments (deposit offsets excluded).
     paidNet: MoneyString,
     changeTotal: MoneyString,
     issuedAt: isoDateTime.nullable(),
@@ -304,12 +349,17 @@ export type PaymentEntryInput = z.infer<typeof PaymentEntryInput>;
 
 export const CloseReceiptInput = z
   .object({
-    payments: z.array(PaymentEntryInput).min(1).max(6),
+    // May be empty only when the deposits in depositIds cover the whole bill.
+    payments: z.array(PaymentEntryInput).max(6).default([]),
+    // P3.3: held deposits bound to this job to offset into the bill, each in full. grand_total is
+    // unchanged and no VAT is computed on the remainder.
+    depositIds: z.array(uuid).max(6).default([]),
     // Required when the discount is above the ceiling (the closer - manager and up -
     // types it personally) or differs from the agreed one; overrides the draft's.
     discountReason: Reason.optional(),
   })
-  .strict();
+  .strict()
+  .refine((v) => v.payments.length > 0 || v.depositIds.length > 0, { message: 'payment_required', path: ['payments'] });
 export type CloseReceiptInput = z.infer<typeof CloseReceiptInput>;
 
 export const CloseReceiptResult = z
@@ -319,6 +369,8 @@ export const CloseReceiptResult = z
     change: MoneyString,
     // Channel surcharges collected on top of the bill.
     surchargeTotal: MoneyString,
+    // P3.3: deposits offset into this bill.
+    depositOffsetTotal: MoneyString,
     // Stock lines handed back to available stock because they were not done.
     // 0 until the stock module reserves anything (known gap G6).
     unreservedLines: z.number().int().min(0),
@@ -506,13 +558,25 @@ export const DailySummary = z
     date: dateKey,
     timezone: z.literal('Asia/Bangkok'),
     // เงินเข้า - by the day the money was RECEIVED. Net of change and of refunds
-    // dated this day. Excludes deposit_offset (that money was counted when the
-    // deposit was taken).
+    // dated this day. INCLUDES deposits received this day (P3.3, by the day received) and the
+    // deposit refunds decided this day; EXCLUDES deposit_offset (that money was counted when the
+    // deposit was taken) and forfeits (the money was already in; see depositForfeits).
     moneyIn: z
       .object({
         label: z.string(),
+        // Receipt payments only (deposits are counted in `deposits`).
         paymentCount: z.number().int(),
+        // Receipt reversals only.
         reversalCount: z.number().int(),
+        // P3.3: the deposit part of this day's money in, already folded into byMethod / byChannel / total.
+        deposits: z
+          .object({
+            receivedCount: z.number().int(),
+            receivedTotal: MoneyString,
+            refundedCount: z.number().int(),
+            refundedTotal: MoneyString,
+          })
+          .strict(),
         byMethod: z.array(MoneyInMethod),
         // The same money by the shop's own channel (ออมสิน, กสิกร, รูดบัตร...). Same total as byMethod.
         byChannel: z.array(MoneyInChannel),
@@ -563,6 +627,19 @@ export const DailySummary = z
       .object({
         issuedToday: z.object({ count: z.number().int(), billTotal: MoneyString }).strict(),
         voidedToday: z.object({ count: z.number().int(), billTotal: MoneyString }).strict(),
+      })
+      .strict(),
+    // P3.3: "รายได้จากมัดจำที่ริบ" - deposits forfeited this day. Shop income on the day of the decision,
+    // a category of its own: NOT repair sales (not in `sales`), NOT in moneyIn (the cash came in the day it
+    // was received), and with no VAT - the owner's decision (s5.4 item 8), not a tax conclusion.
+    depositForfeits: z
+      .object({
+        label: z.string(),
+        count: z.number().int(),
+        total: MoneyString,
+        items: z.array(
+          z.object({ depositId: uuid, amount: MoneyString, slipNumber: z.string().nullable(), reason: z.string().nullable(), decidedByName: z.string().nullable() }).strict(),
+        ),
       })
       .strict(),
     // Warranty-claim jobs delivered this day: no receipt, no revenue.
@@ -625,7 +702,10 @@ export const PaymentCashUnneededError = refusal('payment_cash_unneeded');
 export const AlreadyBilledError = z
   .object({ error: z.literal('already_billed'), message: z.string(), receiptId: uuid, number: z.string() })
   .strict();
-export const DepositHeldError = refusal('deposit_held'); // Ice 20 Oct (P3.2 B2): deposits are agreed outside the system
+// @deprecated P3.3: never emitted (deposits are offset at close now). Kept so older screens compile.
+export const DepositHeldError = refusal('deposit_held');
+// 422: the deposits cover the whole bill, so a cash / transfer / card entry has nothing to pay.
+export const PaymentNotNeededError = refusal('payment_not_needed');
 export const ReceiptRequiredError = refusal('receipt_required'); // B1: deliver needs a closed receipt
 export const ReceiptIssuedError = refusal('receipt_issued'); // delivered -> ready while a receipt stands
 export const PrintContentChangedError = z
@@ -656,6 +736,9 @@ export const BillingBody = z.union([
   ReceiptRequiredError, ReceiptIssuedError, PrintContentChangedError, PrintNotAllowedError,
   BillNotPresentedError, PresentationStaleError, ChannelNotFoundError, ChannelInactiveError,
   ChannelNameTakenError, LastCashChannelError, AppendOnlyError,
+  // P3.3: offsetting deposits at close.
+  DepositNotFoundError, DepositNotHeldError, DepositCustomerMismatchError, DepositNotAttachedError,
+  DepositExceedsBillError, PaymentNotNeededError,
   z.object({ error: z.literal('job_not_found'), message: z.string() }).strict(),
   z.object({ error: z.literal('invalid_request'), message: z.string(), fields: z.record(z.array(z.string())) }).strict(),
   z.object({ error: z.literal('document_series_missing'), message: z.string() }).strict(),

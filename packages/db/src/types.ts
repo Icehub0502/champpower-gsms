@@ -196,6 +196,9 @@ export interface DataSubjectRequests {
 }
 
 export interface Deposits {
+  payment_channel_id: string | null;
+  closed_channel_id: string | null;
+  idempotency_key: string | null;
   amount: Numeric;
   applied_to_document_id: string | null;
   booking_id: string | null;
@@ -262,6 +265,7 @@ export interface Documents {
   discount_entered_at: Timestamp | null;
   discount_reason: string | null;
   receipt_snapshot: Json | null;
+  deposit_snapshot: Json | null;
   presented_at: Timestamp | null;
   presented_by: string | null;
   presented_hash: string | null;
@@ -583,7 +587,7 @@ export interface DocumentPrints {
   doc_type: string;
   document_id: string | null;
   id: Generated<string>;
-  job_id: string;
+  job_id: string | null;
   printed_at: Generated<Timestamp>;
   printed_by: string | null;
   revision: number | null;
