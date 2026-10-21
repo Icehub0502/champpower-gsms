@@ -148,6 +148,7 @@ function DepositRow({ deposit: d, role, onChanged }: { deposit: Deposit; role: R
           {d.jobNumber ? ` · งาน ${d.jobNumber}` : ''}{d.plate ? ` · ${d.plate}` : ''}
           {d.slipFileId ? ' · มีรูปสลิป' : ''}
         </span>
+        {d.note && <span className="qt-line-sub dp-row-note">หมายเหตุ: {d.note}</span>}
         {d.status === 'applied' && d.appliedToReceiptNumber && <span className="qt-line-sub">หักเข้าใบเสร็จ {d.appliedToReceiptNumber}</span>}
         {(d.status === 'refunded' || d.status === 'forfeited') && (
           <span className="qt-line-sub">

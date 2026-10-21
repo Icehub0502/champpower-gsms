@@ -88,6 +88,8 @@ export const Deposit = z
     closedAt: isoDateTime.nullable(),
     closedByName: z.string().nullable(),
     closeReason: z.string().nullable(),
+    // Internal note typed when the deposit was received. null = none. Never printed on the DEP slip.
+    note: z.string().nullable(),
     // refunded: the channel the money went back through.
     refundChannelName: z.string().nullable(),
     // What the CALLER may do now (the server decides; the screen displays).
@@ -185,6 +187,9 @@ export const CreateDepositInput = z
     expectedDate: dateKey,
     // The transfer slip image (POST /api/files/deposit-slip). Optional for cash.
     slipFileId: uuid.optional(),
+    // Optional internal note (หมายเหตุ), max 500 - the CHECK ck_deposits_note_len is only the net behind this.
+    // An empty / blank string means "no note" and is dropped, so the form can send its textarea as is.
+    note: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().trim().max(500).optional()),
   })
   .strict()
   .superRefine((v, ctx) => {

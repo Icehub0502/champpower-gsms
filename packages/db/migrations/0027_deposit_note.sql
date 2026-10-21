@@ -1,0 +1,35 @@
+-- =============================================================================
+-- 0027_deposit_note.sql — P3.3: an optional internal note on a deposit (หมายเหตุ)
+--
+-- WHAT:     deposits.note text NULL, CHECK (char_length(note) <= 500). Written once, when
+--           the deposit is received (POST /api/deposits). There is no endpoint that edits it.
+--
+-- WHY:      the counter wants to say "who rang, what was agreed" next to the money. It is
+--           internal: it is NOT printed on the ใบรับเงินมัดจำ and is not part of the slip
+--           snapshot. CLAUDE.md s5.4 / P3.3 spec.
+--
+-- GUARD:    trg_deposits_guard (0026) is BEFORE UPDATE OR DELETE only, so the INSERT that
+--           sets the note is untouched. The note is deliberately in neither the "frozen"
+--           list nor any status transition's allowed list: an UPDATE that changes it is
+--           refused (GS002 deposit_*), which is the intent - a note is set at create only.
+--           No new trigger, no new table, therefore no apply_tenant_rls() call (the
+--           deposits policy from 0005 already covers the new column).
+--
+-- FRONT GATE (s4.y): CreateDepositInput.note is z.string().trim().max(500); an empty string
+--           is stored as NULL. The API answers 400 with a field error before this CHECK can
+--           fire; the CHECK is only the net.
+--
+-- ROLLBACK: (psql -v ON_ERROR_STOP=1 --single-transaction, as postgres, after a backup and
+--           after rolling the API back first.)
+--
+--             ALTER TABLE deposits DROP COLUMN note;   -- LOSES every note already written
+--             DELETE FROM schema_migrations WHERE filename = '0027_deposit_note.sql';
+--
+-- LOCKS:    ADD COLUMN with no DEFAULT is catalog-only on PG 16 (no table rewrite). The CHECK
+--           is on a column that is NULL in every existing row, but ADD CONSTRAINT still scans
+--           the table once under ACCESS EXCLUSIVE; deposits is small (hundreds of rows).
+--           Run outside shop hours all the same.
+-- =============================================================================
+
+ALTER TABLE deposits ADD COLUMN note text;
+ALTER TABLE deposits ADD CONSTRAINT ck_deposits_note_len CHECK (note IS NULL OR char_length(note) <= 500);

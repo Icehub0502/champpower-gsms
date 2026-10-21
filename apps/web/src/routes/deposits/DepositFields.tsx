@@ -21,9 +21,11 @@ export interface DepositDraft {
   /** YYYY-MM-DD (the date input's own format). */
   expectedDate: string;
   channel: DepositChannel;
+  /** หมายเหตุ (internal, optional, max 500). DEFAULT pending Ice (note is internal, not printed on the DEP slip). */
+  note: string;
 }
 
-export const EMPTY_DRAFT: DepositDraft = { amount: '', paymentChannelId: '', reason: '', expectedDate: '', channel: 'walk_in' };
+export const EMPTY_DRAFT: DepositDraft = { amount: '', paymentChannelId: '', reason: '', expectedDate: '', channel: 'walk_in', note: '' };
 
 export type DraftField = keyof DepositDraft | 'slip';
 export type DraftErrors = Partial<Record<DraftField, string>>;
@@ -49,6 +51,7 @@ export function checkDraft(d: DepositDraft, today: string = bangkokTodayKey()): 
     if (issue === 'invalid_date') e.expectedDate = 'วันที่ไม่ถูกต้อง';
     else if (issue === 'in_the_past') e.expectedDate = 'วันที่นัดต้องไม่ก่อนวันนี้';
   }
+  if (d.note.trim().length > 500) e.note = 'หมายเหตุยาวเกิน 500 ตัวอักษร';
   return e;
 }
 
@@ -102,7 +105,7 @@ interface DepositFieldsProps {
  * the shop's payment channel, reason, the expected day (mandatory), the slip.
  */
 export function DepositFields({ draft, errors, disabled, onChange, slip, showChannel }: DepositFieldsProps) {
-  const ids = { amount: useId(), date: useId(), slip: useId() };
+  const ids = { amount: useId(), date: useId(), slip: useId(), note: useId() };
   const channelsDoc = useDocument<PaymentChannelList>(PAYMENT_CHANNELS_PATH, 'payment-channel:changed');
   const channels = (channelsDoc.data?.items ?? []).filter((c) => c.active).sort((a, b) => a.sortOrder - b.sortOrder);
   const today = bangkokTodayKey();
@@ -170,6 +173,14 @@ export function DepositFields({ draft, errors, disabled, onChange, slip, showCha
           aria-invalid={errors.expectedDate ? true : undefined} onChange={(e) => onChange({ expectedDate: e.target.value })} />
         {errors.expectedDate && <span className="ci-field-error">{errors.expectedDate}</span>}
         <span className="qt-line-sub">เลยวันนี้แล้วลูกค้ายังไม่มา ระบบจะขึ้นเตือนในหน้า “มัดจำค้างอยู่” ทันที</span>
+      </label>
+
+      <label className={`field ci-field${errors.note ? ' has-error' : ''}`} htmlFor={ids.note}>
+        <span className="ci-field-label">หมายเหตุ (ถ้ามี)</span>
+        <textarea id={ids.note} rows={2} maxLength={500} value={draft.note} disabled={disabled}
+          aria-invalid={errors.note ? true : undefined} onChange={(e) => onChange({ note: e.target.value })} />
+        {errors.note && <span className="ci-field-error">{errors.note}</span>}
+        <span className="qt-line-sub">บันทึกภายในร้าน ไม่พิมพ์บนใบรับเงินมัดจำ</span>
       </label>
 
       <div className={`field ci-field${errors.slip ? ' has-error' : ''}`}>

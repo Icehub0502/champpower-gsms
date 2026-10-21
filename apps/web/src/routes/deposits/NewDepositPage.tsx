@@ -95,6 +95,7 @@ export function NewDepositPage() {
       amount: draft.amount.trim(),
       paymentChannelId: draft.paymentChannelId,
       expectedDate: draft.expectedDate,
+      ...(draft.note.trim() !== '' ? { note: draft.note.trim() } : {}),
       ...(slip.slip.status === 'done' ? { slipFileId: slip.slip.fileId } : {}),
     };
     const parsed = CreateDepositInput.safeParse(candidate);

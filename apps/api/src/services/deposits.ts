@@ -84,6 +84,8 @@ export function toDeposit(r: repo.DepositRow, role: string, today: string, print
     receivedAt: r.received_at.toISOString(), receivedByName: r.received_by_name,
     appliedToReceiptId: r.applied_to_document_id, appliedToReceiptNumber: r.applied_receipt_number,
     closedAt: iso(r.closed_at), closedByName: r.closed_by_name, closeReason: r.close_reason,
+    // DEFAULT pending Ice (note is internal, not printed on the DEP slip)
+    note: r.note,
     refundChannelName: r.status === 'refunded' ? (r.refund_channel_name ?? r.payment_channel_name) : null,
     next: {
       canAttach: held && write && r.job_id === null,
@@ -241,6 +243,7 @@ export async function createDeposit(
     shopId, customerId, jobId, vehicleId, bookingId: input.bookingId ?? null, amount: formatSatang(toSatang(input.amount)),
     reason: input.reason, method: channel!.kind, channel: input.channel, paymentChannelId: channel!.id,
     slipFileId: input.slipFileId ?? null, expectedDate: input.expectedDate, receivedBy: actor.id, idempotencyKey: input.idempotencyKey,
+    note: input.note ?? null,
   })
   // Ids and operational values only - never the name or phone (CLAUDE.md s12).
   await writeAudit(trx, {
@@ -249,6 +252,7 @@ export async function createDeposit(
     after: {
       customerId, jobId, vehicleId, amount: formatSatang(toSatang(input.amount)), reason: input.reason, channel: input.channel,
       paymentChannelId: channel!.id, method: channel!.kind, expectedDate: input.expectedDate, slipFileId: input.slipFileId ?? null,
+      hasNote: input.note !== undefined, // the text can name a person: kept out of the audit row
       customerCreated,
     },
   })

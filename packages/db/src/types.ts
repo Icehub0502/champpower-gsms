@@ -196,6 +196,7 @@ export interface DataSubjectRequests {
 }
 
 export interface Deposits {
+  note: string | null;
   payment_channel_id: string | null;
   closed_channel_id: string | null;
   idempotency_key: string | null;

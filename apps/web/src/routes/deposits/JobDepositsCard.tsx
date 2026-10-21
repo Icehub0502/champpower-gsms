@@ -1,12 +1,15 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { depositOffsetPlan, formatSatang, toSatang } from '@champpower/domain';
-import type { JobDeposits } from '@gsms/contracts/index.js';
+import type { DetachDepositInput, Deposit, DepositWarning, JobDeposits } from '@gsms/contracts/index.js';
 import { DepositSlipPrintButton } from '../../components/print/DepositSlipPrintButton';
+import { ReasonDialog } from '../../components/ui/ReasonDialog';
 import { useDocument } from '../../hooks/useDocument';
+import { api } from '../../lib/api/client';
 import { baht } from '../../lib/money';
 import { dateKeyThai, thaiDateTime } from '../../lib/printFormat';
+import { describeDepositError } from './depositErrors';
 import { HeldDepositWarning, warningsTotal } from './HeldDepositWarning';
-import { DEPOSIT_REASON_LABEL, DEPOSIT_SOCKET_EVENT, jobDepositsPath } from './depositLabels';
+import { DEPOSIT_REASON_LABEL, DEPOSIT_SOCKET_EVENT, depositPath, jobDepositsPath } from './depositLabels';
 import { TakeDepositDialog } from './TakeDepositDialog';
 
 interface JobDepositsCardProps {
@@ -44,6 +47,7 @@ export function JobDepositsCard({
 }: JobDepositsCardProps) {
   const doc = useDocument<JobDeposits>(jobDepositsPath(jobId), DEPOSIT_SOCKET_EVENT);
   const [open, setOpen] = useState(initiallyOpen && canWrite);
+  const [detaching, setDetaching] = useState<DepositWarning | null>(null);
   const data = doc.data;
   const attached = (data?.warnings ?? []).filter((w) => w.attachedToThisJob);
   const attachedTotal = warningsTotal(attached);
@@ -85,8 +89,13 @@ export function JobDepositsCard({
                     </span>
                   </div>
                   {canWrite && (
+                    <div className="dp-row-actions">
+                    <button type="button" className="btn secondary small" disabled={disabled} onClick={() => setDetaching(w)}>
+                      ถอดมัดจำออกจากงาน
+                    </button>
                     <DepositSlipPrintButton depositId={w.depositId} className="btn secondary small" disabled={disabled}
                       label={w.slipNumber ? 'พิมพ์ใบมัดจำ' : 'พิมพ์ใบมัดจำ (ออกเลข DEP)'} onPrinted={() => doc.reload?.()} />
+                    </div>
                   )}
                 </li>
               ))}
@@ -120,9 +129,63 @@ export function JobDepositsCard({
         )}
       </section>
 
+      {detaching && (
+        <DetachDialog deposit={detaching} onClose={() => setDetaching(null)} onDone={() => { setDetaching(null); doc.reload?.(); }} />
+      )}
+
       {open && (
         <TakeDepositDialog jobId={jobId} who={who} onClose={() => setOpen(false)} onSaved={() => doc.reload?.()} />
       )}
     </>
+  );
+}
+
+/**
+ * Undo a wrong attach. The reason is mandatory and goes to the audit log. The server decides whether it is
+ * still allowed (deposit_not_held, deposit_job_mismatch, deposit_locked...); its refusal is shown in Thai
+ * and, when the card is stale, the card reloads. Same role rule as attach (the write roles).
+ */
+function DetachDialog({ deposit: w, onClose, onDone }: { deposit: DepositWarning; onClose: () => void; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const [fieldError, setFieldError] = useState<string | null>(null);
+
+  async function detach(reason: string) {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+    setFieldError(null);
+    try {
+      const body: DetachDepositInput = { reason };
+      await api.post<Deposit>(`${depositPath(w.depositId)}/detach`, body);
+      onDone();
+    } catch (err) {
+      const f = describeDepositError(err);
+      if (f.cancelled) return;
+      setError(f.text);
+      setFieldError(f.fields.reason ?? null);
+      if (f.stale) onDone();
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+
+  return (
+    <ReasonDialog
+      title="ถอดมัดจำออกจากงาน"
+      confirmLabel="ยืนยันถอดออก"
+      required
+      busy={busy}
+      errorText={error}
+      fieldError={fieldError}
+      reasonLabel="เหตุผลที่ถอดออก (จำเป็น)"
+      onCancel={onClose}
+      onConfirm={(reason) => void detach(reason ?? '')}
+    >
+      <p>ถอดมัดจำ <strong className="mono">{baht(w.amount)}</strong> ออกจากงานนี้ — เงินยังเป็นมัดจำค้างอยู่ของลูกค้า ผูกเข้างานอื่นได้ภายหลัง</p>
+    </ReasonDialog>
   );
 }

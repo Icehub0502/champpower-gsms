@@ -41,6 +41,7 @@ export interface DepositRow {
   closed_at: Date | null
   closed_by_name: string | null
   close_reason: string | null
+  note: string | null
   refund_channel_name: string | null
 }
 
@@ -61,7 +62,7 @@ function base(trx: ScopedTx) {
       'd.payment_channel_id', 'pc.name as payment_channel_name', 'd.slip_file_id', 'd.slip_document_id', 'sd.number as slip_number',
       sql<string>`to_char(d.expected_date, 'YYYY-MM-DD')`.as('expected_date'),
       'd.status', 'd.received_at', 'ru.name as received_by_name', 'd.applied_to_document_id', 'ad.number as applied_receipt_number',
-      'd.closed_at', 'cu.name as closed_by_name', 'd.close_reason', 'cc.name as refund_channel_name',
+      'd.closed_at', 'cu.name as closed_by_name', 'd.close_reason', 'd.note', 'cc.name as refund_channel_name',
     ])
 }
 
@@ -108,6 +109,7 @@ export interface NewDeposit {
   expectedDate: string
   receivedBy: string
   idempotencyKey: string
+  note: string | null
 }
 
 export async function insert(trx: ScopedTx, d: NewDeposit): Promise<string> {
@@ -115,6 +117,7 @@ export async function insert(trx: ScopedTx, d: NewDeposit): Promise<string> {
     shop_id: d.shopId, customer_id: d.customerId, job_id: d.jobId, vehicle_id: d.vehicleId, booking_id: d.bookingId,
     amount: d.amount, reason: d.reason, method: d.method, channel: d.channel, payment_channel_id: d.paymentChannelId,
     slip_file_id: d.slipFileId, expected_date: d.expectedDate, received_by: d.receivedBy, idempotency_key: d.idempotencyKey,
+    note: d.note,
   }).returning(['id']).executeTakeFirstOrThrow()
   return r.id
 }
