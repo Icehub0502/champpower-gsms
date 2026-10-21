@@ -19,6 +19,8 @@ import { ProvincePicker } from '../../components/ui/ProvincePicker';
 import { OwnerChangeDialog, PickCustomerDialog, VehicleAmbiguousDialog } from './RefusalDialogs';
 import { OFF_SCREEN_FIELD_LABEL, REFUSAL_TEXT, readSubmitFailure } from './refusal';
 import { digits, useCheckInLookups } from './useCheckInLookups';
+import { CheckInDepositStep } from './CheckInDepositStep';
+import { HeldDepositWarning } from '../deposits/HeldDepositWarning';
 
 interface CheckInPageProps {
   onCreated: (jobId: string) => void;
@@ -102,6 +104,11 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
   const lookups = useCheckInLookups();
   const photos = useCheckInPhotos();
   const vehicle = lookups.vehicle;
+  // P3.3: "บันทึก แล้วรับมัดจำ" was pressed — kept across the 409 re-submits the dialogs make.
+  const wantDepositRef = useRef(false);
+  // P3.3: the job was created and there is something about deposits to do before leaving
+  // (a held deposit to attach, or the counter asked to take one). Otherwise straight to /today as before.
+  const [afterSave, setAfterSave] = useState<CheckInResult | null>(null);
 
   function set<K extends FieldKey>(key: K, value: Form[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -242,7 +249,10 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
     setSubmitting(true);
     try {
       const result = await api.post<CheckInResult>('/api/checkin', input);
-      onCreated(result.jobId);
+      // CLAUDE.md §5.4 item 3: a held deposit of this customer must be shown NOW, with its attach
+      // button — leaving for /today would hide it until the till, where it is too late to remember.
+      if ((result.heldDeposits ?? []).length > 0 || wantDepositRef.current) setAfterSave(result);
+      else onCreated(result.jobId);
     } catch (err) {
       if (isSessionCancelled(err)) return; // logged out / switched user: no form error
       const failure = readSubmitFailure(err);
@@ -335,8 +345,30 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
+    wantDepositRef.current = false;
     if (!submitting) void submit();
   }
+
+  function submitThenDeposit() {
+    wantDepositRef.current = true;
+    if (!submitting) void submit();
+  }
+
+  if (afterSave) {
+    return (
+      <CheckInDepositStep
+        result={afterSave}
+        customerName={form.customerName.trim() || null}
+        openDialog={wantDepositRef.current}
+        onDone={() => onCreated(afterSave.jobId)}
+      />
+    );
+  }
+
+  // The phone lookup already knows of held deposits (CustomerLookupResult.heldDeposits): warn before the job exists.
+  const lookupWarnings = lookups.phoneLookup?.kind === 'found' && digits(lookups.phoneLookup.phone) === phone
+    ? lookups.phoneLookup.result.heldDeposits ?? []
+    : [];
 
   function pickCustomer(c: CustomerCandidate, resubmit: boolean) {
     setChosenCustomerId(c.id);
@@ -438,6 +470,8 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
             </CheckInField>
           </div>
 
+          {lookupWarnings.length > 0 && <HeldDepositWarning warnings={lookupWarnings} jobId={null} canAttach={false} />}
+
           {askLeadSource && (
             <CheckInField label="ลูกค้ารู้จักอู่จากช่องทางไหน" required error={errors.leadSource}
               errorId="ci-err-leadSource" hint="ถามครั้งเดียวตอนลูกค้ามาครั้งแรก" className="ci-lead">
@@ -502,6 +536,10 @@ export function CheckInPage({ onCreated }: CheckInPageProps) {
         {formError && <p className="ci-form-error" role="alert"><Icon name="alert" size={15} /><span>{formError}</span></p>}
 
         <div className="ci-actions">
+          {/* P3.3: the "รับมัดจำ" button of the check-in page — the deposit needs the job, so it is taken right after saving. */}
+          <button type="button" className="btn secondary ci-submit-alt" disabled={submitting || photos.pending} onClick={submitThenDeposit}>
+            บันทึก แล้วรับมัดจำ
+          </button>
           <button type="submit" className="btn ci-submit" disabled={submitting || photos.pending}>
             {submitting ? 'กำลังบันทึก…' : photos.pending ? 'รอรูปอัปโหลด…' : 'บันทึกและสร้างใบงาน'}
           </button>

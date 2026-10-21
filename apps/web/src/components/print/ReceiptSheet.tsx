@@ -61,7 +61,15 @@ export function ReceiptSheet({ receipt }: { receipt: Receipt }) {
                 <td className="pr-c-num">{pay.method === 'cash' ? baht(pay.changeGiven) : '-'}</td>
               </tr>
             ))}
-            {livePayments.length === 0 && <tr><td colSpan={3}>-</td></tr>}
+            {/* P3.3: each deposit offset with its ใบรับเงินมัดจำ number (§5.4 item 4b). */}
+            {(receipt.deposits?.applied ?? []).map((d) => (
+              <tr key={d.paymentId}>
+                <td>หักเงินมัดจำ {d.depositNumber ?? ''}{d.reversed ? ' (คืนกลับเป็นมัดจำแล้ว)' : ''}</td>
+                <td className="pr-c-num">{baht(d.amount)}</td>
+                <td className="pr-c-num">-</td>
+              </tr>
+            ))}
+            {livePayments.length === 0 && (receipt.deposits?.applied ?? []).length === 0 && <tr><td colSpan={3}>-</td></tr>}
           </tbody>
         </table>
 
@@ -70,6 +78,9 @@ export function ReceiptSheet({ receipt }: { receipt: Receipt }) {
           {receipt.totals.lineDiscountTotal !== '0.00' && (<><dt>ส่วนลดรายบรรทัด</dt><dd>{baht(receipt.totals.lineDiscountTotal)}</dd></>)}
           <dt>ส่วนลดท้ายบิล</dt><dd>{baht(receipt.totals.discount)}</dd>
           <dt className="pr-grand">ยอดบิล</dt><dd className="pr-grand">{baht(receipt.totals.billTotal)}</dd>
+          {receipt.totals.depositOffsetTotal && receipt.totals.depositOffsetTotal !== '0.00' && (
+            <><dt>หักเงินมัดจำ</dt><dd>{baht(receipt.totals.depositOffsetTotal)}</dd><dt>คงเหลือชำระ</dt><dd>{baht(receipt.totals.balanceDue)}</dd></>
+          )}
           {receipt.totals.surchargeTotal !== '0.00' && (
             <><dt>ค่าธรรมเนียมช่องทางชำระ</dt><dd>{baht(receipt.totals.surchargeTotal)}</dd><dt>รับชำระรวม</dt><dd>{baht(receipt.totals.totalPaid)}</dd></>
           )}
