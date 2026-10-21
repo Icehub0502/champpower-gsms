@@ -19,6 +19,7 @@ import type { DailySummary } from '@gsms/contracts/index.js'
 import type { ScopedTx } from '@gsms/db/client.js'
 import { bangkokToday, endOfDayExclusive, startOfDay } from '../lib/bangkokDate.js'
 import * as repo from '../repositories/daily.js'
+import * as depositsRepo from '../repositories/deposits.js'
 
 const METHODS = ['cash', 'transfer', 'card'] as const
 type Kind = (typeof METHODS)[number]
@@ -28,7 +29,7 @@ export async function dailySummary(trx: ScopedTx, date: string | undefined): Pro
   const start = startOfDay(day)
   const end = endOfDayExclusive(day)
 
-  const [pay, rev, payCh, revCh, issued, voidedToday, claims] = await Promise.all([
+  const [pay, rev, payCh, revCh, issued, voidedToday, claims, depIn, depOut, depForfeit] = await Promise.all([
     repo.paymentSumsByMethod(trx, start, end),
     repo.reversalSumsByMethod(trx, start, end),
     repo.paymentSumsByChannel(trx, start, end),
@@ -36,15 +37,24 @@ export async function dailySummary(trx: ScopedTx, date: string | undefined): Pro
     repo.receiptsIssuedBetween(trx, start, end),
     repo.receiptsVoidedBetween(trx, start, end),
     repo.warrantyClaimsDeliveredBetween(trx, start, end),
+    depositsRepo.receivedBetween(trx, start, end),
+    depositsRepo.refundedBetween(trx, start, end),
+    depositsRepo.forfeitedBetween(trx, start, end),
   ])
 
   // ---- เงินเข้า ----
+  // Deposits (P3.3, CLAUDE.md s5.4 item 9): a deposit is money in on the day it was RECEIVED, by the
+  // channel it came through, and money out on the day it was REFUNDED. A forfeit moves nothing here (the
+  // cash came in the day it was received) - it is its own category below. deposit_offset payments are
+  // excluded in the repository: that money was counted when the deposit was taken.
+  const depKind = (rows: depositsRepo.DepositMoneyRow[], m: Kind) =>
+    sumSatang(rows.filter((x) => x.kind === m).map((x) => toSatang(x.amount)))
   const byMethod = METHODS.map((m) => {
     const p = pay.find((x) => x.method === m)
     const r = rev.find((x) => x.method === m)
-    const received = toSatang(p?.received ?? '0')
+    const received = toSatang(p?.received ?? '0') + depKind(depIn, m)
     const change = toSatang(p?.change ?? '0')
-    const reversed = toSatang(r?.amount ?? '0')
+    const reversed = toSatang(r?.amount ?? '0') + depKind(depOut, m)
     return { method: m, received, change, reversed, net: received - change - reversed }
   })
 
@@ -63,12 +73,30 @@ export async function dailySummary(trx: ScopedTx, date: string | undefined): Pro
     row.reversed += toSatang(r.amount)
     channels.set(k, row)
   }
+  for (const d of depIn) {
+    const k = keyOf(d.channel_id, d.kind)
+    const row = channels.get(k) ?? { channelId: d.channel_id, name: d.name ?? 'ไม่ระบุช่องทาง', kind: d.kind as Kind, received: 0, change: 0, surcharge: 0, reversed: 0 }
+    row.received += toSatang(d.amount)
+    channels.set(k, row)
+  }
+  for (const d of depOut) {
+    const k = keyOf(d.channel_id, d.kind)
+    const row = channels.get(k) ?? { channelId: d.channel_id, name: d.name ?? 'ไม่ระบุช่องทาง', kind: d.kind as Kind, received: 0, change: 0, surcharge: 0, reversed: 0 }
+    row.reversed += toSatang(d.amount)
+    channels.set(k, row)
+  }
   const surchargeIn = sumSatang(pay.map((p) => toSatang(p.surcharge)))
 
   const moneyIn = {
-    label: `เงินเข้าวันที่ ${day} (ตามวันที่รับเงิน · เขตเวลา Asia/Bangkok) · รวมค่าธรรมเนียมช่องทาง · หักเงินทอนและเงินคืนที่ยกเลิกใบเสร็จในวันนี้`,
+    label: `เงินเข้าวันที่ ${day} (ตามวันที่รับเงิน · เขตเวลา Asia/Bangkok) · รวมมัดจำที่รับในวันนี้ · รวมค่าธรรมเนียมช่องทาง · หักเงินทอน เงินคืนที่ยกเลิกใบเสร็จ และมัดจำที่คืนในวันนี้ · ไม่นับมัดจำที่หักเข้าบิล (นับไปแล้วตอนรับ)`,
     paymentCount: pay.reduce((a, p) => a + p.rows, 0),
     reversalCount: rev.reduce((a, p) => a + p.rows, 0),
+    deposits: {
+      receivedCount: depIn.reduce((a, d) => a + d.rows, 0),
+      receivedTotal: formatSatang(sumSatang(depIn.map((d) => toSatang(d.amount)))),
+      refundedCount: depOut.reduce((a, d) => a + d.rows, 0),
+      refundedTotal: formatSatang(sumSatang(depOut.map((d) => toSatang(d.amount)))),
+    },
     byMethod: byMethod.map((b) => ({
       method: b.method, received: formatSatang(b.received), changeGiven: formatSatang(b.change),
       reversed: formatSatang(b.reversed), net: formatSatang(b.net),
@@ -115,7 +143,17 @@ export async function dailySummary(trx: ScopedTx, date: string | undefined): Pro
   }
 
   return {
-    date: day, timezone: 'Asia/Bangkok', moneyIn, sales, voided, warrantyClaimsDelivered: claims,
+    date: day, timezone: 'Asia/Bangkok', moneyIn, sales, voided,
+    // "รายได้จากมัดจำที่ริบ": shop income on the day of the decision. Its own category - not repair sales,
+    // not in moneyIn, no VAT. The no-VAT treatment is the owner's decision (CLAUDE.md s5.4 item 8), NOT a
+    // tax conclusion drawn by the system; revisit with the accountant if the totals grow.
+    depositForfeits: {
+      label: `รายได้จากมัดจำที่ริบ วันที่ ${day} (ตามวันที่ตัดสินริบ) · ไม่ใช่ยอดขายค่าซ่อม · ไม่คิด VAT`,
+      count: depForfeit.length,
+      total: formatSatang(sumSatang(depForfeit.map((d) => toSatang(d.amount)))),
+      items: depForfeit.map((d) => ({ depositId: d.id, amount: d.amount, slipNumber: d.slip_number, reason: d.close_reason, decidedByName: d.decided_by_name })),
+    },
+    warrantyClaimsDelivered: claims,
     cashReceivedNet: formatSatang(byMethod.find((b) => b.method === 'cash')!.net),
   }
 }

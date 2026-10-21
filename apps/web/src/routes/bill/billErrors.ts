@@ -27,7 +27,7 @@ const STALE_CODES = new Set([
   'receipt_not_found', 'receipt_exists', 'receipt_not_draft', 'receipt_not_issued', 'quotation_changed',
   'receipt_line_not_found', 'fulfillment_incomplete', 'discount_entry_required', 'already_billed',
   'revision_pending', 'quotation_not_confirmed', 'bill_not_presented', 'presentation_stale',
-  'channel_not_found', 'channel_inactive',
+  'channel_not_found', 'channel_inactive', 'deposit_not_found', 'deposit_not_held', 'deposit_not_attached',
 ]);
 
 function textOf(body: BillingBodyT): string {
@@ -55,7 +55,6 @@ function textOf(body: BillingBodyT): string {
     case 'payment_over_noncash': return `โอน/บัตร เกินยอดไป ${baht(body.over)} — ทอนได้เฉพาะเงินสด แก้ยอดให้พอดี`;
     case 'payment_cash_unneeded': return 'มีเงินทอนแต่เงินสดที่รับไม่พอจะทอน — ตรวจยอดแต่ละช่องทางอีกครั้ง';
     case 'already_billed': return `งานนี้ออกใบเสร็จแล้ว เลขที่ ${body.number}`;
-    case 'deposit_held': return 'ลูกค้ารายนี้มีมัดจำค้างอยู่ ระบบยังหักมัดจำไม่ได้ในรอบนี้ — ปิดบิลงานนี้ตามวิธีเดิมไปก่อน แล้วแจ้งผู้จัดการ';
     case 'receipt_required': return 'งานนี้ยังไม่ได้ปิดบิล — ต้องออกใบเสร็จก่อนจึงกด “ส่งแล้ว” ได้';
     case 'receipt_issued': return 'งานนี้ออกใบเสร็จแล้ว ย้อนกลับไม่ได้ — ต้องให้เจ้าของยกเลิกใบเสร็จก่อน';
     case 'print_content_changed':
@@ -68,6 +67,12 @@ function textOf(body: BillingBodyT): string {
     case 'channel_name_taken': return 'มีช่องทางชำระชื่อนี้อยู่แล้ว — ตั้งชื่ออื่น';
     case 'last_active_channel': return 'ปิดช่องทางนี้ไม่ได้ เพราะเป็นช่องทางสุดท้ายที่ยังเปิดใช้อยู่ — เพิ่มหรือเปิดช่องทางอื่นก่อน';
     case 'record_append_only': return 'รายการนี้แก้หรือลบไม่ได้ (บันทึกเพิ่มได้อย่างเดียว)';
+    case 'deposit_not_found': return 'ไม่พบมัดจำที่เลือก — โหลดบิลใหม่ให้แล้ว เลือกใหม่อีกครั้ง';
+    case 'deposit_not_held': return 'มัดจำที่เลือกไม่ได้ถืออยู่แล้ว (ถูกคืน ริบ หรือหักไปแล้ว) — โหลดบิลใหม่ให้แล้ว';
+    case 'deposit_customer_mismatch': return 'มัดจำที่เลือกเป็นของลูกค้าคนอื่น หักเข้าบิลนี้ไม่ได้';
+    case 'deposit_not_attached': return 'มัดจำที่เลือกยังไม่ได้ผูกเข้างานนี้ — กด “ผูกเข้างานนี้” ก่อน';
+    case 'deposit_exceeds_bill': return `มัดจำที่เลือกมากกว่ายอดบิล ${baht(body.over)} (หักได้ไม่เกิน ${baht(body.max)}) — เลือกน้อยลง`;
+    case 'payment_not_needed': return 'มัดจำครอบคลุมยอดบิลทั้งหมดแล้ว — ไม่ต้องรับเงินช่องทางอื่น';
     case 'job_not_found': return 'ไม่พบงานนี้';
     case 'invalid_request': return 'ข้อมูลบางช่องไม่ถูกต้อง กรุณาตรวจช่องที่มีข้อความสีแดง';
     case 'document_series_missing': return 'สาขานี้ยังไม่ได้ตั้งเลขที่ใบเสร็จ จึงออกใบไม่ได้ — ไม่ใช่ความผิดของคุณ กรุณาแจ้งเจ้าของร้านให้ตั้งค่า';
@@ -89,7 +94,8 @@ export function describeBillError(err: unknown): BillFailure {
     if (body.error === 'discount_exceeds_subtotal' || body.error === 'discount_reason_required') {
       for (const k of Object.keys(body.fields)) fields[k] = textOf(body);
     }
-    return { text: textOf(body), fields, body, stale: STALE_CODES.has(body.error), cancelled: false, code };
+    // textOf has no words for a deprecated code (deposit_held, never emitted since P3.3): generic text.
+    return { text: textOf(body) ?? GENERIC_BILL_FAILURE, fields, body, stale: STALE_CODES.has(body.error), cancelled: false, code };
   }
   if (err.status === 403) return { ...empty, text: 'คุณไม่มีสิทธิ์ทำรายการนี้', stale: false, cancelled: false, code };
   if (err.status === 404) return { ...empty, text: 'ไม่พบข้อมูลนี้ — ระบบหลังบ้านอาจยังไม่เปิดใช้ส่วนนี้', stale: false, cancelled: false, code };

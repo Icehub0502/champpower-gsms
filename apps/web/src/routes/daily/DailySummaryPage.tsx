@@ -64,6 +64,7 @@ export function DailySummaryPage() {
             <MoneyInCard s={s} period={period} />
             <SalesCard s={s} period={period} />
           </div>
+          {s.depositForfeits && <ForfeitCard s={s} period={period} />}
           <OtherCard s={s} period={period} />
         </>
       )}
@@ -119,6 +120,18 @@ function MoneyInCard({ s, period }: { s: DailySummary; period: string }) {
       {m.surchargeTotal !== '0.00' && (
         <p className="dl-basis">ในจำนวนนี้เป็นค่าธรรมเนียมช่องทางชำระ (เช่น รูดบัตร) {baht(m.surchargeTotal)} — ไม่ใช่ยอดขาย</p>
       )}
+      {/* P3.3: deposits are money in on the day RECEIVED; refunds of deposits are money out on the day decided.
+          Both are already inside the tables above and the total below — shown here so nobody reads them as sales. */}
+      {m.deposits && (m.deposits.receivedCount > 0 || m.deposits.refundedCount > 0) && (
+        <div className="dl-flag dp-daily" aria-label="มัดจำในเงินเข้าวันนี้">
+          <h4>มัดจำ (รวมอยู่ในเงินเข้าแล้ว — ไม่ใช่ยอดขาย)</h4>
+          <dl className="bl-kv">
+            <dt>รับมัดจำวันนี้ ({m.deposits.receivedCount} รายการ)</dt><dd className="mono">{baht(m.deposits.receivedTotal)}</dd>
+            <dt>คืนมัดจำวันนี้ — เงินออก ({m.deposits.refundedCount} รายการ)</dt><dd className="mono">−{baht(m.deposits.refundedTotal)}</dd>
+          </dl>
+          <p className="dl-basis">การหักมัดจำเข้าบิลไม่นับเป็นเงินเข้าอีกรอบ (นับไปแล้ววันที่รับมัดจำ)</p>
+        </div>
+      )}
       <p className="dl-total">เงินเข้าสุทธิ <span className="mono">{baht(m.total)}</span></p>
       <p className="dl-basis">
         จาก {m.paymentCount} รายการรับเงิน · คืนเงิน {m.reversalCount} รายการ · ทอน {m.changeCount} ครั้ง รวม {baht(m.changeTotal)}
@@ -173,6 +186,36 @@ function SalesCard({ s, period }: { s: DailySummary; period: string }) {
           </ul>
         </div>
       )}
+    </section>
+  );
+}
+
+/**
+ * รายได้จากมัดจำที่ริบ (CLAUDE.md §5.4 item 8): shop income on the day of the
+ * decision, its own category — not repair sales, not money in (the cash came in
+ * the day the deposit was received), no VAT by the owner's decision.
+ */
+function ForfeitCard({ s, period }: { s: DailySummary; period: string }) {
+  const f = s.depositForfeits;
+  return (
+    <section className="card dl-card dp-forfeit" aria-label="รายได้จากมัดจำที่ริบ">
+      <h3>{f.label || 'รายได้จากมัดจำที่ริบ'}</h3>
+      <p className="dl-basis">{period} · นับตาม<strong>วันที่ตัดสินริบ</strong> · แยกจากยอดขายค่าซ่อม · ไม่อยู่ใน “เงินเข้า” (เงินเข้ามาแล้วตั้งแต่วันรับมัดจำ) · ไม่คิด VAT ตามที่เจ้าของตัดสินใจ</p>
+      {f.items.length > 0 ? (
+        <table className="dl-table">
+          <thead><tr><th>ใบมัดจำ</th><th>เหตุผล / ผู้ริบ</th><th className="num">จำนวน</th></tr></thead>
+          <tbody>
+            {f.items.map((i) => (
+              <tr key={i.depositId}>
+                <td className="mono">{i.slipNumber ?? '-'}</td>
+                <td>{i.reason ?? '-'}{i.decidedByName ? <span className="qt-line-sub"> · {i.decidedByName}</span> : null}</td>
+                <td className="num mono">{baht(i.amount)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : <p className="qt-line-sub">ไม่มีการริบมัดจำในวันนี้</p>}
+      <p className="dl-total">รวม {f.count} รายการ <span className="mono">{baht(f.total)}</span></p>
     </section>
   );
 }

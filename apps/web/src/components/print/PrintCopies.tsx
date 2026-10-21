@@ -10,12 +10,19 @@ const COPY_LABELS: Record<PrintCopySet, string[]> = {
   shop_only: ['สำหรับร้านเก็บ'],
 };
 
-export function printFooterText(result: PrintResult): string {
+/**
+ * What the copies need from the server's answer to "record this print". Every
+ * print door answers with these fields (POST /prints -> PrintResult, POST
+ * /deposits/:id/slip -> DepositSlipPrint), so one component prints them all.
+ */
+export type PrintStampSource = Pick<PrintResult, 'printNo' | 'printedAt' | 'printedByName' | 'copySet' | 'isReprint' | 'mark'>;
+
+export function printFooterText(result: PrintStampSource): string {
   return `พิมพ์ครั้งที่ ${result.printNo} · ${thaiDateTime(result.printedAt)} · โดย ${result.printedByName ?? '-'}`;
 }
 
 /** The stamps a sheet carries, from the server's answer (A-15 / A-16 / A-18). */
-export function printStamps(result: PrintResult): string[] {
+export function printStamps(result: PrintStampSource): string[] {
   const out: string[] = [];
   if (result.mark === 'draft') out.push('ฉบับร่าง — ยังไม่มีผลผูกพัน');
   if (result.mark === 'void') out.push('ยกเลิก');
@@ -24,7 +31,9 @@ export function printStamps(result: PrintResult): string[] {
 }
 
 interface PrintCopiesProps {
-  result: PrintResult;
+  result: PrintStampSource;
+  /** The document's own stamps (a deposit slip printed after it was refunded: "คืนแล้ว"). */
+  extraStamps?: string[];
   shopName: string;
   title: string;
   documentNumber: string | null;
@@ -43,7 +52,7 @@ interface PrintCopiesProps {
  * Portalled to <body> and hidden on screen; body.gsms-printing hides the app
  * while the print dialog renders, so only these pages reach the paper.
  */
-export function PrintCopies({ result, shopName, title, documentNumber, children, onDone }: PrintCopiesProps) {
+export function PrintCopies({ result, extraStamps, shopName, title, documentNumber, children, onDone }: PrintCopiesProps) {
   const doneRef = useRef(onDone);
   doneRef.current = onDone;
 
@@ -70,7 +79,7 @@ export function PrintCopies({ result, shopName, title, documentNumber, children,
     };
   }, []);
 
-  const stamps = printStamps(result);
+  const stamps = [...printStamps(result), ...(extraStamps ?? [])];
   const footer = printFooterText(result);
 
   return createPortal(

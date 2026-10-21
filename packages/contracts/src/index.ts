@@ -22,5 +22,6 @@ export * from './jobDetail.js';
 export * from './publicBoard.js';
 export * from './catalog.js';
 export * from './quotation.js';
+export * from './deposits.js';
 export * from './billing.js';
 export * from './errors.js';

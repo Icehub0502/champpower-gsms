@@ -25,6 +25,7 @@
     "./catalog.js": "./src/catalog.ts",
     "./quotation.js": "./src/quotation.ts",
     "./billing.js": "./src/billing.ts",
+    "./deposits.js": "./src/deposits.ts",
     "./errors.js": "./src/errors.ts",
     "./index.js": "./src/index.ts"
   }

@@ -13,7 +13,7 @@
  * advance the booking and open the job atomically. It never opens its own.
  */
 import type { ScopedTx } from '@gsms/db/client.js'
-import type { IntakeRequiredField } from '@gsms/contracts/index.js'
+import type { DepositWarning, IntakeRequiredField } from '@gsms/contracts/index.js'
 import { isQueueNoConflict } from '../lib/pgError.js'
 import { bangkokToday } from '../lib/bangkokDate.js'
 import * as customersRepo from '../repositories/customers.js'
@@ -22,6 +22,7 @@ import * as baysRepo from '../repositories/bays.js'
 import * as catalogRepo from '../repositories/catalog.js'
 import * as jobsRepo from '../repositories/jobs.js'
 import { writeAudit } from './audit.js'
+import { warningsOfJob } from './deposits.js'
 
 const MAX_ATTEMPTS = 5
 
@@ -129,6 +130,8 @@ export type OpenJobOutcome =
       jobDate: string
       customerId: string
       vehicleId: string
+      /** Held deposits of this customer / booking / phone (P3.3). Empty when none. */
+      heldDeposits: DepositWarning[]
     }
   | { kind: 'unknown_bay' }
   | { kind: 'unknown_file' }
@@ -210,6 +213,12 @@ export async function openJob(
     },
   })
 
+  // CLAUDE.md §5.4 item 3: the person at the counter may have a deposit still held (transferred
+  // through the page days ago). Read-only and in this transaction, so the warning is exactly as
+  // fresh as the job. Matched by customer, by booking, or by a usable phone number.
+  const customer = await customersRepo.findById(trx, resolved.customerId)
+  const heldDeposits = await warningsOfJob(trx, job.id, resolved.customerId, customer?.phone ?? null, input.bookingId ?? null)
+
   return {
     kind: 'ok',
     jobId: job.id,
@@ -217,6 +226,7 @@ export async function openJob(
     jobDate,
     customerId: resolved.customerId,
     vehicleId: resolved.vehicleId,
+    heldDeposits,
   }
 }
 

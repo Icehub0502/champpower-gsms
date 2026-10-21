@@ -28,6 +28,7 @@ import { fieldErrorsOf } from '../lib/fieldErrors.js'
 import * as customersRepo from '../repositories/customers.js'
 import * as vehiclesRepo from '../repositories/vehicles.js'
 import { openJob, withQueueNoRetry, type OpenJobOutcome } from '../services/intake.js'
+import { warningsOfCustomer } from '../services/deposits.js'
 import { BOARD_READ_ROLES, INTAKE_WRITE_ROLES, sendIntakeOutcome, vehicleAmbiguousBody } from './queue.js'
 
 export const checkinRouter = asyncRouter()
@@ -91,6 +92,7 @@ checkinRouter.post(
         jobDate: outcome.jobDate,
         customerId: outcome.customerId,
         vehicleId: outcome.vehicleId,
+        heldDeposits: outcome.heldDeposits,
       }
       res.status(201).json(result)
     } catch (err) {
@@ -186,11 +188,15 @@ checkinRouter.get(
       // to be on the screen's first question, not only its last.
       const found = await customersRepo.findByPhone(trx, req.auth!.shop, q.data.phone)
       if (found.kind !== 'one') return found
-      // W4: held-deposit lookup by phone
       const result: CustomerLookupResult = {
         customerId: found.customer.id,
         name: found.customer.name,
         phone: found.customer.phone,
+        // The deposit warning (CLAUDE.md §5.4 item 3) as soon as the phone is known. Amounts are
+        // money, and this door is open to technicians (BOARD_READ_ROLES): they get none.
+        heldDeposits: req.auth!.role === 'technician'
+          ? []
+          : await warningsOfCustomer(trx, found.customer.id, found.customer.phone),
         vehicles: await customersRepo.vehiclesOf(trx, found.customer.id),
       }
       return { kind: 'one' as const, result }

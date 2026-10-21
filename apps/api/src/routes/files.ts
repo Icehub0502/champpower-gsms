@@ -20,7 +20,8 @@ import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
 import { asyncRouter } from '../middleware/asyncHandler.js'
 import { fieldErrorsOf } from '../lib/fieldErrors.js'
-import type { InvalidRequestError } from '@gsms/contracts/index.js'
+import { DepositSlipFile, type InvalidRequestError } from '@gsms/contracts/index.js'
+import { DEPOSIT_WRITE_ROLES } from '@champpower/domain'
 import {
   MAX_UPLOAD_BYTES,
   deleteFile,
@@ -68,6 +69,9 @@ const PHOTO_WRITE_ROLES = ['owner', 'manager', 'assistant_manager', 'advisor', '
  * whole room can see it; a photo of a customer's car is the customer's.
  */
 const PHOTO_READ_ROLES = [...PHOTO_WRITE_ROLES, 'viewer'] as const
+
+/** Who may see a deposit-slip image: whoever may read deposits (routes/deposits.ts READ) - never the technician. */
+const DEPOSIT_READ_ROLES = ['owner', 'manager', 'assistant_manager', 'advisor', 'accountant', 'viewer'] as const
 
 /**
  * memoryStorage + multer's own `limits.fileSize`: the cap is enforced by
@@ -251,12 +255,57 @@ filesRouter.post(
   },
 )
 
+/**
+ * The transfer-slip image of a deposit (P3.3, CLAUDE.md s5.4 item 2). Same rules as a check-in photo -
+ * magic-byte sniffing, a decode that must succeed, EXIF stripped by the re-encode, a server-generated
+ * file name, shop-checked reads - but ONE file (no thumbnail) of kind 'deposit_slip', and only the
+ * roles that take money may upload it. The deposit then references it by id (POST /api/deposits).
+ */
+filesRouter.post(
+  '/deposit-slip',
+  requireAuth,
+  requireRole(...DEPOSIT_WRITE_ROLES),
+  uploadSingle,
+  async (req: AuthedRequest, res) => {
+    const auth = req.auth!
+    const file = req.file
+    if (!file) { res.status(400).json({ error: 'missing_file' }); return }
+    const sniffed = sniffImageType(file.buffer)
+    if (!sniffed) { res.status(400).json({ error: 'unsupported_file_type' }); return }
+    if (file.size > MAX_UPLOAD_BYTES) { res.status(413).json({ error: 'file_too_large' }); return }
+
+    let reencoded: Awaited<ReturnType<typeof reencodeOriginal>>
+    try {
+      reencoded = await withDecodeSlot(() => reencodeOriginal(file.buffer, sniffed.type))
+    } catch {
+      res.status(400).json({ error: 'unsupported_file_type' })
+      return
+    }
+    const stored = await writeImageFile(auth.shop, sniffed.ext, reencoded.buffer)
+    try {
+      const id = randomUUID()
+      await withShop(db, auth.shop, async (trx) => {
+        await trx.insertInto('files').values({
+          id, shop_id: auth.shop, path: stored.relativePath, mime: sniffed.mime, bytes: stored.bytes,
+          kind: 'deposit_slip', uploaded_by: auth.sub,
+        }).execute()
+      })
+      res.status(201).json(DepositSlipFile.parse({ id, mime: sniffed.mime, bytes: stored.bytes }))
+    } catch (err) {
+      await deleteFile(stored.relativePath)
+      throw err
+    }
+  },
+)
+
 const fileIdParam = z.object({ id: z.string().uuid() })
 
 filesRouter.get(
   '/:id',
   requireAuth,
-  requireRole(...PHOTO_READ_ROLES),
+  // accountant is admitted here ONLY for deposit slips (checked below): CLAUDE.md s7 item 13 keeps
+  // check-in photos from them.
+  requireRole(...PHOTO_READ_ROLES, 'accountant'),
   async (req: AuthedRequest, res) => {
     const auth = req.auth!
     const parsed = fileIdParam.safeParse(req.params)
@@ -272,12 +321,19 @@ filesRouter.get(
     // work order's explicit "ขอไฟล์รูปของสาขาอื่น ... 404 ไม่ใช่ไฟล์").
     const row = await withShop(db, auth.shop, (trx) =>
       trx.selectFrom('files')
-        .select(['path', 'mime', 'bytes'])
+        .select(['path', 'mime', 'bytes', 'kind'])
         .where('id', '=', parsed.data.id)
         .executeTakeFirst(),
     )
 
-    if (!row) {
+    // A deposit slip is money (the technician sees none; the accountant does); every other file keeps
+    // the photo rules (the accountant sees none). A role that may not see this kind gets the same 404
+    // as a file that is not there.
+    const mayView = row?.kind === 'deposit_slip'
+      ? (DEPOSIT_READ_ROLES as readonly string[]).includes(auth.role)
+      : (PHOTO_READ_ROLES as readonly string[]).includes(auth.role)
+
+    if (!row || !mayView) {
       res.status(404).json({ error: 'not_found' })
       return
     }

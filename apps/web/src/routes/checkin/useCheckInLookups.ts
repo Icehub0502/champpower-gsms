@@ -100,10 +100,9 @@ export function useCheckInLookups() {
     }
     if (latestPhone.current !== key) return null;
     setPhoneLookup(next);
-    // W4: held-deposit lookup by phone — the phone is known at this point, so
-    // this is where the counter must be warned about a deposit still `held`
-    // for this customer (CLAUDE.md §5.4 item 3). Not built: the deposit module
-    // does not exist until W4. Marker kept so nobody ships believing it happens.
+    // P3.3: the answer carries the customer's held deposits (heldDeposits); CheckInPage
+    // shows them as soon as the phone is known (CLAUDE.md §5.4 item 3), and again with
+    // the attach button once the job is saved (CheckInResult.heldDeposits).
     return next;
   }
 

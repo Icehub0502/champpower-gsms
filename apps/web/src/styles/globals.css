@@ -33,6 +33,8 @@
   --hazard-dark: #3D3000;
   --red: #E0141C;
   --red-bg: #fdeaea;
+  /* P3.3: the held-deposit warning's background (same tint as .pill-warning). */
+  --warning-bg: #FFF3E2;
   --card-bg: #ffffff;
   --border: #DEE0E5;
   --text: #222831;
@@ -2049,6 +2051,56 @@ html:has(.qt-totals-bar) { scroll-padding-bottom: calc(var(--dock-clearance) + v
   .bl-line-ticks .chip, .bl-amount .btn, .pc-row-actions .btn, .dl-date input { min-height: var(--touch-min); }
 }
 
+/* ---- Deposits (P3.3, routes/deposits/*) ---- */
+.dp-page { max-width: 1100px; }
+.dp-fields { display: flex; flex-direction: column; }
+.dp-group { border: none; margin: 0 0 14px; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.dp-group legend { margin-bottom: 6px; padding: 0; }
+.dp-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.dp-tabs { margin: 0 0 12px; }
+.dp-slip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dp-file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.dp-done-amount { margin: 0 0 6px; font-size: 18px; }
+.dp-done-amount strong { font-size: 24px; }
+.dp-done .row-flex { margin-top: 10px; }
+.dp-warning { border: 2px solid var(--warning); border-left-width: 6px; background: var(--warning-bg); }
+.dp-warning h3 { color: var(--text); }
+.dp-warning-list, .dp-list, .dp-rows { list-style: none; margin: 0 0 8px; padding: 0; }
+.dp-warning-row, .dp-list-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.dp-warning-row:last-child, .dp-list-row:last-child { border-bottom: none; }
+.dp-warning-main, .dp-list-main { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dp-list-row.is-applied { color: var(--text-2); }
+.dp-job-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.dp-job-head h3 { margin-bottom: 0; }
+.dp-offsets { padding: 10px 12px; background: var(--paper); border-radius: var(--radius); }
+.dp-offset { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; cursor: pointer; min-height: var(--touch-min); }
+.dp-offset input { width: 20px; height: 20px; margin-top: 2px; flex-shrink: 0; }
+.dp-offset-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dp-offset.is-on .dp-offset-main > span:first-child { font-weight: 700; }
+.dp-summary .dp-overdue-line { margin: 4px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--red-bg); color: var(--red); font-weight: 600; font-size: 14px; }
+.dp-row { display: flex; flex-wrap: wrap; gap: 8px 12px; padding: 12px 2px; border-bottom: 1px solid var(--border); }
+.dp-row:last-child { border-bottom: none; }
+.dp-row.is-overdue { border-left: 4px solid var(--red); padding-left: 10px; background: var(--red-bg); }
+.dp-row-main { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.dp-row-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.dp-row-amount { font-size: 17px; }
+.dp-row-who { font-weight: 600; }
+.dp-row-due { color: var(--red); font-weight: 600; }
+.dp-row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.dp-row-actions .ci-form-error { flex-basis: 100%; }
+.dp-pager { align-items: center; justify-content: center; margin-top: 8px; }
+.dp-forfeit { border-top: 4px solid var(--warning); }
+.dp-daily h4 { margin-bottom: 4px; }
+.dp-step-actions { gap: 8px; flex-wrap: wrap; }
+.ci-actions .ci-submit-alt { margin-right: 8px; min-height: 48px; }
+@media (max-width: 767px) {
+  .ci-actions { flex-wrap: wrap; gap: 8px; }
+  .ci-actions .ci-submit-alt { width: 100%; justify-content: center; margin-right: 0; }
+}
+@media (pointer: coarse) {
+  .dp-row-actions .btn, .dp-list-row .btn, .dp-warning-row .btn, .dp-chips .chip { min-height: var(--touch-min); }
+}
+
 /* ---- A4 print sheets (components/print/*) ----
    Hidden on screen; while printing, body.gsms-printing hides the whole app so
    only the copies reach the paper. Black on white, Kanit, no brand colours. */
@@ -2106,6 +2158,7 @@ html:has(.qt-totals-bar) { scroll-padding-bottom: calc(var(--dock-clearance) + v
   .pr-totals dd { margin: 0; text-align: right; white-space: nowrap; }
   .pr-totals .pr-grand { color: var(--print-ink); font-weight: 800; font-size: 14pt; border-top: 1pt solid var(--print-rule); padding-top: 2pt; }
   .pr-note { font-size: 10.5pt; margin: 4pt 0 10pt; }
+  .pr-deposit-total { max-width: 50%; margin: 0 0 10pt auto; }
   .pr-sigs { display: grid; grid-template-columns: 1fr 1fr; gap: 24pt; margin-top: 28pt; break-inside: avoid; text-align: center; font-size: 11pt; }
   .pr-sig-line { display: block; border-bottom: .75pt solid var(--print-rule); height: 28pt; margin-bottom: 4pt; }
 }

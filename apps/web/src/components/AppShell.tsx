@@ -6,6 +6,7 @@ import { BoltIcon } from './ui/BoltIcon';
 import { Icon } from './ui/Icon';
 import { Modal } from './ui/Modal';
 import { canManageChannels, showsDailyInMenu } from '../routes/bill/billLabels';
+import { canWriteDeposit } from '../routes/deposits/depositLabels';
 
 
 interface AppShellProps {
@@ -23,9 +24,13 @@ interface AppShellProps {
 // link that always says "not available" is worse than no link, so none of
 // them are listed here. /jobs keeps its route (job detail and check-in land
 // on /jobs/:id) but is no longer a nav entry.
-const NAV_ITEMS: { to: string; label: string; icon: Parameters<typeof Icon>[0]['name']; show?: (role: Role | null) => boolean }[] = [
+const NAV_ITEMS: {
+  to: string; label: string; dockLabel?: string; icon: Parameters<typeof Icon>[0]['name']; show?: (role: Role | null) => boolean;
+}[] = [
   { to: '/today', label: 'งานวันนี้', icon: 'list' },
   { to: '/checkin', label: 'รับรถ', icon: 'plus' },
+  // P3.3: whoever takes money sees the deposits the shop is holding (the API decides the rest).
+  { to: '/deposits', label: 'มัดจำค้างอยู่', dockLabel: 'มัดจำ', icon: 'money', show: canWriteDeposit },
   // P3.2: manager and up only in the menu (the API decides what each role may read or change).
   { to: '/daily', label: 'สรุปรายวัน', icon: 'money', show: showsDailyInMenu },
   { to: '/settings/payment-channels', label: 'ช่องทางชำระ', icon: 'settings', show: canManageChannels },
@@ -172,7 +177,7 @@ export function AppShell({ user, role, online, onLogout, children }: AppShellPro
             to={item.to}
             className={({ isActive }) => `dock-btn${isActive ? ' active' : ''}`}
           >
-            {item.label}
+            {item.dockLabel ?? item.label}
           </NavLink>
         ))}
       </nav>

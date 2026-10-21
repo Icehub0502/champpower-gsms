@@ -9,6 +9,7 @@ import { Icon } from '../../components/ui/Icon';
 import { PlateBadge } from '../../components/ui/PlateBadge';
 import { useDocument } from '../../hooks/useDocument';
 import { api } from '../../lib/api/client';
+import { JobDepositsCard } from '../deposits/JobDepositsCard';
 import { CatalogPanel } from './CatalogPanel';
 import { QuoteActions } from './QuoteActions';
 import { QuoteLines } from './QuoteLines';
@@ -180,6 +181,20 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
           {quotation.status === 'signed' && job.data && billLinkFits(job.data.status, job.data.jobType) && (
             <Link className="btn hazard" to={billHref(jobId)}>เก็บเงิน / ใบเสร็จ</Link>
           )}
+        </div>
+      )}
+
+      {/* P3.3: the deposits of this job — the held-deposit warning, "รับมัดจำแล้ว ฿X (DEP-…)" and the balance,
+          and the "รับมัดจำ" button (CLAUDE.md §5.4). Shown even before a quotation exists: a deposit can come first. */}
+      {load.phase !== 'loading' && (
+        <div className="no-print">
+          <JobDepositsCard
+            jobId={jobId}
+            againstTotal={quotation ? quotation.totals.approvedTotal : null}
+            who={job.data?.customerName ?? null}
+            canWrite={canWrite}
+            disabled={busy !== null}
+          />
         </div>
       )}
 

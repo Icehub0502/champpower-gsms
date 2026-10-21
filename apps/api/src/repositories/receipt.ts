@@ -335,6 +335,8 @@ export interface PaymentRow {
   channel_id: string | null
   channel_name: string | null
   surcharge_amount: string
+  /** Set on a deposit_offset row (P3.3). */
+  deposit_id: string | null
 }
 
 export async function getPayments(trx: ScopedTx, receiptId: string): Promise<PaymentRow[]> {
@@ -343,14 +345,14 @@ export async function getPayments(trx: ScopedTx, receiptId: string): Promise<Pay
     .leftJoin('payment_reversals as r', 'r.payment_id', 'p.id')
     .leftJoin('payment_channels as pc', 'pc.id', 'p.payment_channel_id')
     .select(['p.id', 'p.method', 'p.amount', 'p.change_given', 'p.received_at', 'u.name as received_by_name', 'r.id as reversal_id',
-      'p.payment_channel_id', 'pc.name as channel_name', 'p.surcharge_amount'])
+      'p.payment_channel_id', 'pc.name as channel_name', 'p.surcharge_amount', 'p.deposit_id'])
     .where('p.document_id', '=', receiptId)
     .orderBy('p.received_at', 'asc').orderBy('p.id', 'asc')
     .execute()
   return rows.map((r) => ({
     id: r.id, method: r.method, amount: r.amount, change_given: r.change_given,
     received_at: r.received_at, received_by_name: r.received_by_name, reversed: r.reversal_id !== null,
-    channel_id: r.payment_channel_id, channel_name: r.channel_name, surcharge_amount: r.surcharge_amount,
+    channel_id: r.payment_channel_id, channel_name: r.channel_name, surcharge_amount: r.surcharge_amount, deposit_id: r.deposit_id,
   }))
 }
 
@@ -416,10 +418,4 @@ export async function userNames(trx: ScopedTx, ids: ReadonlyArray<string | null>
   if (want.length === 0) return new Map()
   const rows = await trx.selectFrom('users').select(['id', 'name']).where('id', 'in', want).execute()
   return new Map(rows.map((r) => [r.id, r.name]))
-}
-
-/** A deposit still held against this job. P3.2 cannot offset it (B2). */
-export async function heldDepositOfJob(trx: ScopedTx, jobId: string): Promise<{ id: string; amount: string } | undefined> {
-  return trx.selectFrom('deposits').select(['id', 'amount'])
-    .where('job_id', '=', jobId).where('status', '=', 'held').limit(1).executeTakeFirst()
 }

@@ -97,7 +97,11 @@ function sendError(res: Response, e: svc.ReceiptError): void {
     case 'payment_over_noncash': return refuse(res, 409, { error: 'payment_over_noncash', message: 'โอน/บัตรรับเกินยอดบิลไม่ได้ (ทอนได้เฉพาะเงินสด)', over: e.over })
     case 'payment_cash_unneeded': return refuse(res, 422, { error: 'payment_cash_unneeded', message: 'ยอดโอน/บัตรครบแล้ว ไม่ต้องรับเงินสดเพิ่ม' })
     case 'already_billed': return refuse(res, 409, { error: 'already_billed', message: `งานนี้ออกใบเสร็จแล้ว เลขที่ ${e.number}`, receiptId: e.receiptId, number: e.number })
-    case 'deposit_held': return refuse(res, 409, { error: 'deposit_held', message: 'งานนี้มีเงินมัดจำที่ยังถืออยู่ ระบบยังหักมัดจำไม่ได้ ให้ปิดบิลนอกระบบไปก่อน' })
+    case 'deposit_not_found': return refuse(res, 404, { error: 'deposit_not_found', message: 'ไม่พบเงินมัดจำนี้' })
+    case 'deposit_not_held': return refuse(res, 409, { error: 'deposit_not_held', message: 'เงินมัดจำนี้ไม่ได้อยู่ในสถานะถืออยู่แล้ว (หักเข้าบิล คืน หรือริบไปแล้ว)', status: e.status as 'applied' | 'refunded' | 'forfeited' | 'held' })
+    case 'deposit_not_attached': return refuse(res, 422, { error: 'deposit_not_attached', message: 'เงินมัดจำนี้ยังไม่ได้ผูกกับงานนี้ ผูกกับงานก่อนแล้วจึงหักเข้าบิล' })
+    case 'deposit_exceeds_bill': return refuse(res, 422, { error: 'deposit_exceeds_bill', message: `มัดจำรวมมากกว่ายอดบิล ฿${e.over} กรุณาคืนมัดจำหรือเลือกใบที่น้อยกว่า`, over: e.over, max: e.max })
+    case 'payment_not_needed': return refuse(res, 422, { error: 'payment_not_needed', message: 'มัดจำครอบคลุมยอดบิลแล้ว ไม่ต้องรับเงินเพิ่ม' })
     case 'bill_not_presented': return refuse(res, 409, { error: 'bill_not_presented', message: 'ต้องแสดงยอดบิลให้ลูกค้าดูก่อนรับเงิน' })
     case 'presentation_stale': return refuse(res, 409, { error: 'presentation_stale', message: 'ยอดบิลเปลี่ยนไปหลังแสดงให้ลูกค้าดู กรุณาแสดงยอดบิลใหม่ก่อนรับเงิน' })
     case 'channel_not_found': return refuse(res, 404, { error: 'channel_not_found', message: 'ไม่พบช่องทางชำระนี้' })
@@ -217,12 +221,12 @@ billingRouter.post('/jobs/:jobId/receipt/close', requireAuth, requireRole(...WRI
   try {
     const r = await withShop(db, auth.shop, (trx) =>
       svc.closeBill(trx, auth.shop, params.data.jobId, { id: auth.sub, role: auth.role },
-        { payments: body.data.payments.map((p) => ({ channelId: p.channelId, amount: p.amount })), discountReason: body.data.discountReason }))
+        { payments: body.data.payments.map((p) => ({ channelId: p.channelId, amount: p.amount })), depositIds: body.data.depositIds, discountReason: body.data.discountReason }))
     if (!r.ok) { sendError(res, r.error); return }
     const v = await view(params.data.jobId, auth)
     if (!v.ok) { sendError(res, v.error); return }
     res.status(r.value.replayed ? 200 : 201).json(CloseReceiptResult.parse({
-      receipt: v.value, change: r.value.change, surchargeTotal: r.value.surchargeTotal, unreservedLines: r.value.unreservedLines, replayed: r.value.replayed,
+      receipt: v.value, change: r.value.change, surchargeTotal: r.value.surchargeTotal, depositOffsetTotal: r.value.depositOffsetTotal, unreservedLines: r.value.unreservedLines, replayed: r.value.replayed,
     }))
   } catch (err) {
     if (seriesMissing(err, res)) return
