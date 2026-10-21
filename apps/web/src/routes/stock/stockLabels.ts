@@ -99,6 +99,21 @@ export const DOC_TYPE_LABEL: Record<string, string> = {
   work_order: 'ใบสั่งงาน',
 };
 
+/** Words for a document's status on the stock reports. Unknown values fall back to the raw code. */
+export const DOC_STATUS_LABEL: Record<string, string> = {
+  draft: 'ร่าง',
+  issued: 'ออกแล้ว รอลูกค้าตัดสิน',
+  signed: 'ยืนยันผลลูกค้าแล้ว',
+  void: 'ยกเลิกแล้ว',
+  superseded: 'ถูกแทนด้วยฉบับแก้ไข',
+};
+
+export const APPROVAL_LABEL: Record<'pending' | 'approved' | 'declined', string> = {
+  pending: 'รอลูกค้าตัดสิน',
+  approved: 'ลูกค้าอนุมัติ',
+  declined: 'ลูกค้าไม่อนุมัติ',
+};
+
 /** Job statuses where there is something to pull (the quotation is confirmed and the car is still in). */
 export const ISSUABLE_JOB_STATUSES = ['approved', 'repairing', 'aligning', 'ready'] as const;
 

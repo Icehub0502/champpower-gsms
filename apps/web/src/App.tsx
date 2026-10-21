@@ -27,6 +27,9 @@ import { AdjustRoute } from './routes/stock/AdjustPage';
 import { IssuePickJobPage } from './routes/stock/IssuePickJobPage';
 import { JobIssueRoute } from './routes/stock/JobIssuePage';
 import { CatalogLinksRoute } from './routes/stock/CatalogLinksPage';
+import {
+  DailyAdjustmentsRoute, IntegrityRoute, StaleReservationsRoute, UnboundLinesRoute,
+} from './routes/stock/StockReportsPages';
 
 // /board (waiting-room display) and /lookup (customer "find my car" page, reached via
 // QR code) are both public and must never require login — matched before the authed
@@ -119,6 +122,10 @@ function AuthedApp() {
         <Route path="/stock/adjust" element={<AdjustRoute role={auth.role} />} />
         <Route path="/stock/issue" element={<IssuePickJobPage role={auth.role} />} />
         <Route path="/stock/catalog-links" element={<CatalogLinksRoute role={auth.role} />} />
+        <Route path="/stock/reports/unbound" element={<UnboundLinesRoute role={auth.role} />} />
+        <Route path="/stock/reports/stale" element={<StaleReservationsRoute role={auth.role} />} />
+        <Route path="/stock/reports/adjustments" element={<DailyAdjustmentsRoute role={auth.role} />} />
+        <Route path="/stock/reports/integrity" element={<IntegrityRoute role={auth.role} />} />
         {/* เบิกของ of one job — matched before the closed /jobs/:jobId below. */}
         <Route path="/jobs/:jobId/stock" element={<JobIssueRoute role={auth.role} />} />
         <Route path="/print/blank-checkin" element={<BlankFormPage />} />
