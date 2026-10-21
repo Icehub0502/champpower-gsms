@@ -208,6 +208,9 @@ export async function createDeposit(
     if (!c) return err({ code: 'customer_not_found' })
     customerId = c.id
   } else if (named) {
+    // DEFAULT pending Ice (P3.3 D8): no channel surcharge is added to a deposit (card fee rules apply to bills only).
+    // DEFAULT pending Ice (P3.3 D9): a blocklisted placeholder phone always creates a new customer (existing intake rule);
+    // lead_source is NOT set from the deposit channel.
     // The online deposit: a name and a phone, no car, no job. Existing rules of the check-in door apply:
     // a phone that matches ONE customer is that customer; two or three share it and the counter chooses;
     // a blocklisted placeholder always creates a new one.
@@ -367,6 +370,7 @@ export async function refundDeposit(
 
   const at = new Date()
   const reason = input.reason.trim()
+  // DEFAULT pending Ice (P3.3 D2): the refund goes out through the channel the money came in through unless one is named.
   await repo.markRefunded(trx, depositId, { by: actor.id, reason, channelId, at })
   // The money goes back out on THIS day: the daily summary reads closed_at (reversal-style, dated the refund day).
   await writeAudit(trx, {
@@ -434,6 +438,8 @@ export async function printSlip(
     let quotationNumber: string | null = null
     if (d.job_id) quotationNumber = (await quotationRepo.findLiveQuotation(trx, d.job_id))?.number ?? null
     const now = new Date()
+    // DEFAULT pending Ice (P3.3 D1): the "print slip" action allocates the DEP number (s5.4 item 10).
+    // DEFAULT pending Ice (P3.3 D10): the quotation number is frozen into the slip at this moment.
     number = await repo.allocateSlipNumber(trx, shopId)
     snap = {
       number,
