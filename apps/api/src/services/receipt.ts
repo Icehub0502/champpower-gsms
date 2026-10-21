@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto'
 import {
   MoneyError, bangkokDayKey, DISCOUNT_CEILING_PERCENT, discountCeilingRefusal, discountExceedsCeiling,
   discountExceedsSubtotal, discountPercentText, formatSatang, fulfilledQtyIssue, isValidSubState,
-  quoteTotals, receiptDiscount, receiptDiscountReasonRequired, receiptLineCharge, receiptLineDiscountIssue,
+  depositOffsetPlan, quoteTotals, receiptDiscount, receiptDiscountReasonRequired, receiptLineCharge, receiptLineDiscountIssue,
   receiptLineNet, receiptSubtotal, receiptTotals, roleMayExceedDiscountCeiling, settlePayments,
   toQtyCenti, toSatang, workOrderLineIds, type ReceiptLineMoney,
 } from '@champpower/domain'
@@ -28,7 +28,9 @@ import * as quotationRepo from '../repositories/quotation.js'
 import * as jobsRepo from '../repositories/jobs.js'
 import * as repo from '../repositories/receipt.js'
 import * as channelsRepo from '../repositories/channels.js'
+import * as depositsRepo from '../repositories/deposits.js'
 import { writeAudit } from './audit.js'
+import { warningsOfJob } from './deposits.js'
 import { releaseUnusedReservations } from './stockHooks.js'
 
 /** Roles that may build, tick, discount, present and close a receipt (CLAUDE.md s12.1 "รับเงินลูกค้า / ปิดบิล"). */
@@ -71,7 +73,12 @@ export type ReceiptError =
   | { code: 'payment_over_noncash'; over: string }
   | { code: 'payment_cash_unneeded' }
   | { code: 'already_billed'; receiptId: string; number: string }
-  | { code: 'deposit_held' }
+  // P3.3: offsetting deposits at close.
+  | { code: 'deposit_not_found' }
+  | { code: 'deposit_not_held'; status: string }
+  | { code: 'deposit_not_attached' }
+  | { code: 'deposit_exceeds_bill'; over: string; max: string }
+  | { code: 'payment_not_needed' }
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: ReceiptError }
 const err = (error: ReceiptError): { ok: false; error: ReceiptError } => ({ ok: false, error })
@@ -172,7 +179,10 @@ const iso = (d: Date | null): string | null => (d ? d.toISOString() : null)
 
 export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: repo.JobBillingFacts, role: string): Promise<Receipt> {
   const rows = await repo.getReceiptLines(trx, doc.id)
-  const payments = await repo.getPayments(trx, doc.id)
+  // Deposit offsets are payments rows too (method deposit_offset) but they are not money taken on this
+  // receipt: they are shown apart, in `deposits.applied`.
+  const payments = (await repo.getPayments(trx, doc.id)).filter((p) => p.method !== 'deposit_offset')
+  const offsets = await depositsRepo.offsetsOfReceipt(trx, doc.id)
   const names = await repo.userNames(trx, [doc.issued_by, doc.voided_by, doc.discount_approved_by, doc.presented_by])
   const draft = doc.status === 'draft'
 
@@ -219,7 +229,6 @@ export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: r
     const hard = (b: Receipt['next']['blockers'][number]) => { blockers.push(b); presentable = false }
     if (!CLOSABLE.includes(facts.status)) blockers.push('job_not_ready')
     if (quotationChanged) hard('quotation_changed')
-    if (await repo.heldDepositOfJob(trx, doc.job_id!)) blockers.push('deposit_held')
     if (c.undecided.length > 0) hard('lines_unanswered')
     if (state === 'needs_entry') hard('discount_entry_required')
     if (c.discountTooBig) hard('discount_exceeds_subtotal')
@@ -265,6 +274,28 @@ export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: r
     }
   })
 
+  // ---- Deposits (P3.3). Never part of grand_total; never carry VAT. ----
+  const appliedOffsets = offsets.filter((o) => !o.reversed)
+  const appliedSatang = appliedOffsets.reduce((a, o) => a + toSatang(o.amount), 0)
+  let available: Receipt['deposits']['available'] = []
+  let unattached: Receipt['deposits']['unattached'] = []
+  if (draft && doc.job_id) {
+    const all = await warningsOfJob(trx, doc.job_id, facts.customer_id, facts.customer_phone)
+    available = all.filter((w) => w.attachedToThisJob)
+    unattached = all.filter((w) => !w.attachedToThisJob)
+  }
+  const deposits: Receipt['deposits'] = {
+    applied: offsets.map((o) => ({
+      paymentId: o.payment_id, depositId: o.deposit_id, depositNumber: o.slip_number, amount: o.amount,
+      channel: o.channel as Receipt['deposits']['applied'][number]['channel'],
+      paymentChannelName: o.payment_channel_name, receivedAt: o.received_at.toISOString(), reversed: o.reversed,
+    })),
+    appliedTotal: formatSatang(appliedSatang),
+    available,
+    availableTotal: formatSatang(available.reduce((a, w) => a + toSatang(w.amount), 0)),
+    unattached,
+  }
+
   const paidNet = formatSatang(payments.reduce((a, p) => a + toSatang(p.amount) - toSatang(p.change_given), 0))
   const changeTotal = formatSatang(payments.reduce((a, p) => a + toSatang(p.change_given), 0))
   const surchargeTotal = formatSatang(payments.reduce((a, p) => a + toSatang(p.surcharge_amount), 0))
@@ -281,6 +312,9 @@ export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: r
     totals: {
       subtotal, lineDiscountTotal: formatSatang(lineDiscountSatang), discount: discountAmt,
       totalDiscount: formatSatang(totalDiscountSatang), billTotal, agreedTotal: doc.approved_total,
+      // Deposits are a payment against the bill, never a reduction of it: billTotal above is untouched.
+      depositOffsetTotal: formatSatang(appliedSatang),
+      balanceDue: formatSatang(toSatang(billTotal) - appliedSatang),
       surchargeTotal, totalPaid: formatSatang(toSatang(billTotal) + toSatang(surchargeTotal)),
     },
     discount: {
@@ -295,6 +329,7 @@ export async function buildView(trx: ScopedTx, doc: repo.ReceiptDocRow, facts: r
       net: formatSatang(toSatang(p.amount) - toSatang(p.change_given)), receivedAt: p.received_at.toISOString(),
       receivedByName: p.received_by_name, reversed: p.reversed,
     })),
+    deposits,
     paidNet, changeTotal,
     issuedAt: iso(doc.issued_at), issuedByName: doc.issued_by ? (names.get(doc.issued_by) ?? null) : null,
     voidedAt: iso(doc.voided_at), voidReason: doc.void_reason,
@@ -628,11 +663,13 @@ export async function presentBill(trx: ScopedTx, shopId: string, jobId: string, 
 // Close the bill and issue the receipt - ONE transaction
 // -----------------------------------------------------------------------------
 
-export interface CloseOutcome { receiptId: string; change: string; surchargeTotal: string; unreservedLines: number; replayed: boolean }
+export interface CloseOutcome {
+  receiptId: string; change: string; surchargeTotal: string; depositOffsetTotal: string; unreservedLines: number; replayed: boolean
+}
 
 export async function closeBill(
   trx: ScopedTx, shopId: string, jobId: string, actor: Actor,
-  input: { payments: ReadonlyArray<{ channelId: string; amount: string }>; discountReason?: string },
+  input: { payments: ReadonlyArray<{ channelId: string; amount: string }>; depositIds: ReadonlyArray<string>; discountReason?: string },
 ): Promise<Result<CloseOutcome>> {
   // 1. JOB.
   const facts = await repo.jobBillingFacts(trx, jobId, { lock: true })
@@ -645,13 +682,20 @@ export async function closeBill(
   // Retry of a close that already went through (AC-E3): same channels and amounts -> the same answer.
   if (found.status === 'issued') {
     const paid = await repo.getPayments(trx, found.id)
-    const stored = paid.map((p) => `${p.channel_id}:${formatSatang(toSatang(p.amount) - toSatang(p.surcharge_amount))}`).sort().join('|')
-    const asked = input.payments.map((p) => `${p.channelId}:${formatSatang(toSatang(p.amount))}`).sort().join('|')
+    // Deposit offsets are part of the same key, as `dep:<id>` (they have no channel and no amount to compare).
+    const stored = paid.map((p) => p.method === 'deposit_offset'
+      ? `dep:${p.deposit_id}`
+      : `${p.channel_id}:${formatSatang(toSatang(p.amount) - toSatang(p.surcharge_amount))}`).sort().join('|')
+    const asked = [
+      ...input.payments.map((p) => `${p.channelId}:${formatSatang(toSatang(p.amount))}`),
+      ...input.depositIds.map((id) => `dep:${id}`),
+    ].sort().join('|')
     if (stored === asked) {
       return ok({
         receiptId: found.id, replayed: true, unreservedLines: 0,
         change: formatSatang(paid.reduce((a, p) => a + toSatang(p.change_given), 0)),
         surchargeTotal: formatSatang(paid.reduce((a, p) => a + toSatang(p.surcharge_amount), 0)),
+        depositOffsetTotal: formatSatang(paid.filter((p) => p.method === 'deposit_offset').reduce((a, p) => a + toSatang(p.amount), 0)),
       })
     }
     return err({ code: 'already_billed', receiptId: found.id, number: found.number! })
@@ -683,8 +727,25 @@ export async function closeBill(
   }
   if (c.billTotalSatang <= 0) return err({ code: 'nothing_to_bill' })
 
-  // Ice 20 Oct (P3.2 B2): deposits are agreed outside the system; a held one is closed outside too.
-  if (await repo.heldDepositOfJob(trx, jobId)) return err({ code: 'deposit_held' })
+  // P3.3: the deposits to offset, locked in id order AFTER the lines (lock order jobs -> documents ->
+  // document_lines -> deposits) and judged from the locked rows: a refund or forfeit that won the race
+  // shows up here as not-held. The P3.2 `deposit_held` blocker is gone: a held deposit that is not
+  // chosen simply stays held (it is the customer's money, still ours to hold).
+  const depositRows = await depositsRepo.lockMany(trx, input.depositIds)
+  const uniqueIds = new Set(input.depositIds)
+  if (depositRows.length !== uniqueIds.size) return err({ code: 'deposit_not_found' })
+  for (const d of depositRows) {
+    if (d.status !== 'held') return err({ code: 'deposit_not_held', status: d.status })
+    if (d.job_id !== jobId) return err({ code: 'deposit_not_attached' })
+  }
+  const plan = depositOffsetPlan(c.billTotalSatang, input.depositIds.map((id) => {
+    const d = depositRows.find((x) => x.id === id)!
+    return { id, amount: d.amount }
+  }))
+  if (!plan.ok) {
+    if (plan.code === 'deposit_duplicate') return err({ code: 'invalid_request', fields: { depositIds: ['duplicate'] } })
+    return err({ code: 'deposit_exceeds_bill', over: formatSatang(plan.over), max: formatSatang(plan.max) })
+  }
 
   // Ice 20 Oct (P3.2 B4): the ceiling is judged on the FINAL receipt (line discounts + document
   // discount over the pre-discount total of the done lines), by the closer.
@@ -714,13 +775,18 @@ export async function closeBill(
     if (!ch) return err({ code: 'channel_not_found' })
     if (!ch.is_active) return err({ code: 'channel_inactive' })
   }
-  const settled = settlePayments(c.billTotalSatang, input.payments.map((p) => {
-    const ch = byId.get(p.channelId)!
-    return { key: ch.id, method: ch.kind as PaymentMethod, surchargePercent: ch.surcharge_percent, amount: p.amount }
-  }))
+  // What is still owed after the deposits. grand_total (the bill) is NOT reduced, and no VAT is computed
+  // on the remainder (VAT room deferred; CLAUDE.md s7 item 3b).
+  if (plan.due === 0 && input.payments.length > 0) return err({ code: 'payment_not_needed' })
+  const settled = plan.due === 0
+    ? { ok: true as const, rows: [] as Array<{ key: string; method: PaymentMethod; applied: string; surcharge: string; amount: string; changeGiven: string }>, netPaid: '0.00', change: '0.00', surchargeTotal: '0.00' }
+    : settlePayments(plan.due, input.payments.map((p) => {
+        const ch = byId.get(p.channelId)!
+        return { key: ch.id, method: ch.kind as PaymentMethod, surchargePercent: ch.surcharge_percent, amount: p.amount }
+      }))
   if (!settled.ok) {
     switch (settled.code) {
-      case 'payment_short': return err({ code: 'payment_short', short: settled.short, due: formatSatang(c.billTotalSatang) })
+      case 'payment_short': return err({ code: 'payment_short', short: settled.short, due: formatSatang(plan.due) })
       case 'payment_over_noncash': return err({ code: 'payment_over_noncash', over: settled.over })
       case 'payment_cash_unneeded': return err({ code: 'payment_cash_unneeded' })
       case 'payment_invalid': return err({ code: 'invalid_request', fields: { [`payments.${settled.field}`]: ['invalid'] } })
@@ -751,6 +817,16 @@ export async function closeBill(
       changeGiven: p.changeGiven, receivedBy: actor.id, receivedAt: now,
     })
   }
+  // One deposit_offset payment row per deposit, referencing deposit_id; the deposit moves to 'applied'
+  // in this same transaction (s5.4 item 6). Not money in on today's summary: it was counted the day it came.
+  for (const d of depositRows) {
+    await depositsRepo.insertOffsetPayment(trx, { shopId, documentId: doc.id, depositId: d.id, amount: d.amount, receivedBy: actor.id, receivedAt: now })
+    await depositsRepo.markApplied(trx, d.id, doc.id)
+    await writeAudit(trx, {
+      shopId, actorId: actor.id, action: 'deposit_applied', entityType: 'deposits', entityId: d.id,
+      before: { status: 'held', jobId: d.job_id }, after: { status: 'applied', receiptId: doc.id, amount: d.amount },
+    })
+  }
   // 4. STOCK (last in the lock order). Lines approved but not done go back to available.
   const notDone = rows.filter((r) => r.parent_line_id === null && toQtyCenti(r.fulfilled_qty!) < toQtyCenti(r.qty))
   const unreserved = await releaseUnusedReservations(trx, {
@@ -771,11 +847,16 @@ export async function closeBill(
       discountReason: reason, overCeiling: exceeds,
       presentedAt: doc.presented_at.toISOString(),
       surchargeTotal: settled.surchargeTotal,
+      depositOffsets: depositRows.map((d) => ({ depositId: d.id, amount: d.amount })),
+      depositOffsetTotal: formatSatang(plan.offsetTotal), balanceDue: formatSatang(plan.due),
       payments: settled.rows.map((p) => ({ channelId: p.key, method: p.method, applied: p.applied, surcharge: p.surcharge, amount: p.amount, change: p.changeGiven })),
       notDoneLineIds: notDone.map((r) => r.id), unreservedLines: unreserved,
     },
   })
-  return ok({ receiptId: doc.id, change: settled.change, surchargeTotal: settled.surchargeTotal, unreservedLines: unreserved, replayed: false })
+  return ok({
+    receiptId: doc.id, change: settled.change, surchargeTotal: settled.surchargeTotal,
+    depositOffsetTotal: formatSatang(plan.offsetTotal), unreservedLines: unreserved, replayed: false,
+  })
 }
 
 // -----------------------------------------------------------------------------
@@ -804,6 +885,19 @@ export async function voidReceipt(
     reversals.push({ paymentId: p.id, method: p.method, amount: net })
   }
   await repo.markReceiptVoid(trx, doc.id, { reason, voidedBy: actor.id })
+  // P3.3: the deposits this receipt consumed go back to 'held' - the customer's money is still ours to hold.
+  // (DEFAULT pending Ice (P3.3 D7).) The deposit_offset payment keeps its reversal row; the deposit can be
+  // offset again into the next receipt of the job, or refunded.
+  const offsetIds = payments.filter((p) => p.method === 'deposit_offset').map((p) => p.deposit_id!)
+  if (offsetIds.length > 0) {
+    await depositsRepo.lockMany(trx, offsetIds)
+    for (const id of await depositsRepo.releaseAppliedTo(trx, doc.id)) {
+      await writeAudit(trx, {
+        shopId, actorId: actor.id, action: 'deposit_released', entityType: 'deposits', entityId: id,
+        before: { status: 'applied', receiptId: doc.id }, after: { status: 'held', reason },
+      })
+    }
+  }
   if (facts.sub_state === 'paid') await jobsRepo.setSubState(trx, jobId, null)
   await writeAudit(trx, {
     shopId, actorId: actor.id, action: 'receipt_voided', entityType: 'documents', entityId: doc.id,

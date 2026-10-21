@@ -39,7 +39,7 @@
  */
 import type { Response } from 'express'
 import type {
-  AppendOnlyError, BookingAlreadyArrivedError, DocumentFrozenError, DocumentJobImmutableError, DocumentLineFrozenError,
+  AppendOnlyError, BookingAlreadyArrivedError, DepositLockedError, DocumentFrozenError, DocumentJobImmutableError, DocumentLineFrozenError,
   JobNumberSeriesMissingError, QueueNoTakenError,
 } from '@gsms/contracts/index.js'
 
@@ -71,6 +71,7 @@ export interface MappedError {
     | BookingAlreadyArrivedError
     | QueueNoTakenError
     | JobNumberSeriesMissingError
+    | DepositLockedError
     | DocumentFrozenError
     | DocumentJobImmutableError
     | DocumentLineFrozenError
@@ -161,6 +162,11 @@ export function mapPgError(err: unknown, ctx: PgErrorContext = {}): MappedError 
     if (pg.hint === 'append_only') {
       const body: AppendOnlyError = { error: 'record_append_only', message: 'รายการนี้เป็นบันทึกถาวร แก้ไขหรือลบไม่ได้' }
       return { status: 409, body }
+    }
+    // 0026: a deposit is never deleted, its money never changes, and it leaves 'held' once. The API
+    // answers first with 404/409; this is the net under it.
+    if (pg.table === 'deposits') {
+      return { status: 409, body: { error: 'deposit_locked', message: 'เงินมัดจำนี้แก้ไขหรือลบไม่ได้ในสถานะนี้' } }
     }
     if (pg.table === 'document_lines') {
       const body: DocumentLineFrozenError = {

@@ -445,6 +445,7 @@ bookingsRouter.post(
             customerId: ok.customerId,
             vehicleId: ok.vehicleId,
             bookingId,
+            heldDeposits: ok.heldDeposits,
           })
         }
       }

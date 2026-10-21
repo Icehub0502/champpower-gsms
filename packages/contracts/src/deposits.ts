@@ -4,7 +4,7 @@
 //   POST /api/deposits                          CreateDepositInput   -> CreateDepositResult (201 new, 200 replay)
 //   GET  /api/deposits                          DepositListQuery     -> DepositList  ("มัดจำค้างอยู่"; ?status=held default)
 //   GET  /api/deposits/:id                                           -> Deposit
-//   POST /api/deposits/slip-file                multipart (file)     -> DepositSlipFile (the transfer slip IMAGE)
+//   POST /api/files/deposit-slip                multipart (file)     -> DepositSlipFile (the transfer slip IMAGE; read back with GET /api/files/:id)
 //   POST /api/deposits/:id/attach               AttachDepositInput   -> Deposit  (bind a held deposit to a job)
 //   POST /api/deposits/:id/detach               DetachDepositInput   -> Deposit  (undo a wrong attach)
 //   POST /api/deposits/:id/refund               RefundDepositInput   -> Deposit  (advisor and above)
@@ -117,7 +117,9 @@ export const DepositWarning = z
     overdue: z.boolean(),
     reason: DepositReason,
     // Why this deposit was matched to the person at the counter.
-    matchedBy: z.enum(['customer', 'phone']),
+    // customer = the same customer row; booking = the deposit was taken to hold this booking's slot;
+    // phone = a customer row with the same (non-placeholder) phone number.
+    matchedBy: z.enum(['customer', 'booking', 'phone']),
     // Already bound to THIS job (so the button is not needed, only the offset at the till).
     attachedToThisJob: z.boolean(),
     slipNumber: z.string().nullable(),
@@ -181,7 +183,7 @@ export const CreateDepositInput = z
     paymentChannelId: uuid,
     // Mandatory (s5.4 item 8): the day the customer said they would come. YYYY-MM-DD.
     expectedDate: dateKey,
-    // The transfer slip image (POST /api/deposits/slip-file). Optional for cash.
+    // The transfer slip image (POST /api/files/deposit-slip). Optional for cash.
     slipFileId: uuid.optional(),
   })
   .strict()
@@ -345,13 +347,17 @@ export const DepositExceedsBillError = z // 422
   .strict();
 export const DepositForfeitForbiddenError = refusal('forfeit_requires_manager'); // 403
 export const DepositSlipUnavailableError = refusal('deposit_slip_unavailable'); // 409: closed deposit never numbered
-export const SlipFileNotFoundError = refusal('slip_file_not_found'); // 422
 export const DepositJobNotFoundError = refusal('job_not_found'); // 404
+export const DepositCustomerNotFoundError = refusal('customer_not_found'); // 404
+export const DepositJobBilledError = refusal('job_already_billed'); // 409: attach to a job whose receipt is issued
+// 409: the database refused to change a deposit (a backstop - the checks above answer first).
+export const DepositLockedError = refusal('deposit_locked');
+export type DepositLockedError = z.infer<typeof DepositLockedError>;
 
 export const DepositBody = z.union([
   DepositNotFoundError, DepositNotHeldError, DepositCustomerMismatchError, DepositJobMismatchError,
   DepositNotAttachedError, DepositExceedsBillError, DepositForfeitForbiddenError, DepositSlipUnavailableError,
-  SlipFileNotFoundError, DepositJobNotFoundError,
+  DepositJobNotFoundError, DepositCustomerNotFoundError, DepositJobBilledError, DepositLockedError,
   z.object({ error: z.literal('invalid_request'), message: z.string(), fields: z.record(z.array(z.string())) }).strict(),
   z.object({ error: z.literal('document_series_missing'), message: z.string() }).strict(),
   z

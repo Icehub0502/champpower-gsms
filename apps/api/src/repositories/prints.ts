@@ -39,7 +39,7 @@ export async function listPrints(
 }
 
 export async function insertPrint(trx: ScopedTx, p: {
-  shopId: string; jobId: string; documentId: string | null; docType: string; subjectId: string; seq: number
+  shopId: string; jobId: string | null; documentId: string | null; docType: string; subjectId: string; seq: number
   statusAtPrint: string; revision: number | null; copySet: string; contentHash: string
   acknowledgedChange: boolean; printedBy: string
 }): Promise<{ id: string; printedAt: Date }> {
