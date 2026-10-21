@@ -2319,6 +2319,8 @@ a.st-name:hover { text-decoration: underline; }
 }
 @media (pointer: coarse) {
   .st-nav .chip, .st-row-actions .btn, .st-scan-btn, .st-picker-row, .ui-pager .btn, .st-filters .chip { min-height: var(--touch-min); }
+  .st-entry .btn, .st-issue-bar .btn, .st-filters .btn, .st-page .qt-header-side .btn, .st-result .btn, .st-notice .btn,
+  .st-tick, .st-scan-row input, .st-filters input { min-height: var(--touch-min); }
   .st-qty-step { width: var(--touch-min); min-height: var(--touch-min); }
   .st-qty-row input, .st-reason input { min-height: var(--touch-min); }
 }
