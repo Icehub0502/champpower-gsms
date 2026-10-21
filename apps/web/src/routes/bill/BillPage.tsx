@@ -153,7 +153,7 @@ function DraftBody({ jobId, receipt, canWrite, state, onClosed }: {
       </div>
       <aside className="qt-side bl-side">
         <TotalsCard receipt={receipt} />
-        {canWrite && <PaymentPanel jobId={jobId} receipt={receipt} busy={busy} guard={guard} show={show} onClosed={onClosed} />}
+        {canWrite && <PaymentPanel jobId={jobId} receipt={receipt} busy={busy} guard={guard} show={show} reload={state.reload} onClosed={onClosed} />}
       </aside>
     </div>
   );
@@ -170,6 +170,13 @@ function TotalsCard({ receipt }: { receipt: Receipt }) {
         <dt>ส่วนลดท้ายบิล</dt><dd className="mono">−{baht(t.discount)}</dd>
       </dl>
       <p className="qt-totals-sum">ยอดบิล <span className="mono">{baht(t.billTotal)}</span></p>
+      {/* P3.3: deposits offset at close — they never reduce the bill, only what was still owed. */}
+      {t.depositOffsetTotal && t.depositOffsetTotal !== '0.00' && (
+        <dl className="bl-kv">
+          <dt>หักมัดจำ</dt><dd className="mono">−{baht(t.depositOffsetTotal)}</dd>
+          <dt>ยอดที่ลูกค้าจ่ายเพิ่ม</dt><dd className="mono">{baht(t.balanceDue)}</dd>
+        </dl>
+      )}
       {/* B3: a channel surcharge is its own line, on top of the bill; a draft's is always 0. */}
       {t.surchargeTotal !== '0.00' && (
         <dl className="bl-kv">
@@ -186,6 +193,9 @@ function ClosedBanner({ result, jobId }: { result: CloseReceiptResult; jobId: st
   return (
     <section className="card bl-closed" role="status">
       <p className="bl-closed-no">ปิดบิลแล้ว · ใบเสร็จเลขที่ <span className="mono">{result.receipt.number}</span></p>
+      {result.depositOffsetTotal && result.depositOffsetTotal !== '0.00' && (
+        <p className="qt-line-sub">หักมัดจำ {baht(result.depositOffsetTotal)} แล้ว</p>
+      )}
       {result.change !== '0.00' && <p className="bl-closed-change">ทอนเงินลูกค้า <strong className="mono">{baht(result.change)}</strong></p>}
       {result.replayed && <p className="qt-line-sub">บิลนี้ปิดไปแล้วก่อนหน้า (กดซ้ำ) — แสดงใบเดิม ไม่มีการรับเงินซ้ำ</p>}
       <div className="row-flex">
@@ -229,7 +239,10 @@ function IssuedBody({ jobId, receipt, state, canWrite }: { jobId: string; receip
             {receipt.payments.map((p) => (
               <PaymentRow key={p.id} label={`${p.channelName ?? PAYMENT_METHOD_LABEL[p.method]}${p.surcharge !== '0.00' ? ` (ค่าธรรมเนียม ${baht(p.surcharge)})` : ''}${p.reversed ? ' (คืนแล้ว)' : ''}`} amount={p.amount} change={p.method === 'cash' ? p.changeGiven : null} />
             ))}
-            <dt>รับสุทธิ</dt><dd className="mono">{baht(receipt.paidNet)}</dd>
+            {(receipt.deposits?.applied ?? []).map((d) => (
+              <PaymentRow key={d.paymentId} label={`หักมัดจำ ${d.depositNumber ?? '(ไม่มีเลขใบมัดจำ)'}${d.reversed ? ' (คืนกลับเป็นมัดจำแล้ว)' : ''}`} amount={d.amount} change={null} />
+            ))}
+            <dt>รับสุทธิ (ไม่รวมมัดจำ)</dt><dd className="mono">{baht(receipt.paidNet)}</dd>
           </dl>
           <p className="qt-line-sub">ปิดบิล {thaiDateTime(receipt.issuedAt)} โดย {receipt.issuedByName ?? '-'}</p>
         </section>
