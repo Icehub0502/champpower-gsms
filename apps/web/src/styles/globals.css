@@ -2275,6 +2275,11 @@ a.st-name:hover { text-decoration: underline; }
 .st-card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 10px 16px; }
 .st-card-head .st-figs dd { font-size: 20px; }
 .st-card-head .st-fig-main dd { font-size: 28px; }
+.st-move-filter { margin-bottom: 8px; }
+.st-move-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.st-move-reason { font-size: 13.5px; color: var(--text); }
+.st-neg { color: var(--red); }
+.st-pos { color: var(--success); }
 .st-moves { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .st-moves th, .st-moves td { padding: 8px 6px; border-bottom: 1px solid var(--paper-2); text-align: left; vertical-align: top; }
 .st-moves th { color: var(--text-2); font-weight: 600; font-size: 12.5px; white-space: nowrap; }
