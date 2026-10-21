@@ -19,6 +19,8 @@ interface JobDepositsCardProps {
   canWrite: boolean;
   /** Mutations elsewhere on the page are in flight: the buttons wait. */
   disabled?: boolean;
+  /** Open the "รับมัดจำ" dialog straight away (check-in: "บันทึก แล้วรับมัดจำ"). */
+  initiallyOpen?: boolean;
 }
 
 function safeSatang(v: string | null): number | null {
@@ -37,9 +39,11 @@ function safeSatang(v: string | null): number | null {
  * and the "รับมัดจำ" button. Every amount is the server's; the balance is the
  * domain's depositOffsetPlan, the same one the API closes the bill with.
  */
-export function JobDepositsCard({ jobId, againstTotal, againstLabel = 'ยอดที่อนุมัติ', who, canWrite, disabled }: JobDepositsCardProps) {
+export function JobDepositsCard({
+  jobId, againstTotal, againstLabel = 'ยอดที่อนุมัติ', who, canWrite, disabled, initiallyOpen = false,
+}: JobDepositsCardProps) {
   const doc = useDocument<JobDeposits>(jobDepositsPath(jobId), DEPOSIT_SOCKET_EVENT);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen && canWrite);
   const data = doc.data;
   const attached = (data?.warnings ?? []).filter((w) => w.attachedToThisJob);
   const attachedTotal = warningsTotal(attached);
