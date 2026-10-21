@@ -19,6 +19,7 @@ import { DiscountPanel } from './DiscountPanel';
 import { FulfillmentList } from './FulfillmentList';
 import { PaymentPanel } from './PaymentPanel';
 import { receiptPath, useReceipt, type ReceiptState } from './useReceipt';
+import { stockRoutes } from '../stock/stockLabels';
 
 /** The route element: /jobs/:jobId/bill. */
 export function BillRoute({ role }: { role: Role | null }) {
@@ -82,6 +83,8 @@ export function BillPage({ jobId, canWrite }: { jobId: string; canWrite: boolean
           {job.data?.plate && <PlateBadge plate={job.data.plate} province={job.data.province ?? undefined} size="md" />}
           {receipt && <span className={`pill ${receipt.status === 'void' ? 'pill-danger' : receipt.status === 'issued' ? 'pill-success' : 'pill-muted'}`}>{RECEIPT_STATUS_LABEL[receipt.status]}</span>}
           <Link className="btn secondary small" to={`/jobs/${encodeURIComponent(jobId)}/quote`}>ใบเสนอราคา</Link>
+          {/* WO-006: bill writers are all issue roles; pull anything still reserved before closing. */}
+          {canWrite && <Link className="btn secondary small" to={stockRoutes.jobIssue(jobId)}>เบิกของ</Link>}
         </div>
       </header>
 

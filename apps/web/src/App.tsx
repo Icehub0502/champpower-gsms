@@ -19,6 +19,7 @@ import { PaymentChannelsRoute } from './routes/settings/PaymentChannelsPage';
 import { DepositsRoute } from './routes/deposits/DepositsPage';
 import { NewDepositRoute } from './routes/deposits/NewDepositPage';
 import { StockHubPage } from './routes/stock/StockHubPage';
+import { canIssueStock } from './routes/stock/stockLabels';
 import { SkuListPage } from './routes/stock/SkuListPage';
 import { CountSheetRoute } from './routes/stock/CountSheetPage';
 import { StockCardRoute } from './routes/stock/StockCardPage';
@@ -99,7 +100,7 @@ function AuthedApp() {
           <ShellLayout user={auth.user} role={auth.role} online={online} onLogout={auth.logout} />
         )}
       >
-        <Route path="/today" element={<TodayPage canOpenQuote={canReadQuote(auth.role)} canOpenBill={canReadBill(auth.role)} />} />
+        <Route path="/today" element={<TodayPage canOpenQuote={canReadQuote(auth.role)} canOpenBill={canReadBill(auth.role)} canIssueStock={canIssueStock(auth.role)} />} />
         <Route path="/checkin" element={<CheckInRoute />} />
         {/* P3.1 — the quotation of one job. Matched before the closed
             /jobs/:jobId below. The role check inside is for what to SHOW;
