@@ -2262,6 +2262,8 @@ a.st-name:hover { text-decoration: underline; }
 .st-reason input, .st-reason textarea { padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius-input); font: inherit; font-size: 15px; width: 100%; }
 .st-reason.has-error input, .st-reason.has-error textarea { border: 2px solid var(--red); }
 .st-entry { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; }
+.st-row-msg { flex-basis: 100%; margin: 0; }
+.st-warn { color: var(--red); }
 
 /* Result panel after a write */
 .st-result { border: 2px solid var(--success); }
