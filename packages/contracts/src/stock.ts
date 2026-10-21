@@ -18,6 +18,7 @@
 //   PUT    /api/stock/catalog-items/:itemId/sku CatalogBindInput    -> CatalogLinkRow     (bind)
 //   DELETE /api/stock/catalog-items/:itemId/sku                     -> CatalogLinkRow     (unbind)
 //   POST   /api/stock/catalog-items/:itemId/sku/create CatalogCreateSkuInput -> CatalogLinkRow (new SKU from the item, bound)
+//   GET    /api/stock/stale-reservations        PageQuery           -> StaleReservationPage (reserved parts of a closed job)
 //   GET    /api/stock/adjustments               AdjustmentsQuery    -> DailyAdjustments   (owner / manager)
 //   GET    /api/stock/integrity                                     -> IntegrityReport    (owner / manager)
 //
@@ -432,6 +433,28 @@ export type CatalogCreateSkuInput = z.infer<typeof CatalogCreateSkuInput>;
 // -----------------------------------------------------------------------------
 // Owner / manager views
 // -----------------------------------------------------------------------------
+
+// Parts still RESERVED although the job is over (delivered / rejected / carout) or the quotation is void /
+// superseded. They hold stock back from everyone else and, if the part was really fitted, on_hand is too high
+// until somebody issues it. Nothing clears itself: a person decides (issue it, or adjust).
+export const StaleReservationRow = z
+  .object({
+    lineId: uuid,
+    lineName: z.string(),
+    documentId: uuid,
+    documentStatus: z.string(),
+    jobId: uuid.nullable(),
+    jobNumber: z.string().nullable(),
+    jobStatus: z.string().nullable(),
+    skuId: uuid,
+    skuCode: z.string(),
+    skuName: z.string(),
+    reserved: z.string(),
+  })
+  .strict();
+export type StaleReservationRow = z.infer<typeof StaleReservationRow>;
+export const StaleReservationPage = z.object({ items: z.array(StaleReservationRow), total: z.number().int().min(0) }).strict();
+export type StaleReservationPage = z.infer<typeof StaleReservationPage>;
 
 export const AdjustmentsQuery = z
   .object({

@@ -19,7 +19,7 @@ import {
   AdjustInput, AdjustmentsQuery, CardQuery, CatalogBindInput, CatalogCreateSkuInput, CatalogLinkPage,
   CatalogLinkRow, CatalogLinksQuery, CountInput, CountSheetPage, CountSheetQuery, DailyAdjustments,
   IntegrityReport, JobStock, LowStockQuery, SkuCreateInput, SkuDetail, SkuListQuery, SkuPage, SkuPatchInput,
-  SkuRow, StockCard, StockChangeResult, StockIssueInput, StockIssueResult, UnboundLinePage, UnboundLinesQuery,
+  SkuRow, StaleReservationPage, StockCard, StockChangeResult, StockIssueInput, StockIssueResult, UnboundLinePage, UnboundLinesQuery,
   type InvalidRequestError, type StockBody,
 } from '@gsms/contracts/index.js'
 import { formatQty, toQtyCenti } from '@champpower/domain'
@@ -273,6 +273,21 @@ stockRouter.post('/jobs/:jobId/stock/issue', requireAuth, requireRole(...ISSUE_R
 // ---------------------------------------------------------------------------
 // Reports and the catalog link
 // ---------------------------------------------------------------------------
+
+stockRouter.get('/stock/stale-reservations', requireAuth, requireRole(...WRITE_ROLES), async (req: AuthedRequest, res) => {
+  const q = UnboundLinesQuery.safeParse(req.query)
+  if (!q.success) { badRequest(res, q.error, 'ตัวกรองไม่ถูกต้อง'); return }
+  const auth = req.auth!
+  const { rows, total } = await withShop(db, auth.shop, (trx) => stockRepo.staleReservations(trx, q.data.limit, q.data.offset))
+  res.json(StaleReservationPage.parse({
+    items: rows.map((r) => ({
+      lineId: r.line_id, lineName: r.line_name, documentId: r.document_id, documentStatus: r.document_status,
+      jobId: r.job_id, jobNumber: r.job_number, jobStatus: r.job_status,
+      skuId: r.sku_id, skuCode: r.sku_code, skuName: r.sku_name, reserved: r.reserved,
+    })),
+    total,
+  }))
+})
 
 stockRouter.get('/stock/unbound-lines', requireAuth, requireRole(...WRITE_ROLES), async (req: AuthedRequest, res) => {
   const q = UnboundLinesQuery.safeParse(req.query)

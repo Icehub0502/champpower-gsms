@@ -578,6 +578,40 @@ export async function integrityDrift(trx: ScopedTx): Promise<{ checked: number; 
   return { checked: Number(n.rows[0]?.n ?? 0), drift: r.rows }
 }
 
+export interface StaleRow {
+  line_id: string
+  line_name: string
+  document_id: string
+  document_status: string
+  job_id: string | null
+  job_number: string | null
+  job_status: string | null
+  sku_id: string
+  sku_code: string
+  sku_name: string
+  reserved: string
+}
+
+/** Lines with a positive net reservation whose job is over or whose quotation is void/superseded. */
+export async function staleReservations(trx: ScopedTx, limit: number, offset: number): Promise<{ rows: StaleRow[]; total: number }> {
+  const core = sql`
+    select m.ref_line_id as line_id, dl.name_snapshot as line_name, d.id as document_id, d.status as document_status,
+           j.id as job_id, j.job_number, j.status as job_status, s.id as sku_id, s.code as sku_code, s.name as sku_name,
+           sum(m.qty) as reserved
+      from stock_moves m
+      join document_lines dl on dl.id = m.ref_line_id
+      join documents d on d.id = dl.document_id
+      join skus s on s.id = m.sku_id and s.shop_id = m.shop_id
+      left join jobs j on j.id = d.job_id
+     where m.ref_type = 'document_line' and m.type in ('reserve', 'unreserve')
+       and (d.status in ('void', 'superseded') or j.status in ('delivered', 'rejected', 'carout'))
+     group by m.ref_line_id, dl.name_snapshot, d.id, d.status, j.id, j.job_number, j.status, s.id, s.code, s.name
+    having sum(m.qty) > 0`
+  const rows = await sql<StaleRow>`select * from (${core}) x order by x.job_number nulls last, x.sku_code limit ${limit} offset ${offset}`.execute(trx)
+  const total = await sql<{ n: number }>`select count(*) as n from (${core}) x`.execute(trx)
+  return { rows: rows.rows, total: Number(total.rows[0]?.n ?? 0) }
+}
+
 export interface UnboundRow {
   line_id: string
   document_id: string
