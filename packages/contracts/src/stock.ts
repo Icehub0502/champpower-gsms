@@ -517,6 +517,9 @@ export const SkuInactiveError = payloadless('sku_inactive');
 export const SkuNotCountedError = payloadless('sku_not_counted'); // 409: adjust/issue needs a counted SKU
 export const NoChangeError = payloadless('no_change'); // 409: adjust to the same quantity
 export const AdjustmentNegativeError = payloadless('adjustment_negative'); // 409
+// 409: reserved for the day purchasing creates avg_cost and the per-shop adjustment limit (CLAUDE.md s12.1) is enforced.
+// Not sent in Release 1.
+export const AdjustmentNeedsApprovalError = payloadless('adjustment_needs_approval');
 export const SkuCodeExistsError = z
   .object({ error: z.literal('sku_code_exists'), message: z.string(), skuId: uuid })
   .strict();
@@ -558,6 +561,7 @@ export const StockBody = z.union([
   SkuNotCountedError,
   NoChangeError,
   AdjustmentNegativeError,
+  AdjustmentNeedsApprovalError,
   SkuCodeExistsError,
   SkuHasReservationsError,
   InsufficientOnHandError,

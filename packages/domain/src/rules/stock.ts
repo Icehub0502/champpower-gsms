@@ -239,14 +239,16 @@ export function shortfallNeedsAction(policy: StockingPolicy): boolean {
 
 /**
  * How much of a line's net reservation goes back when the receipt says `fulfilled` of `qty`
- * was done. A plain line: min(reserved, qty - fulfilled). A child of a set: the reservation
- * is scaled by the unfinished share of the set, rounded UP so that "nothing was done" always
- * releases everything. Never more than what is reserved.
+ * was done. A plain line: min(reserved, qty - fulfilled). A component of a set (`component`):
+ * the quantities are those of the set HEAD, so the reservation is scaled by the unfinished share
+ * of the set, rounded UP so that "nothing was done" always releases everything.
+ * Never more than what is reserved.
  */
-export function releaseShareCenti(reservedNetCenti: number, qtyCenti: number, fulfilledCenti: number): number {
+export function releaseShareCenti(reservedNetCenti: number, qtyCenti: number, fulfilledCenti: number, component = false): number {
   if (reservedNetCenti <= 0 || qtyCenti <= 0) return 0;
   const undone = Math.max(0, qtyCenti - Math.max(0, fulfilledCenti));
   if (undone === 0) return 0;
+  if (!component) return Math.min(reservedNetCenti, undone);
   const num = BigInt(reservedNetCenti) * BigInt(undone);
   const den = BigInt(qtyCenti);
   const ceil = Number((num + den - 1n) / den);
