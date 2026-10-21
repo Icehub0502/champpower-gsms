@@ -24,6 +24,8 @@ import { CountSheetRoute } from './routes/stock/CountSheetPage';
 import { StockCardRoute } from './routes/stock/StockCardPage';
 import { LowStockPage } from './routes/stock/LowStockPage';
 import { AdjustRoute } from './routes/stock/AdjustPage';
+import { IssuePickJobPage } from './routes/stock/IssuePickJobPage';
+import { JobIssueRoute } from './routes/stock/JobIssuePage';
 
 // /board (waiting-room display) and /lookup (customer "find my car" page, reached via
 // QR code) are both public and must never require login — matched before the authed
@@ -114,6 +116,9 @@ function AuthedApp() {
         <Route path="/stock/skus/:skuId" element={<StockCardRoute role={auth.role} />} />
         <Route path="/stock/low" element={<LowStockPage role={auth.role} />} />
         <Route path="/stock/adjust" element={<AdjustRoute role={auth.role} />} />
+        <Route path="/stock/issue" element={<IssuePickJobPage role={auth.role} />} />
+        {/* เบิกของ of one job — matched before the closed /jobs/:jobId below. */}
+        <Route path="/jobs/:jobId/stock" element={<JobIssueRoute role={auth.role} />} />
         <Route path="/print/blank-checkin" element={<BlankFormPage />} />
 
         {/* Not yet ported onto the new API (WO-004/T6) — see
