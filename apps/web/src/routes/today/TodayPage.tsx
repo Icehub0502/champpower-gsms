@@ -27,7 +27,8 @@ import { DeliveredPanel } from './DeliveredPanel';
 import { useMinute } from './clock';
 import { KpiRow } from './KpiRow';
 import { PulsePanel } from './PulsePanel';
-import { moveErrorText, subStateErrorText, isStaleBoard } from './messages';
+import { moveErrorText, subStateErrorText, isStaleBoard, isReceiptRequired } from './messages';
+import { billHref, billLinkFits } from '../bill/billLabels';
 
 const COLUMN_NUMBERS = KANBAN_COLUMNS.map((c) => c.column);
 
@@ -69,7 +70,7 @@ interface Toast {
  * phone layout, the 2-visible tablet strip and the 4-column desktop grid —
  * so rotating a tablet mid-drag or mid-search never remounts this page.
  */
-export function TodayPage({ canOpenQuote = false }: { canOpenQuote?: boolean }) {
+export function TodayPage({ canOpenQuote = false, canOpenBill = false }: { canOpenQuote?: boolean; canOpenBill?: boolean }) {
   const { data, error, reload, applyMove, applySubState } = useTodayBoard();
 
   // The card check-in just created (App.tsx CheckInRoute navigates here with
@@ -117,6 +118,8 @@ export function TodayPage({ canOpenQuote = false }: { canOpenQuote?: boolean }) 
   const [deliveredOpen, setDeliveredOpen] = useState(false);
   const [busyJobId, setBusyJobId] = useState<string | null>(null);
   const [sheetError, setSheetError] = useState<string | null>(null);
+  // Delivery gate (B1): the API refused ส่งแล้ว because the bill is not closed — the dialog links to the bill screen.
+  const [deliverNeedsBill, setDeliverNeedsBill] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
 
@@ -174,6 +177,7 @@ export function TodayPage({ canOpenQuote = false }: { canOpenQuote?: boolean }) 
     } catch (err) {
       if (isSessionCancelled(err)) return; // logged out / switched user: no toast
       const text = moveErrorText(err, job.status, to);
+      setDeliverNeedsBill(to === 'delivered' && isReceiptRequired(err));
       const stale = isStaleBoard(err);
       if (openJobId === job.jobId || pendingDeliverId === job.jobId) setSheetError(text);
       // A stale refusal reloads the board, and the job the dialog was about may
@@ -369,6 +373,7 @@ export function TodayPage({ canOpenQuote = false }: { canOpenQuote?: boolean }) 
           busy={busyJobId === openJob.jobId}
           errorText={sheetError}
           quoteHref={canOpenQuote ? `/jobs/${encodeURIComponent(openJob.jobId)}/quote` : null}
+          billHref={canOpenBill && billLinkFits(openJob.status, openJob.jobType) ? billHref(openJob.jobId) : null}
           onClose={() => setOpenJobId(null)}
           onMoveStatus={(to) => requestMove(openJob, to)}
           onSetSubState={(s) => void setSubState(openJob, s)}
@@ -380,9 +385,11 @@ export function TodayPage({ canOpenQuote = false }: { canOpenQuote?: boolean }) 
           job={pendingDeliver}
           busy={busyJobId === pendingDeliver.jobId}
           errorText={sheetError}
+          billHref={deliverNeedsBill && canOpenBill ? billHref(pendingDeliver.jobId) : null}
           onConfirm={() => void moveJob(pendingDeliver, 'delivered')}
           onCancel={() => {
             setSheetError(null);
+            setDeliverNeedsBill(false);
             setPendingDeliverId(null);
           }}
         />

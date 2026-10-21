@@ -2,7 +2,9 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { statusOf } from '@champpower/domain';
 import type { CreateQuotationInput, JobDetail, Quotation, Role } from '@gsms/contracts/index.js';
+import { QuotationPrintButton, WorkOrderPrintButton } from '../../components/print/DocPrintButtons';
 import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
+import { billHref, billLinkFits } from '../bill/billLabels';
 import { Icon } from '../../components/ui/Icon';
 import { PlateBadge } from '../../components/ui/PlateBadge';
 import { useDocument } from '../../hooks/useDocument';
@@ -166,6 +168,17 @@ export function QuotePage({ jobId, canWrite }: { jobId: string; canWrite: boolea
                 {busy === 'create' ? 'กำลังสร้าง...' : 'สร้างใบเสนอราคา'}
               </button>
             </div>
+          )}
+        </div>
+      )}
+
+      {quotation && (
+        <div className="row-flex qt-doc-row no-print">
+          {/* P3.2: the A4 paper is the control the customer signs (DECISION-2026-10-07 §2.3). */}
+          <QuotationPrintButton jobId={jobId} disabled={busy !== null} />
+          {quotation.status === 'signed' && <WorkOrderPrintButton jobId={jobId} disabled={busy !== null} />}
+          {quotation.status === 'signed' && job.data && billLinkFits(job.data.status, job.data.jobType) && (
+            <Link className="btn hazard" to={billHref(jobId)}>เก็บเงิน / ใบเสร็จ</Link>
           )}
         </div>
       )}

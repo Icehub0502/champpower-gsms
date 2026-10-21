@@ -24,6 +24,7 @@
     "./publicBoard.js": "./src/publicBoard.ts",
     "./catalog.js": "./src/catalog.ts",
     "./quotation.js": "./src/quotation.ts",
+    "./billing.js": "./src/billing.ts",
     "./errors.js": "./src/errors.ts",
     "./index.js": "./src/index.ts"
   }

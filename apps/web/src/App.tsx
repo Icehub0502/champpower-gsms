@@ -12,6 +12,10 @@ import { NotYetAvailable } from './components/ui/NotYetAvailable';
 import { TodayPage } from './routes/today/TodayPage';
 import { QuoteRoute } from './routes/quote/QuotePage';
 import { canReadQuote } from './routes/quote/quoteLabels';
+import { BillRoute } from './routes/bill/BillPage';
+import { canReadBill } from './routes/bill/billLabels';
+import { DailyRoute } from './routes/daily/DailySummaryPage';
+import { PaymentChannelsRoute } from './routes/settings/PaymentChannelsPage';
 
 // /board (waiting-room display) and /lookup (customer "find my car" page, reached via
 // QR code) are both public and must never require login — matched before the authed
@@ -81,12 +85,16 @@ function AuthedApp() {
           <ShellLayout user={auth.user} role={auth.role} online={online} onLogout={auth.logout} />
         )}
       >
-        <Route path="/today" element={<TodayPage canOpenQuote={canReadQuote(auth.role)} />} />
+        <Route path="/today" element={<TodayPage canOpenQuote={canReadQuote(auth.role)} canOpenBill={canReadBill(auth.role)} />} />
         <Route path="/checkin" element={<CheckInRoute />} />
         {/* P3.1 — the quotation of one job. Matched before the closed
             /jobs/:jobId below. The role check inside is for what to SHOW;
             the API refuses a technician on every quotation door anyway. */}
         <Route path="/jobs/:jobId/quote" element={<QuoteRoute role={auth.role} />} />
+        {/* P3.2 — tick what was done, take the money, close the bill, print; and the day's two figures. */}
+        <Route path="/jobs/:jobId/bill" element={<BillRoute role={auth.role} />} />
+        <Route path="/daily" element={<DailyRoute role={auth.role} />} />
+        <Route path="/settings/payment-channels" element={<PaymentChannelsRoute role={auth.role} />} />
         <Route path="/print/blank-checkin" element={<BlankFormPage />} />
 
         {/* Not yet ported onto the new API (WO-004/T6) — see

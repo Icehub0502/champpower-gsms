@@ -36,6 +36,7 @@ import * as jobsRepo from '../repositories/jobs.js'
 import { writeAudit } from './audit.js'
 import { ConfirmAuditAfter, ConfirmAuditBefore } from '../lib/confirmAudit.js'
 import { createItem, findSimilar } from './catalogPricing.js'
+import { discountCeilingRefusal, discountPercentText } from '@champpower/domain'
 
 /** A job in one of these can no longer take a new quotation, revision or issue. */
 const ENDED_JOB_STATUSES = ['rejected', 'carout', 'delivered']
@@ -103,6 +104,8 @@ export type QuotationError =
   | { code: 'set_amount_required'; lineIds: string[] }
   | { code: 'discount_required' }
   | { code: 'discount_exceeds_approved'; max: string }
+  | { code: 'discount_requires_manager'; percent: string }
+  | { code: 'discount_reason_required' }
   | { code: 'approved_amount_not_allowed'; lineId: string }
   | { code: 'amount_over_2x'; lineId: string; offered: string; max: string }
   | { code: 'amount_above_offer_free_set'; lineId: string }
@@ -629,6 +632,7 @@ export async function confirm(
   documentId: string,
   adjustments: ConfirmAdjustments | undefined,
   actorId: string,
+  actorRole: string,
 ): Promise<Result<ConfirmOutcome>> {
   const locked = await lockJobThenDocument(trx, documentId)
   if (!locked) return err({ code: 'quotation_not_found' })
@@ -672,6 +676,17 @@ export async function confirm(
   const linesAtConfirm = lineRows.map((r) => ({ ...toDomainLine(r), approvedAmount: agreedNow.get(r.id) ?? r.approved_amount }))
   if (adjustments?.discount && discountExceedsApproved(linesAtConfirm, adjustments.discount.amount)) {
     return err({ code: 'discount_exceeds_approved', max: formatSatang(quoteTotals(linesAtConfirm, 0).approvedSubtotal) })
+  }
+
+  // Ice 20 Oct (P3.2 B4): the same 40% ceiling as at the till, on the discount that will be STORED, judged
+  // on the approved subtotal. Above it takes manager / assistant manager / owner AND a reason. Before any write.
+  {
+    const entered = adjustments?.discount?.amount ?? doc.discount
+    const base = quoteTotals(linesAtConfirm, 0).approvedSubtotal
+    const stored = quoteTotals(linesAtConfirm, entered).approvedDiscount
+    const refusal = discountCeilingRefusal({ baseSatang: base, discountSatang: stored, role: actorRole, reason: adjustments?.discount?.reason })
+    if (refusal === 'discount_requires_manager') return err({ code: 'discount_requires_manager', percent: discountPercentText(base, stored) })
+    if (refusal === 'discount_reason_required') return err({ code: 'discount_reason_required' })
   }
 
   // What each cut set held before confirm, kept in the audit so undo can put it back exactly.
@@ -972,7 +987,7 @@ export async function jobBackToQuotedBlocked(trx: ScopedTx, jobId: string): Prom
 // 200 and an empty list, which is the real answer.
 // -----------------------------------------------------------------------------
 
-export async function workOrder(trx: ScopedTx, jobId: string): Promise<Result<{ job: quotationRepo.JobWithVehicleRow; lines: quotationRepo.WorkOrderLineRow[] }>> {
+export async function workOrder(trx: ScopedTx, jobId: string): Promise<Result<{ job: quotationRepo.JobWithVehicleRow; quotation: { number: string | null; revision: number }; lines: quotationRepo.WorkOrderLineRow[] }>> {
   const job = await quotationRepo.jobWithVehicle(trx, jobId)
   if (!job) return err({ code: 'job_not_found' })
   const doc = await quotationRepo.findLiveQuotation(trx, jobId)
@@ -982,5 +997,5 @@ export async function workOrder(trx: ScopedTx, jobId: string): Promise<Result<{ 
   const ids = new Set(workOrderLineIds(approved.map((l) => ({
     id: l.id, parentLineId: l.parent_line_id, approvalStatus: 'approved', declineReason: null, declineNote: null,
   }))))
-  return ok({ job, lines: approved.filter((l) => ids.has(l.id)) })
+  return ok({ job, quotation: { number: doc.number, revision: doc.revision }, lines: approved.filter((l) => ids.has(l.id)) })
 }
