@@ -292,7 +292,7 @@ export function PaymentPanel({ jobId, receipt, busy, guard, show, reload, onClos
 
       {next.blockers.length > 0 && receipt.status === 'draft' && (
         <ul className="bl-blockers" aria-label="สิ่งที่ยังต้องทำก่อนปิดบิล">
-          {next.blockers.map((b) => <li key={b}>{BLOCKER_TEXT[b]}</li>)}
+          {next.blockers.filter((b) => BLOCKER_TEXT[b]).map((b) => <li key={b}>{BLOCKER_TEXT[b]}</li>)}
         </ul>
       )}
       {ceilingBlocked && <p className="qt-line-sub">ส่วนลดเกินเพดาน — ผู้จัดการ รองผู้จัดการ หรือเจ้าของต้องเข้าระบบด้วยชื่อตัวเองแล้วกดปิดบิล</p>}

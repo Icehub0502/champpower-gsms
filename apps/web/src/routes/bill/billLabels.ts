@@ -61,7 +61,8 @@ export const LINE_STATE_LABEL: Record<ReceiptLineState, string> = {
   not_done: 'ไม่ได้ทำ — ไม่คิดเงิน',
 };
 
-export const BLOCKER_TEXT: Record<ReceiptBlocker, string> = {
+// Partial: the deprecated `deposit_held` blocker (never emitted since P3.3) has no words here.
+export const BLOCKER_TEXT: Partial<Record<ReceiptBlocker, string>> = {
   job_not_ready: 'งานยังไม่ถึงขั้นเก็บเงิน',
   quotation_changed: 'ใบเสนอราคาเปลี่ยนหลังเริ่มทำบิลนี้ — โหลดรายการใหม่ก่อน',
   lines_unanswered: 'ยังมีรายการที่ยังไม่ระบุว่าทำจริงไหม',
@@ -70,7 +71,6 @@ export const BLOCKER_TEXT: Record<ReceiptBlocker, string> = {
   discount_reason_required: 'ส่วนลดต้องมีเหตุผล',
   discount_requires_manager: 'ส่วนลดเกินเพดาน — ต้องให้ผู้จัดการขึ้นไปปิดบิล',
   nothing_to_bill: 'ยอดบิลเป็น 0 — ไม่มีอะไรให้เก็บเงิน',
-  deposit_held: 'ลูกค้ารายนี้มีมัดจำค้างอยู่ — ระบบยังหักมัดจำไม่ได้ แจ้งผู้จัดการ',
   bill_not_presented: 'ยังไม่ได้แจ้งยอดให้ลูกค้าดู',
   presentation_stale: 'รายการเปลี่ยนหลังแจ้งยอด — ต้องแจ้งยอดลูกค้าใหม่',
 };

@@ -23,7 +23,9 @@ export interface DepositFailure {
 
 export const GENERIC_DEPOSIT_FAILURE = 'บันทึกไม่สำเร็จ กรุณาลองใหม่ — ข้อมูลที่กรอกไว้ยังอยู่ครบ';
 
-const STALE_CODES = new Set(['deposit_not_found', 'deposit_not_held', 'deposit_job_mismatch', 'deposit_not_attached']);
+const STALE_CODES = new Set([
+  'deposit_not_found', 'deposit_not_held', 'deposit_job_mismatch', 'deposit_not_attached', 'deposit_locked', 'job_already_billed',
+]);
 
 function textOf(body: DepositBodyT): string {
   switch (body.error) {
@@ -35,8 +37,10 @@ function textOf(body: DepositBodyT): string {
     case 'deposit_exceeds_bill': return `มัดจำที่เลือกมากกว่ายอดบิลอยู่ ${baht(body.over)} (หักได้ไม่เกิน ${baht(body.max)}) — เลือกน้อยลง หรือคืนมัดจำส่วนนั้น`;
     case 'forfeit_requires_manager': return 'ริบมัดจำได้เฉพาะผู้จัดการขึ้นไป';
     case 'deposit_slip_unavailable': return 'มัดจำนี้ปิดไปแล้วโดยยังไม่เคยพิมพ์ใบ จึงพิมพ์ใบรับเงินมัดจำไม่ได้';
-    case 'slip_file_not_found': return 'ไม่พบรูปสลิปที่แนบ — แนบรูปใหม่อีกครั้ง';
     case 'job_not_found': return 'ไม่พบงานนี้';
+    case 'customer_not_found': return 'ไม่พบลูกค้ารายนี้ในระบบ — ค้นหาเบอร์โทรใหม่ หรือบันทึกเป็นลูกค้าใหม่';
+    case 'job_already_billed': return 'งานนี้ปิดบิลไปแล้ว ผูกมัดจำเข้าไม่ได้ — ถ้าต้องคืนเงินให้กด “คืนมัดจำ” ที่หน้ามัดจำค้างอยู่';
+    case 'deposit_locked': return 'มัดจำรายการนี้เปลี่ยนไม่ได้ในสถานะตอนนี้ — โหลดข้อมูลใหม่ให้แล้ว';
     case 'invalid_request': return 'ข้อมูลบางช่องไม่ถูกต้อง กรุณาตรวจช่องที่มีข้อความสีแดง';
     case 'document_series_missing': return 'สาขานี้ยังไม่ได้ตั้งเลขที่ใบรับเงินมัดจำ (DEP) จึงพิมพ์ไม่ได้ — ไม่ใช่ความผิดของคุณ กรุณาแจ้งเจ้าของร้านให้ตั้งค่า';
     case 'print_content_changed':
@@ -52,6 +56,7 @@ function depositFieldText(code: string | undefined): string {
     case 'invalid_date': return 'วันที่ไม่ถูกต้อง';
     case 'in_the_past': return 'วันที่นัดต้องไม่ก่อนวันนี้';
     case 'must_be_positive': return 'ยอดมัดจำต้องมากกว่า 0';
+    case 'unknown_file': return 'ไม่พบรูปสลิปที่แนบ — เอาออกแล้วแนบรูปใหม่อีกครั้ง';
     default: return fieldCodeText(code);
   }
 }
@@ -66,6 +71,8 @@ export function describeDepositError(err: unknown): DepositFailure {
     const fields: Record<string, string> = {};
     if (body.error === 'invalid_request') {
       for (const [k, codes] of Object.entries(body.fields)) fields[k] = depositFieldText(codes[0]);
+      // The slip box on screen is keyed 'slip'.
+      if (fields.slipFileId) fields.slip = fields.slipFileId;
     }
     return { text: textOf(body), fields, body, stale: STALE_CODES.has(body.error), cancelled: false };
   }

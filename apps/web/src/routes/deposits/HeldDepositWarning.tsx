@@ -72,6 +72,7 @@ export function HeldDepositWarning({ warnings, jobId, canAttach, onAttached }: H
                 {w.slipNumber ? ` · ${w.slipNumber}` : ''}
                 {' · '}นัดไว้ {dateKeyThai(w.expectedDate)}{w.overdue ? ' (เลยวันนัดแล้ว)' : ''}
                 {w.matchedBy === 'phone' ? ' · พบจากเบอร์โทร ตรวจว่าเป็นคนเดียวกัน' : ''}
+                {w.matchedBy === 'booking' ? ' · มัดจำจองคิวของนัดนี้' : ''}
               </span>
             </div>
             {jobId && canAttach && (
@@ -82,7 +83,7 @@ export function HeldDepositWarning({ warnings, jobId, canAttach, onAttached }: H
           </li>
         ))}
       </ul>
-      {!jobId && <p className="qt-line-sub">บันทึกรับรถก่อน แล้วผูกมัดจำเข้างานได้ทันทีหลังบันทึก</p>}
+      {!jobId && <p className="qt-line-sub">ผูกมัดจำเข้างานได้เมื่อรับรถแล้ว (หลังบันทึกใบรับรถ)</p>}
       {jobId && <p className="qt-line-sub">ผูกแล้ว จะหักมัดจำได้ตอนรับเงินที่หน้าเก็บเงิน</p>}
       {error && <p className="ci-form-error">{error}</p>}
     </section>

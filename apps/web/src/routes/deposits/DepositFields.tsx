@@ -10,7 +10,7 @@ import { resizeImageToBlob } from '../../lib/compressImage';
 import { bangkokTodayKey } from '../../lib/printFormat';
 import { PAYMENT_CHANNELS_PATH } from '../bill/PaymentPanel';
 import {
-  DEPOSITS_PATH, DEPOSIT_CHANNELS, DEPOSIT_CHANNEL_LABEL, DEPOSIT_REASONS, DEPOSIT_REASON_LABEL,
+  DEPOSIT_CHANNELS, DEPOSIT_CHANNEL_LABEL, DEPOSIT_REASONS, DEPOSIT_REASON_LABEL,
 } from './depositLabels';
 
 /** What the counter types for one deposit, before it becomes a CreateDepositInput. */
@@ -58,7 +58,7 @@ export type SlipState =
   | { status: 'done'; name: string; fileId: string }
   | { status: 'failed'; name: string; file: File };
 
-/** The transfer slip image: resized, then uploaded straight away (POST /api/deposits/slip-file). */
+/** The transfer slip image: resized, then uploaded straight away (POST /api/files/deposit-slip). */
 export function useSlipUpload() {
   const [slip, setSlip] = useState<SlipState>({ status: 'none' });
   const seq = useRef(0);
@@ -70,7 +70,7 @@ export function useSlipUpload() {
       const blob = await resizeImageToBlob(file);
       const fd = new FormData();
       fd.append('file', blob, 'slip.jpg');
-      const uploaded = await api.upload<DepositSlipFile>(`${DEPOSITS_PATH}/slip-file`, fd);
+      const uploaded = await api.upload<DepositSlipFile>('/api/files/deposit-slip', fd);
       if (mine === seq.current) setSlip({ status: 'done', name: file.name, fileId: uploaded.id });
     } catch (err) {
       if (isSessionCancelled(err) || mine !== seq.current) return;

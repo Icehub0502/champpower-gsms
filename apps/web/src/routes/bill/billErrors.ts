@@ -55,7 +55,6 @@ function textOf(body: BillingBodyT): string {
     case 'payment_over_noncash': return `โอน/บัตร เกินยอดไป ${baht(body.over)} — ทอนได้เฉพาะเงินสด แก้ยอดให้พอดี`;
     case 'payment_cash_unneeded': return 'มีเงินทอนแต่เงินสดที่รับไม่พอจะทอน — ตรวจยอดแต่ละช่องทางอีกครั้ง';
     case 'already_billed': return `งานนี้ออกใบเสร็จแล้ว เลขที่ ${body.number}`;
-    case 'deposit_held': return 'ลูกค้ารายนี้มีมัดจำค้างอยู่ ระบบยังหักมัดจำไม่ได้ในรอบนี้ — ปิดบิลงานนี้ตามวิธีเดิมไปก่อน แล้วแจ้งผู้จัดการ';
     case 'receipt_required': return 'งานนี้ยังไม่ได้ปิดบิล — ต้องออกใบเสร็จก่อนจึงกด “ส่งแล้ว” ได้';
     case 'receipt_issued': return 'งานนี้ออกใบเสร็จแล้ว ย้อนกลับไม่ได้ — ต้องให้เจ้าของยกเลิกใบเสร็จก่อน';
     case 'print_content_changed':
@@ -95,7 +94,8 @@ export function describeBillError(err: unknown): BillFailure {
     if (body.error === 'discount_exceeds_subtotal' || body.error === 'discount_reason_required') {
       for (const k of Object.keys(body.fields)) fields[k] = textOf(body);
     }
-    return { text: textOf(body), fields, body, stale: STALE_CODES.has(body.error), cancelled: false, code };
+    // textOf has no words for a deprecated code (deposit_held, never emitted since P3.3): generic text.
+    return { text: textOf(body) ?? GENERIC_BILL_FAILURE, fields, body, stale: STALE_CODES.has(body.error), cancelled: false, code };
   }
   if (err.status === 403) return { ...empty, text: 'คุณไม่มีสิทธิ์ทำรายการนี้', stale: false, cancelled: false, code };
   if (err.status === 404) return { ...empty, text: 'ไม่พบข้อมูลนี้ — ระบบหลังบ้านอาจยังไม่เปิดใช้ส่วนนี้', stale: false, cancelled: false, code };
