@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import { statusOf } from '@champpower/domain';
-import type { ConfirmInput, ConfirmResult, IssueInput, Quotation, ReviseInput, UndoConfirmInput } from '@gsms/contracts/index.js';
+import type {
+  ConfirmInput, ConfirmResult, IssueInput, Quotation, ReviseInput, StockConfirmSummary, UndoConfirmInput,
+} from '@gsms/contracts/index.js';
+import { StockConfirmNotice } from '../stock/StockConfirmNotice';
 import { ReasonDialog } from '../../components/ui/ReasonDialog';
 import { api } from '../../lib/api/client';
 import { ConfirmOutcomeDialog } from './ConfirmOutcomeDialog';
@@ -30,6 +33,8 @@ export function QuoteActions({ jobId, quotation, canWrite, busy, run, onJobMoved
   const [dialog, setDialog] = useState<Dialog>(null);
   const [failure, setFailure] = useState<QuoteFailure | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  // WO-006: what the confirm did to stock. Shown after the fact, never blocking.
+  const [stockNews, setStockNews] = useState<StockConfirmSummary | null>(null);
   const base = quotationPath(jobId);
   const next = quotation.next;
   const anyBusy = busy !== null;
@@ -37,6 +42,8 @@ export function QuoteActions({ jobId, quotation, canWrite, busy, run, onJobMoved
   async function act<T extends Quotation>(key: string, call: () => Promise<T>): Promise<RunResult<T>> {
     setFailure(null);
     setInfo(null);
+    // Undo / revise / issue change what is reserved: the old news is no longer true.
+    setStockNews(null);
     const result = await run(key, call);
     if (!result.ok && !result.failure.cancelled) setFailure(result.failure);
     return result;
@@ -48,6 +55,7 @@ export function QuoteActions({ jobId, quotation, canWrite, busy, run, onJobMoved
     if (!result.ok) return result.failure;
     setDialog(null);
     onJobMoved?.();
+    setStockNews(result.value.stock ?? null);
     const unchanged = result.value.jobStatusUnchanged;
     setInfo(unchanged
       ? `ยืนยันผลแล้ว — แต่สถานะงานยังเป็น “${statusOf(unchanged.currentStatus).label}” (ยังไม่ได้ออกใบเสนอราคาตามขั้นตอน) ย้ายสถานะงานที่หน้างานวันนี้`
@@ -62,6 +70,10 @@ export function QuoteActions({ jobId, quotation, canWrite, busy, run, onJobMoved
   return (
     <section className="qt-actions" aria-label="ขั้นตอนใบเสนอราคา">
       {info && <p className="ci-match" role="status">{info}</p>}
+      {stockNews && (
+        // canWrite (quotation writers) is a subset of both the issue and the stock-write roles.
+        <StockConfirmNotice summary={stockNews} jobId={jobId} mayIssue mayFix onClose={() => setStockNews(null)} />
+      )}
       {failure && dialog === null && <p className="ci-form-error" role="alert">{failure.text}</p>}
 
       <div className="row-flex">

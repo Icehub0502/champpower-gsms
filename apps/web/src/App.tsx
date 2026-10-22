@@ -18,6 +18,19 @@ import { DailyRoute } from './routes/daily/DailySummaryPage';
 import { PaymentChannelsRoute } from './routes/settings/PaymentChannelsPage';
 import { DepositsRoute } from './routes/deposits/DepositsPage';
 import { NewDepositRoute } from './routes/deposits/NewDepositPage';
+import { StockHubPage } from './routes/stock/StockHubPage';
+import { canIssueStock } from './routes/stock/stockLabels';
+import { SkuListPage } from './routes/stock/SkuListPage';
+import { CountSheetRoute } from './routes/stock/CountSheetPage';
+import { StockCardRoute } from './routes/stock/StockCardPage';
+import { LowStockPage } from './routes/stock/LowStockPage';
+import { AdjustRoute } from './routes/stock/AdjustPage';
+import { IssuePickJobPage } from './routes/stock/IssuePickJobPage';
+import { JobIssueRoute } from './routes/stock/JobIssuePage';
+import { CatalogLinksRoute } from './routes/stock/CatalogLinksPage';
+import {
+  DailyAdjustmentsRoute, IntegrityRoute, StaleReservationsRoute, UnboundLinesRoute,
+} from './routes/stock/StockReportsPages';
 
 // /board (waiting-room display) and /lookup (customer "find my car" page, reached via
 // QR code) are both public and must never require login — matched before the authed
@@ -87,7 +100,7 @@ function AuthedApp() {
           <ShellLayout user={auth.user} role={auth.role} online={online} onLogout={auth.logout} />
         )}
       >
-        <Route path="/today" element={<TodayPage canOpenQuote={canReadQuote(auth.role)} canOpenBill={canReadBill(auth.role)} />} />
+        <Route path="/today" element={<TodayPage canOpenQuote={canReadQuote(auth.role)} canOpenBill={canReadBill(auth.role)} canIssueStock={canIssueStock(auth.role)} />} />
         <Route path="/checkin" element={<CheckInRoute />} />
         {/* P3.1 — the quotation of one job. Matched before the closed
             /jobs/:jobId below. The role check inside is for what to SHOW;
@@ -100,6 +113,22 @@ function AuthedApp() {
         <Route path="/deposits" element={<DepositsRoute role={auth.role} />} />
         <Route path="/deposits/new" element={<NewDepositRoute role={auth.role} />} />
         <Route path="/settings/payment-channels" element={<PaymentChannelsRoute role={auth.role} />} />
+        {/* WO-006 — stock. One menu entry (/stock); every screen gates itself by the
+            endpoint's roles, and the API checks the role again on every route. */}
+        <Route path="/stock" element={<StockHubPage role={auth.role} />} />
+        <Route path="/stock/skus" element={<SkuListPage role={auth.role} />} />
+        <Route path="/stock/count" element={<CountSheetRoute role={auth.role} />} />
+        <Route path="/stock/skus/:skuId" element={<StockCardRoute role={auth.role} />} />
+        <Route path="/stock/low" element={<LowStockPage role={auth.role} />} />
+        <Route path="/stock/adjust" element={<AdjustRoute role={auth.role} />} />
+        <Route path="/stock/issue" element={<IssuePickJobPage role={auth.role} />} />
+        <Route path="/stock/catalog-links" element={<CatalogLinksRoute role={auth.role} />} />
+        <Route path="/stock/reports/unbound" element={<UnboundLinesRoute role={auth.role} />} />
+        <Route path="/stock/reports/stale" element={<StaleReservationsRoute role={auth.role} />} />
+        <Route path="/stock/reports/adjustments" element={<DailyAdjustmentsRoute role={auth.role} />} />
+        <Route path="/stock/reports/integrity" element={<IntegrityRoute role={auth.role} />} />
+        {/* เบิกของ of one job — matched before the closed /jobs/:jobId below. */}
+        <Route path="/jobs/:jobId/stock" element={<JobIssueRoute role={auth.role} />} />
         <Route path="/print/blank-checkin" element={<BlankFormPage />} />
 
         {/* Not yet ported onto the new API (WO-004/T6) — see

@@ -22,6 +22,8 @@ interface CardActionSheetProps {
   quoteHref?: string | null;
   /** Where "เก็บเงิน / ใบเสร็จ" goes (P3.2), or null for a role or job it does not fit. */
   billHref?: string | null;
+  /** WO-006: where "เบิกของ" goes (the job's issue list), or null for a role or status it does not fit. */
+  stockHref?: string | null;
   onClose: () => void;
   onMoveStatus: (to: StatusKey) => void;
   onSetSubState: (subState: SubState | null) => void;
@@ -59,7 +61,7 @@ function moveLabel(from: StatusKey, to: StatusKey): string {
  * moves are the card's own `allowedMoves`, decided by the server from the
  * job's real history and the caller's role — never recomputed here.
  */
-export function CardActionSheet({ job, busy, errorText, quoteHref, billHref, onClose, onMoveStatus, onSetSubState }: CardActionSheetProps) {
+export function CardActionSheet({ job, busy, errorText, quoteHref, billHref, stockHref, onClose, onMoveStatus, onSetSubState }: CardActionSheetProps) {
   // ไม่อนุมัติ and เอารถลง close the job and take the card off the board for
   // good (DECISION-7-today.md §6), so neither is ever one tap: they wait here
   // for a confirmation that names the car and says what will happen.
@@ -90,6 +92,12 @@ export function CardActionSheet({ job, busy, errorText, quoteHref, billHref, onC
         {billHref && confirmTo === null && (
           <Link className="btn hazard" to={billHref}>
             <Icon name="money" size={15} /> เก็บเงิน / ใบเสร็จ
+          </Link>
+        )}
+        {/* WO-006: technicians too — pulling parts is a shelf action, not a money one. */}
+        {stockHref && confirmTo === null && (
+          <Link className="btn secondary" to={stockHref}>
+            <Icon name="box" size={15} /> เบิกของ
           </Link>
         )}
         {/* Technicians too: the work order carries no money (AC-A1). */}

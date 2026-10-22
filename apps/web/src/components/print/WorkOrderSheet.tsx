@@ -40,11 +40,11 @@ export function WorkOrderSheet({ workOrder }: { workOrder: WorkOrder }) {
           </thead>
           <tbody>
             {top.map((line, i) => (
-              <WorkRows key={line.id} no={i + 1} name={line.name} brand={line.brand} qty={line.qty} unit={line.unit} warranty={line.warrantyName}>
+              <WorkRows key={line.id} no={i + 1} name={line.name} brand={line.brand} qty={line.qty} unit={line.unit} warranty={line.warrantyName} awaitingParts={line.awaitingParts}>
                 {childrenOf(line.id).map((k) => (
                   <tr key={k.id} className="pr-row-child">
                     <td />
-                    <td>– {k.name}{k.brand ? ` (${k.brand})` : ''}</td>
+                    <td>– {k.name}{k.brand ? ` (${k.brand})` : ''}{k.awaitingParts && <AwaitingParts />}</td>
                     <td className="pr-c-qty">{qtyText(k.qty)}{k.unit ? ` ${k.unit}` : ''}</td>
                     <td className="pr-c-tick"><span className="pr-box" /></td>
                   </tr>
@@ -63,15 +63,23 @@ export function WorkOrderSheet({ workOrder }: { workOrder: WorkOrder }) {
   );
 }
 
-function WorkRows({ no, name, brand, qty, unit, warranty, children }: {
-  no: number; name: string; brand: string | null; qty: string; unit: string | null; warranty: string | null; children: ReactNode;
+/**
+ * WO-006 / CLAUDE.md s6 item 6: approved, but the shelf could not cover it. Printed boxed
+ * next to the line so the technician is not sent to an empty shelf.
+ */
+function AwaitingParts() {
+  return <span className="pr-awaiting">รออะไหล่</span>;
+}
+
+function WorkRows({ no, name, brand, qty, unit, warranty, awaitingParts, children }: {
+  no: number; name: string; brand: string | null; qty: string; unit: string | null; warranty: string | null; awaitingParts: boolean; children: ReactNode;
 }) {
   return (
     <>
       <tr>
         <td className="pr-c-no">{no}</td>
         <td>
-          <div className="pr-name">{name}{brand ? ` (${brand})` : ''}</div>
+          <div className="pr-name">{name}{brand ? ` (${brand})` : ''}{awaitingParts && <AwaitingParts />}</div>
           {warranty && <div className="pr-sub">ประกัน: {warranty}</div>}
         </td>
         <td className="pr-c-qty">{qtyText(qty)}{unit ? ` ${unit}` : ''}</td>

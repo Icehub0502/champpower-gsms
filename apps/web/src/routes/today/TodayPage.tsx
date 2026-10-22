@@ -28,7 +28,8 @@ import { useMinute } from './clock';
 import { KpiRow } from './KpiRow';
 import { PulsePanel } from './PulsePanel';
 import { moveErrorText, subStateErrorText, isStaleBoard, isReceiptRequired } from './messages';
-import { billHref, billLinkFits } from '../bill/billLabels';
+import { billHref, billLinkFits, workOrderFits } from '../bill/billLabels';
+import { stockRoutes } from '../stock/stockLabels';
 
 const COLUMN_NUMBERS = KANBAN_COLUMNS.map((c) => c.column);
 
@@ -70,7 +71,7 @@ interface Toast {
  * phone layout, the 2-visible tablet strip and the 4-column desktop grid —
  * so rotating a tablet mid-drag or mid-search never remounts this page.
  */
-export function TodayPage({ canOpenQuote = false, canOpenBill = false }: { canOpenQuote?: boolean; canOpenBill?: boolean }) {
+export function TodayPage({ canOpenQuote = false, canOpenBill = false, canIssueStock = false }: { canOpenQuote?: boolean; canOpenBill?: boolean; canIssueStock?: boolean }) {
   const { data, error, reload, applyMove, applySubState } = useTodayBoard();
 
   // The card check-in just created (App.tsx CheckInRoute navigates here with
@@ -374,6 +375,7 @@ export function TodayPage({ canOpenQuote = false, canOpenBill = false }: { canOp
           errorText={sheetError}
           quoteHref={canOpenQuote ? `/jobs/${encodeURIComponent(openJob.jobId)}/quote` : null}
           billHref={canOpenBill && billLinkFits(openJob.status, openJob.jobType) ? billHref(openJob.jobId) : null}
+          stockHref={canIssueStock && workOrderFits(openJob.status) ? stockRoutes.jobIssue(openJob.jobId) : null}
           onClose={() => setOpenJobId(null)}
           onMoveStatus={(to) => requestMove(openJob, to)}
           onSetSubState={(s) => void setSubState(openJob, s)}

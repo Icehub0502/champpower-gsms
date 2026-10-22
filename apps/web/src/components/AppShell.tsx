@@ -7,6 +7,7 @@ import { Icon } from './ui/Icon';
 import { Modal } from './ui/Modal';
 import { canManageChannels, showsDailyInMenu } from '../routes/bill/billLabels';
 import { canWriteDeposit } from '../routes/deposits/depositLabels';
+import { canReadStock } from '../routes/stock/stockLabels';
 
 
 interface AppShellProps {
@@ -26,14 +27,20 @@ interface AppShellProps {
 // on /jobs/:id) but is no longer a nav entry.
 const NAV_ITEMS: {
   to: string; label: string; dockLabel?: string; icon: Parameters<typeof Icon>[0]['name']; show?: (role: Role | null) => boolean;
+  /** false = sidebar only, never in the phone dock. */
+  dock?: boolean;
 }[] = [
   { to: '/today', label: 'งานวันนี้', icon: 'list' },
   { to: '/checkin', label: 'รับรถ', icon: 'plus' },
+  // WO-006: ONE stock entry for every role; the screens inside are gated by their endpoint's roles.
+  { to: '/stock', label: 'สต๊อก', icon: 'box', show: canReadStock },
   // P3.3: whoever takes money sees the deposits the shop is holding (the API decides the rest).
   { to: '/deposits', label: 'มัดจำค้างอยู่', dockLabel: 'มัดจำ', icon: 'money', show: canWriteDeposit },
   // P3.2: manager and up only in the menu (the API decides what each role may read or change).
   { to: '/daily', label: 'สรุปรายวัน', icon: 'money', show: showsDailyInMenu },
-  { to: '/settings/payment-channels', label: 'ช่องทางชำระ', icon: 'settings', show: canManageChannels },
+  // DEFAULT pending Ice: a settings page is not a thumb-reach action, so it leaves the phone dock to make
+  // room for สต๊อก — owner/manager keep exactly 5 dock items. Still in the sidebar at every width >= 768.
+  { to: '/settings/payment-channels', label: 'ช่องทางชำระ', icon: 'settings', show: canManageChannels, dock: false },
 ];
 
 const ROLE_LABEL_TH: Record<Role, string> = {
@@ -171,7 +178,7 @@ export function AppShell({ user, role, online, onLogout, children }: AppShellPro
           first; it is position:fixed, so source order does not move it. */}
       <nav className="dock" aria-label="เมนูลัด">
         <span className="dock-badge" aria-hidden="true">⌘</span>
-        {NAV_ITEMS.filter((item) => !item.show || item.show(role)).map((item) => (
+        {NAV_ITEMS.filter((item) => item.dock !== false && (!item.show || item.show(role))).map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
