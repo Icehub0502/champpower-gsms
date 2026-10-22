@@ -28,10 +28,11 @@
 import type { Response } from 'express'
 import { z } from 'zod'
 import { withShop } from '@gsms/db/client.js'
+import { withShopStock } from '../lib/stockEvents.js'
 import {
   AddLineInput, ConfirmInput, ConfirmResult, CreateQuotationInput, DecideLineInput, OfferedItemPage,
   OfferedItemQuery, PatchLineInput, PatchQuotationInput, Quotation, ReviseInput,
-  UndoConfirmInput, VoidInput, WorkOrder, type DocumentSeriesMissingError, type InvalidRequestError, type QuotationBody,
+  UndoConfirmInput, VoidInput, WorkOrder, type DocumentSeriesMissingError, type InvalidRequestError, type QuotationBody, type StockConfirmSummary,
 } from '@gsms/contracts/index.js'
 import { db } from '../lib/db.js'
 import { requireAuth, requireRole, type AuthedRequest } from '../middleware/requireAuth.js'
@@ -140,7 +141,7 @@ async function loadViewByDocument(documentId: string, auth: AuthedRequest['auth'
 }
 
 /** A view that is gone (the document vanished between the write and the read) is a 404, never a 500. */
-function sendView(res: Response, status: number, view: QuotationView, extra?: { jobStatusUnchanged: { currentStatus: string } | null }): void {
+function sendView(res: Response, status: number, view: QuotationView, extra?: { jobStatusUnchanged: { currentStatus: string } | null; stock: StockConfirmSummary }): void {
   if (!view) { refuse(res, 404, { error: 'quotation_not_found', message: 'ไม่พบใบเสนอราคานี้' }); return }
   res.status(status).json(extra ? ConfirmResult.parse({ ...view, ...extra }) : Quotation.parse(view))
 }
@@ -357,14 +358,14 @@ quotationRouter.post(
     // Confirm is the one door whose errors belong on a row of a list, so its fields are keyed by full path.
     if (!body.success) { invalid(res, 'ข้อมูลการยืนยันไม่ถูกต้อง', nestedFieldErrorsOf(body.error, req.body)); return }
     const auth = req.auth!
-    const result = await withShop(db, auth.shop, async (trx) => {
+    const result = await withShopStock(db, auth.shop, async (trx) => {
       const doc = await quotationRepo.findLiveQuotation(trx, params.data.jobId)
       if (!doc) return { ok: false as const, error: { code: 'quotation_not_found' as const } }
       return quotationSvc.confirm(trx, auth.shop, doc.id, body.data.adjustments, auth.sub, auth.role)
     })
     if (!result.ok) { sendServiceError(res, result.error); return }
     const view = await loadView(params.data.jobId, auth)
-    sendView(res, 200, view, { jobStatusUnchanged: result.value.jobStatusUnchanged })
+    sendView(res, 200, view, { jobStatusUnchanged: result.value.jobStatusUnchanged, stock: result.value.stock })
   },
 )
 
@@ -380,7 +381,7 @@ quotationRouter.post(
     if (!params.success) { res.status(404).json({ error: 'quotation_not_found' }); return }
     if (!body.success) { badRequest(res, body.error, 'กรุณาระบุเหตุผล'); return }
     const auth = req.auth!
-    const result = await withShop(db, auth.shop, async (trx) => {
+    const result = await withShopStock(db, auth.shop, async (trx) => {
       const doc = await quotationRepo.findLiveQuotation(trx, params.data.jobId)
       if (!doc) return { ok: false as const, error: { code: 'quotation_not_found' as const } }
       return quotationSvc.undoConfirm(trx, auth.shop, doc.id, body.data.reason, auth.sub)
@@ -404,7 +405,7 @@ quotationRouter.post(
     if (!body.success) { badRequest(res, body.error, 'ข้อมูลไม่ถูกต้อง'); return }
     const auth = req.auth!
     try {
-      const result = await withShop(db, auth.shop, async (trx) => {
+      const result = await withShopStock(db, auth.shop, async (trx) => {
         const doc = await quotationRepo.findLiveQuotation(trx, params.data.jobId)
         if (!doc) return { ok: false as const, error: { code: 'quotation_not_found' as const } }
         return quotationSvc.revise(trx, auth.shop, doc.id, auth.sub, body.data.reason)
@@ -430,7 +431,7 @@ quotationRouter.post(
     if (!params.success) { res.status(404).json({ error: 'quotation_not_found' }); return }
     if (!body.success) { badRequest(res, body.error, 'กรุณาระบุเหตุผล'); return }
     const auth = req.auth!
-    const result = await withShop(db, auth.shop, async (trx) => {
+    const result = await withShopStock(db, auth.shop, async (trx) => {
       const doc = await quotationRepo.findLiveQuotation(trx, params.data.jobId)
       if (!doc) return { ok: false as const, error: { code: 'quotation_not_found' as const } }
       return quotationSvc.voidQuotation(trx, auth.shop, doc.id, body.data.reason, auth.sub)
@@ -476,7 +477,7 @@ quotationRouter.get(
     const auth = req.auth!
     const result = await withShop(db, auth.shop, (trx) => quotationSvc.workOrder(trx, params.data.jobId))
     if (!result.ok) { sendServiceError(res, result.error); return }
-    const { job, quotation, lines } = result.value
+    const { job, quotation, lines, awaitingParts } = result.value
     res.json(WorkOrder.parse({
       jobId: job.id,
       jobNumber: job.job_number,
@@ -492,6 +493,8 @@ quotationRouter.get(
       lines: lines.map((l) => ({
         id: l.id, parentLineId: l.parent_line_id, sortOrder: l.sort_order, lineType: l.line_type,
         name: l.name_snapshot, brand: l.brand_snapshot, qty: l.qty, unit: l.unit, warrantyName: l.warranty_name,
+        // WO-006: approved but the shelf could not cover it. The technician is told, not sent to an empty shelf.
+        awaitingParts: awaitingParts.has(l.id),
       })),
     }))
   },

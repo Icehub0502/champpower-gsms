@@ -12,6 +12,7 @@
  */
 import { z } from 'zod'
 import { withShop } from '@gsms/db/client.js'
+import { withShopStock } from '../lib/stockEvents.js'
 import {
   type InvalidRequestError,
   StatusMoveReason,
@@ -286,7 +287,9 @@ kanbanRouter.patch(
       | { kind: 'decline_note_required' }
       | { kind: 'decline_reason_not_allowed' }
 
-    const outcome = await withShop(db, auth.shop, async (trx): Promise<Outcome> => {
+    // withShopStock: a job ending as rejected/carout gives its reserved parts back in this transaction (WO-006),
+    // and the screens watching stock are told once it has committed.
+    const outcome = await withShopStock(db, auth.shop, async (trx): Promise<Outcome> => {
       const job = await jobsRepo.lockForStatusChange(trx, jobId)
       if (!job) return { kind: 'not_found' }
 

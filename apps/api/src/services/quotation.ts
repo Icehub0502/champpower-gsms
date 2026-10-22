@@ -36,6 +36,9 @@ import * as jobsRepo from '../repositories/jobs.js'
 import { writeAudit } from './audit.js'
 import { ConfirmAuditAfter, ConfirmAuditBefore } from '../lib/confirmAudit.js'
 import { createItem, findSimilar } from './catalogPricing.js'
+import * as stockRepo from '../repositories/stock.js'
+import { awaitingPartLineIds, releaseDocument, reserveForDocument } from './stockReservation.js'
+import type { StockConfirmSummary } from '@gsms/contracts/index.js'
 import { discountCeilingRefusal, discountPercentText } from '@champpower/domain'
 
 /** A job in one of these can no longer take a new quotation, revision or issue. */
@@ -524,6 +527,10 @@ export async function issue(trx: ScopedTx, shopId: string, documentId: string, a
     throw e
   }
 
+  // The last moment the lines are writable: freeze which stock SKU each part line IS (WO-006). After this the
+  // line's sku_id is part of what the customer is shown and signs; a catalog re-bind later does not move it.
+  await stockRepo.snapshotSkuOnDraftLines(trx, documentId)
+
   const number = await quotationRepo.allocateQuotationNumber(trx, shopId)
   // approved_total is what the carried decisions approve (0 for a fresh rev 1).
   await quotationRepo.markIssued(trx, documentId, {
@@ -624,6 +631,8 @@ export interface ConfirmOutcome {
   jobOutcome: 'approve_job' | 'keep_quoted'
   /** Set when the quotation was confirmed but the job is still before 'quoted' (received/inspecting), so the screen can say the job was not moved. */
   jobStatusUnchanged: { currentStatus: string } | null
+  /** WO-006: what reserving the approved parts did. Never an error. */
+  stock: StockConfirmSummary
 }
 
 export async function confirm(
@@ -749,6 +758,11 @@ export async function confirm(
     }
   }
 
+  // WO-006 (CLAUDE.md s6 rule 2): the customer's yes is the moment parts are RESERVED - approved part lines only, per line,
+  // set components not set heads. Stock is the last lock of the order; nothing here can refuse the confirm: a shortfall
+  // is a warning plus a purchase suggestion, never a block.
+  const reserved = await reserveForDocument(trx, { shopId, documentId, jobId: doc.job_id, actorId })
+
   // Written after the job move so the row records, as a structured field, whether THIS confirm
   // advanced the job: undo reads it back instead of guessing from the job's current status.
   auditAfter.jobAdvancedFrom = jobAdvancedFrom
@@ -762,7 +776,7 @@ export async function confirm(
     after: ConfirmAuditAfter.parse(auditAfter),
   })
 
-  return ok({ document: (await quotationRepo.getDocument(trx, documentId))!, jobOutcome: outcome === 'approve_job' ? 'approve_job' : 'keep_quoted', jobStatusUnchanged })
+  return ok({ document: (await quotationRepo.getDocument(trx, documentId))!, jobOutcome: outcome === 'approve_job' ? 'approve_job' : 'keep_quoted', jobStatusUnchanged, stock: reserved.summary })
 }
 
 // -----------------------------------------------------------------------------
@@ -817,6 +831,8 @@ export async function undoConfirm(trx: ScopedTx, shopId: string, documentId: str
     if (back !== l.approved_amount) await quotationRepo.setApprovedAmount(trx, l.id, back)
   }
   await quotationRepo.deleteOfferedItemsOfDocument(trx, documentId)
+  // The reservations made by that confirm go back (WO-006 s3). Parts already ISSUED stay issued - they left the shelf.
+  await releaseDocument(trx, { shopId, documentId, jobId: doc.job_id, actorId, cause: 'undo_confirm' })
   // Only a job that confirm moved to 'approved' goes back; a job confirm left alone (D5, or before quoted) stays.
   // A confirm that found the job already approved (or not yet quoted) must not pull it back.
   if (doc.job_id && job && job.status === 'approved' && confirmRecord?.jobAdvancedFrom === 'quoted') {
@@ -851,6 +867,9 @@ export async function revise(trx: ScopedTx, shopId: string, documentId: string, 
 
   // Supersede FIRST: uq_live_quotation_per_job allows one draft/issued/signed quotation per job, so the new draft cannot exist while the old one is still live.
   await quotationRepo.markSuperseded(trx, doc.id)
+  // WO-006 s3: the old revision's reservations go back now; rev 2 reserves again when ITS customer outcome is confirmed.
+  // Parts already issued stay issued and count against rev 2's lines through source_line_id.
+  if (doc.status === 'signed') await releaseDocument(trx, { shopId, documentId: doc.id, jobId: doc.job_id, actorId, cause: 'revise' })
   const newDoc = await quotationRepo.insertRevision(trx, {
     shopId, jobId: doc.job_id, customerId: doc.customer_id, revision: doc.revision + 1, supersedesDocumentId: doc.id,
     // Owner ruling (14 Oct 2026): rev 2's offer starts from the discount AGREED on the source.
@@ -881,6 +900,7 @@ export async function revise(trx: ScopedTx, shopId: string, documentId: string, 
     const newParent = idMap.get(l.parent_line_id!)
     if (newParent) await copy(l, newParent)
   }
+  await stockRepo.copySkuFromSourceLines(trx, newDoc.id)
 
   await writeAudit(trx, {
     shopId, actorId, action: 'quotation_revised', entityType: 'documents', entityId: newDoc.id,
@@ -903,6 +923,7 @@ export async function voidQuotation(trx: ScopedTx, shopId: string, documentId: s
   // A draft has no number: ck_number_when_issued forbids voiding it, and there is nothing to void.
   if (doc.status === 'draft') return err({ code: 'quotation_not_issued' })
   await quotationRepo.markVoid(trx, documentId, { reason, voidedBy: actorId })
+  if (doc.status === 'signed') await releaseDocument(trx, { shopId, documentId, jobId: doc.job_id, actorId, cause: 'void' })
   // The reason is staff free text kept in audit on purpose (documents has no column for it).
   await writeAudit(trx, {
     shopId, actorId, action: 'document_voided', entityType: 'documents', entityId: documentId,
@@ -936,6 +957,9 @@ export async function closeQuotationForJobEnd(
   // Lock the document (job is already ours), then judge the locked row, not the unlocked read.
   const doc = await quotationRepo.lockDocument(trx, live.id)
   if (!doc) return { action: 'none' }
+  // WO-006: a SIGNED quotation is left alone by the close plan below (it stays as the record of what the customer agreed),
+  // but the parts reserved for a job that is ending without a repair must go back to the shelf in this same transaction.
+  if (doc.status === 'signed') await releaseDocument(trx, { shopId, documentId: doc.id, jobId, actorId, cause: 'job_end' })
   const lineRows = await quotationRepo.getLines(trx, doc.id)
   const plan = planQuotationClose({
     targetStatus, quotation: { status: doc.status as 'draft' | 'issued' | 'signed' | 'superseded' | 'void', lines: lineRows.map(decisionState) },
@@ -987,7 +1011,7 @@ export async function jobBackToQuotedBlocked(trx: ScopedTx, jobId: string): Prom
 // 200 and an empty list, which is the real answer.
 // -----------------------------------------------------------------------------
 
-export async function workOrder(trx: ScopedTx, jobId: string): Promise<Result<{ job: quotationRepo.JobWithVehicleRow; quotation: { number: string | null; revision: number }; lines: quotationRepo.WorkOrderLineRow[] }>> {
+export async function workOrder(trx: ScopedTx, jobId: string): Promise<Result<{ job: quotationRepo.JobWithVehicleRow; quotation: { number: string | null; revision: number }; lines: quotationRepo.WorkOrderLineRow[]; awaitingParts: Set<string> }>> {
   const job = await quotationRepo.jobWithVehicle(trx, jobId)
   if (!job) return err({ code: 'job_not_found' })
   const doc = await quotationRepo.findLiveQuotation(trx, jobId)
@@ -997,5 +1021,7 @@ export async function workOrder(trx: ScopedTx, jobId: string): Promise<Result<{ 
   const ids = new Set(workOrderLineIds(approved.map((l) => ({
     id: l.id, parentLineId: l.parent_line_id, approvalStatus: 'approved', declineReason: null, declineNote: null,
   }))))
-  return ok({ job, quotation: { number: doc.number, revision: doc.revision }, lines: approved.filter((l) => ids.has(l.id)) })
+  // WO-006 / CLAUDE.md s6.6: the technician must be told when the shelf is empty ("รออะไหล่"), not sent to it.
+  const awaitingParts = await awaitingPartLineIds(trx, jobId)
+  return ok({ job, quotation: { number: doc.number, revision: doc.revision }, lines: approved.filter((l) => ids.has(l.id)), awaitingParts })
 }

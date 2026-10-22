@@ -26,6 +26,7 @@
 import type { Response } from 'express'
 import { z } from 'zod'
 import { withShop } from '@gsms/db/client.js'
+import { withShopStock } from '../lib/stockEvents.js'
 import {
   CloseReceiptInput, CreatePrintInput, CreateReceiptInput, DailySummary, DailySummaryQuery,
   FulfillmentInput, PatchReceiptInput, PrintHistory, PrintHistoryQuery, PrintResult, Receipt,
@@ -219,7 +220,7 @@ billingRouter.post('/jobs/:jobId/receipt/close', requireAuth, requireRole(...WRI
   if (!body.success) { badRequest(res, body.error, 'ข้อมูลการรับเงินไม่ถูกต้อง', req.body); return }
   const auth = req.auth!
   try {
-    const r = await withShop(db, auth.shop, (trx) =>
+    const r = await withShopStock(db, auth.shop, (trx) =>
       svc.closeBill(trx, auth.shop, params.data.jobId, { id: auth.sub, role: auth.role },
         { payments: body.data.payments.map((p) => ({ channelId: p.channelId, amount: p.amount })), depositIds: body.data.depositIds, discountReason: body.data.discountReason }))
     if (!r.ok) { sendError(res, r.error); return }

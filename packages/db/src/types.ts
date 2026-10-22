@@ -111,6 +111,7 @@ export interface CatalogItems {
   name: string;
   name_key: Generated<string | null>;
   shop_id: string;
+  sku_id: string | null;
   unit: string | null;
   updated_at: Generated<Timestamp>;
   warranty_term_id: string | null;
@@ -816,6 +817,9 @@ export interface Skus {
   id: Generated<string>;
   is_active: Generated<boolean>;
   is_vatable_default: Generated<boolean>;
+  legacy_had_stock: boolean | null;
+  legacy_id: string | null;
+  legacy_source: string | null;
   name: string;
   reorder_point: Numeric | null;
   shelf_location: string | null;
@@ -883,11 +887,13 @@ export interface StockMoves {
   id: Generated<string>;
   idempotency_key: string;
   lot_id: string | null;
+  on_hand_after: Numeric | null;
   qty: Numeric;
   reason: string | null;
   ref_id: string | null;
   ref_line_id: string | null;
   ref_type: string | null;
+  reserved_after: Numeric | null;
   shop_id: string;
   sku_id: string;
   supplier_id: string | null;

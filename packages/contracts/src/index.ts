@@ -24,4 +24,5 @@ export * from './catalog.js';
 export * from './quotation.js';
 export * from './deposits.js';
 export * from './billing.js';
+export * from './stock.js';
 export * from './errors.js';

@@ -17,6 +17,7 @@ import { catalogRouter } from './routes/catalog.js'
 import { quotationRouter } from './routes/quotation.js'
 import { billingRouter } from './routes/billing.js'
 import { depositsRouter } from './routes/deposits.js'
+import { stockRouter } from './routes/stock.js'
 
 export interface CreateAppOptions {
   /**
@@ -191,7 +192,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   // (/api/jobs/today, /api/jobs/:id/status, /api/jobs/:id/sub-state) rides on the
   // SAME mount so the write limiter runs once per request — two separate
   // app.use('/api', limiter, ...) lines would count every PATCH twice.
-  app.use('/api', intakeWriteLimiter, queueRouter, kanbanRouter, catalogRouter, quotationRouter, billingRouter, depositsRouter)
+  app.use('/api', intakeWriteLimiter, queueRouter, kanbanRouter, catalogRouter, quotationRouter, billingRouter, depositsRouter, stockRouter)
   // Read-only, so no write limiter. AFTER kanbanRouter: GET /api/jobs/today is
   // kanban's, and must never be taken for GET /api/jobs/:id.
   app.use('/api', jobDetailRouter)

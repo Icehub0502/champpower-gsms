@@ -11,6 +11,8 @@
     "codegen": "kysely-codegen --dialect postgres --out-file src/types.ts",
     "import:catalog": "tsx --conditions=gsms-source --env-file=../../.env src/import/catalog.ts",
     "import:catalog:dry": "tsx --conditions=gsms-source --env-file=../../.env src/import/catalog.ts --dry-run",
+    "import:skus": "tsx --conditions=gsms-source --env-file=../../.env src/import/skus.ts",
+    "import:skus:dry": "tsx --conditions=gsms-source --env-file=../../.env src/import/skus.ts --dry-run",
     "test": "vitest run"
   },
   "dependencies": {
